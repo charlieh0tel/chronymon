@@ -30,23 +30,26 @@ const DATABASE = "/var/lib/chronymon/chronymon.sqlite";
 // synthetic run's step.
 const LAST = 21600;
 
-// A kiosk's display: landscape, as a television is.
-const KIOSK_VIEWPORT = { width: 1920, height: 1080 };
+// A kiosk's display: landscape, as a television is, shot at its own
+// pixels, already twice the README's width.
+const KIOSK = { viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 };
+const PAGE = { viewport: VIEWPORT, deviceScaleFactor: SCALE };
 
-// File, path, what shows the page is drawn, and the viewport if not
-// VIEWPORT.
+// File, path, what shows the page is drawn, and the page's size if not
+// PAGE.
 const SHOTS = [
   ["web-live.png", `/?last=${LAST}`, "#charts .uplot"],
   ["web-sources.png", `/sources?last=${LAST}`, "#charts .uplot"],
   ["web-refclocks.png", `/refclocks?last=${LAST}`, "#charts .uplot"],
   ["web-temperature.png", `/temperature?last=${LAST}`, "#scatter .uplot"],
   ["web-distribution.png", `/distribution?last=${LAST}`, "#figures .uplot"],
-  ["web-kiosk.png", `/kiosk?last=${LAST}`, "#charts .uplot", KIOSK_VIEWPORT],
+  ["web-kiosk.png", `/kiosk?last=${LAST}`, "#charts .uplot", KIOSK],
 ];
 
 const browser = await chromium.launch();
-try {
-  const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: SCALE });
+// A page of `size`, its answers adjusted for the shots.
+async function newPage(size) {
+  const page = await browser.newPage(size);
   await routeCdn(page);
   await page.route("**/api/status", async (route) => {
     const response = await route.fetch();
@@ -62,14 +65,19 @@ try {
     about.database = DATABASE;
     return route.fulfill({ response, json: about });
   });
-  for (const [file, path, drawn, viewport = VIEWPORT] of SHOTS) {
-    await page.setViewportSize(viewport);
+  return page;
+}
+
+try {
+  for (const [file, path, drawn, size = PAGE] of SHOTS) {
+    const page = await newPage(size);
     await page.goto(FULL + path);
     await page.waitForSelector(drawn);
     const chart = await page.locator(drawn).first().boundingBox();
     await page.mouse.move(chart.x + chart.width * CURSOR, chart.y + chart.height / 2);
     await page.waitForTimeout(SETTLE);
     await page.screenshot({ path: join(OUT, file) });
+    await page.close();
     console.log(file);
   }
 } finally {
