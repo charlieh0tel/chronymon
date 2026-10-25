@@ -1,3 +1,20 @@
+chronymon (1.0.0-1) unstable; urgency=medium
+
+  * Kiosk: the host's time; room for eight sources and long names.
+  * A refclock reference is named, not shown as "-".
+  * Status follows chronyd's latest tracking report: no false
+    "synchronized" after sync is lost.
+  * Unsynchronized, or on the local reference, shaded as a gap.
+  * A refclock a PPS is locked to (NMEA) is kept out of the way;
+    Sources lines can be hidden by name.
+  * "large offset" where makestep would not step.
+  * Log ingest survives unreadable, truncated and rewritten files.
+  * /api refuses requests that would cost too much.
+  * Schemas 4 to 6, migrated on start; logs are reread once.
+  * Starts without /run/chrony.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sun, 25 Oct 2026 16:23:53 -0700
+
 chronymon (0.2.0-1) unstable; urgency=medium
 
   * A kiosk page, /kiosk, for an unattended display.
