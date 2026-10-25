@@ -474,7 +474,8 @@ async function load(signal) {
   offsets.heading = esc(offsets.title) + `<span class="muted">: each source in its color` +
     esc(leftOut(current(sources))) + "</span>";
   const drawn = [...filledCharts("tracking", clock, KIOSK_FILLS), offsets];
-  drawStack(stack, { x: clock.at, span: spanOf([clock, overlay]), drawn }, "no clock updates in this range");
+  drawStack(stack, { x: clock.at, span: spanOf([clock, overlay]), drawn, bands: unsynchronizedBands(clock) },
+    "no clock updates in this range");
 
 }
 

@@ -964,11 +964,41 @@ function drawMarks(u, marks) {
 }
 
 // The text of the events in `marks` under the cursor, if any are within
-// reach.
-function markAt(u, marks) {
+// reach, and of the `bands` it is in.
+function markAt(u, marks, bands) {
   if (u.cursor.left == null || u.cursor.left < 0) return null;
   const near = marks.filter(({ at }) => Math.abs(u.valToPos(at, "x") - u.cursor.left) <= MARK_REACH);
-  return near.length ? near.map((m) => m.text).join("; ") : null;
+  const t = u.posToVal(u.cursor.left, "x");
+  const within = bands.filter(({ from, to }) => from <= t && t <= to);
+  const texts = [...near, ...within].map((m) => m.text);
+  return texts.length ? texts.join("; ") : null;
+}
+
+// ---------------------------------------------------------------- bands
+
+// A span chronyd was unsynchronized in, shaded behind the lines in the
+// red the strip says so in, faintly, as the time axis's own state
+// rather than an event at an instant.
+const UNSYNCHRONIZED_BAND = "#f871711f";
+
+// The spans a read of `tracking` says chronyd was unsynchronized in,
+// as bands `{ from, to, text }`, unix seconds.
+const unsynchronizedBands = (got) =>
+  (got.unsynchronized ?? []).map(([from, to]) => ({ from, to, text: `chronyd ${LEAP_NAMES.unsynchronized}` }));
+
+// Each band across the plot area, from its start to its end.
+function drawBands(u, bands) {
+  const [lo, hi] = [u.scales.x.min, u.scales.x.max];
+  const { ctx } = u;
+  ctx.save();
+  ctx.fillStyle = UNSYNCHRONIZED_BAND;
+  for (const { from, to } of bands) {
+    if (to < lo || from > hi) continue;
+    const left = u.valToPos(Math.max(from, lo), "x", true);
+    const right = u.valToPos(Math.min(to, hi), "x", true);
+    ctx.fillRect(left, u.bbox.top, Math.max(right - left, devicePixelRatio), u.bbox.height);
+  }
+  ctx.restore();
 }
 
 // How far the event's text sits from the pointer, and how near the
@@ -1011,7 +1041,9 @@ function markTip(chart, text) {
 //   toggles              optional, as `stackCharts` takes it
 //   read, why, toggling  kept by drawStack: the last drawn, to draw it
 //                        again, and whether its titles toggle lines
-// `read` is `{ x, span, drawn }`; `why` what to say when there is nothing.
+// `read` is `{ x, span, drawn, bands }`, `bands` optional, as
+// `unsynchronizedBands` gives them; `why` what to say when there is
+// nothing.
 function drawStack(view, read, why) {
   read.drawn = read.drawn.filter(drawsAnything);
   if (!read.drawn.length) {
@@ -1020,20 +1052,23 @@ function drawStack(view, read, why) {
   }
   view.read = read;
   view.why = why;
+  // The read drawn now, not the one a chart kept was made for.
+  const bands = () => view.read?.bands ?? [];
   if (view.toggles) toggleLines(view);
   update($(view.note), "textContent", "");
   const readout = () => {
     if (!view.readout) return;
-    const mark = view.charts.map((c) => markAt(c, view.marks)).find((m) => m != null);
+    const mark = view.charts.map((c) => markAt(c, view.marks, bands())).find((m) => m != null);
     showHtml($(view.readout), readoutHtml(view.charts, mark));
     const under = view.charts.find((c) => c.over.matches(":hover"));
-    markTip(under, under ? markAt(under, view.marks) : null);
+    markTip(under, under ? markAt(under, view.marks, bands()) : null);
   };
   view.charts = restack($(view.container), view.charts, read, {
     height: view.height ?? plotHeight,
     sync: view.sync.key,
     hooks: {
       setCursor: [readout],
+      drawClear: [(u) => drawBands(u, bands())],
       draw: [(u) => drawMarks(u, view.marks)],
     },
     font: view.font,

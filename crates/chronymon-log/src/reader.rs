@@ -33,6 +33,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use chronymon::event::EventKind;
+use chronymon_control::report::Leap;
 use chronymon_control::report::SourceMode;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
@@ -849,7 +850,7 @@ impl Reader {
             .filter(|c| c.table == table)
             .collect();
         let breaks = if table.recorded() {
-            Breaks::Stops(self.stops(source)?)
+            Breaks::Stops(self.stops(table, source, window)?)
         } else {
             Breaks::Holes
         };
@@ -890,7 +891,7 @@ impl Reader {
         let recording = self.recording()?;
         let primary = broken(
             self.buckets(table, None, &columns, window)?,
-            &Breaks::Stops(recording.ends()),
+            &Breaks::Stops(self.clock_stops(table, &recording, window)?),
         );
         // Not where `table` has a row either: the daemon's first row
         // after a start is placed at its reference time, which can be
@@ -992,15 +993,126 @@ impl Reader {
         Ok(latest.unwrap_or(from))
     }
 
-    /// Where a line of the daemon's own rows breaks, unix nanoseconds,
-    /// sorted: where it stopped recording, and for one source where
-    /// `source` says, where chronyd stopped reporting it.
-    fn stops(&self, source: Option<&Key>) -> Result<Vec<i64>> {
-        let stops = self.recording()?.ends();
+    /// Where a line of the daemon's own rows of `table` breaks over
+    /// `window`, unix nanoseconds, sorted: as [`Self::clock_stops`], and
+    /// for one source where `source` says, where chronyd stopped
+    /// reporting it.
+    fn stops(&self, table: Table, source: Option<&Key>, window: Window) -> Result<Vec<i64>> {
+        let stops = self.clock_stops(table, &self.recording()?, window)?;
         match source {
             Some(Key::Id(id)) => self.with_removals(stops, *id),
             _ => Ok(stops),
         }
+    }
+
+    /// Where `recording` ended, and for `tracking` where chronyd lost
+    /// sync over `window`: its rows are placed by reference time, and
+    /// while unsynchronized it has none there, its values stale.
+    fn clock_stops(&self, table: Table, recording: &Recording, window: Window) -> Result<Vec<i64>> {
+        let mut stops = recording.ends();
+        if table == Table::Tracking {
+            stops.extend(
+                self.unsynchronized_spans(recording, window)?
+                    .into_iter()
+                    .map(|(start, _)| start),
+            );
+            stops.sort_unstable();
+        }
+        Ok(stops)
+    }
+
+    /// When chronyd was unsynchronized over `window`, unix seconds,
+    /// oldest first, clipped to it: where [`Self::series`] and
+    /// [`Self::filled`] of `tracking` break.
+    pub fn unsynchronized(&self, window: Window) -> Result<Vec<(f64, f64)>> {
+        let spans = self.unsynchronized_spans(&self.recording()?, window)?;
+        Ok(spans
+            .into_iter()
+            .map(|(start, end)| (seconds(start), seconds(end)))
+            .collect())
+    }
+
+    /// When chronyd was unsynchronized over `window`, as the daemon
+    /// recorded it: spans of unix nanoseconds, oldest first, clipped to
+    /// it.  From a `tracking` row at reference time 0, which chronyd
+    /// reports while unsynchronized (`REF_GetReferenceParams`, chrony
+    /// 4.8 `reference.c:1216`), until the next update's reference time;
+    /// from a leap change to unsynchronized until one from it; either
+    /// at the latest until `recording` ended.  A daemon writes a row
+    /// at reference time 0 only on its first read, an older one on each
+    /// loss of sync; both write the leap change.
+    fn unsynchronized_spans(
+        &self,
+        recording: &Recording,
+        window: Window,
+    ) -> Result<Vec<(i64, i64)>> {
+        let (from, to, _) = window.stored();
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+        let mut statement = self.connection.prepare(UNSYNCHRONIZED_ROWS)?;
+        let zeros = statement
+            .query_map(params![to], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut next = self.connection.prepare(SYNCHRONIZED_AFTER)?;
+        for at in zeros {
+            starts.push(at);
+            if let Some(update) = next
+                .query_row(params![at], |row| row.get::<_, i64>(0))
+                .optional()?
+            {
+                ends.push(update);
+            }
+        }
+        let lost: Vec<String> = SYNCHRONIZED
+            .iter()
+            .map(|leap| text::leap_change(*leap, Leap::Unsynchronized))
+            .collect();
+        let regained: Vec<String> = SYNCHRONIZED
+            .iter()
+            .map(|leap| text::leap_change(Leap::Unsynchronized, *leap))
+            .collect();
+        let kind = EventKind::LeapChange.name();
+        let mut changes = Vec::new();
+        for (sql, parameters) in [
+            (LEAP_CHANGE_BEFORE, params![from, kind]),
+            (LEAP_CHANGES, params![from, to, kind]),
+        ] {
+            let mut statement = self.connection.prepare(sql)?;
+            changes.extend(
+                statement
+                    .query_map(parameters, |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
+        for (at, detail) in changes {
+            let detail = detail.unwrap_or_default();
+            if lost.contains(&detail) {
+                starts.push(at);
+            } else if regained.contains(&detail) {
+                ends.push(at);
+            }
+        }
+        starts.sort_unstable();
+        ends.sort_unstable();
+        let stopped = recording.ends();
+        let mut spans: Vec<(i64, i64)> = Vec::new();
+        for start in starts {
+            if spans.last().is_some_and(|(_, end)| start <= *end) {
+                continue;
+            }
+            let regained = ends.get(ends.partition_point(|end| *end <= start));
+            let stop = stopped.get(stopped.partition_point(|end| *end < start));
+            if let Some(end) = [regained, stop].into_iter().flatten().min() {
+                spans.push((start, *end));
+            }
+        }
+        Ok(spans
+            .into_iter()
+            .filter(|(start, end)| end > start && *end > from && *start < to)
+            .map(|(start, end)| (start.max(from), end.min(to)))
+            .collect())
     }
 
     /// `stops`, sorted, and when `source_id` was reported removed.
@@ -1403,6 +1515,24 @@ fn latest_sql(table: Table, label: &str) -> String {
         table.time()
     )
 }
+
+/// The leap statuses but unsynchronized.
+const SYNCHRONIZED: [Leap; 3] = [Leap::Normal, Leap::Insert, Leap::Delete];
+
+/// When a `tracking` row at reference time 0 was written, until `?1`.
+const UNSYNCHRONIZED_ROWS: &str = "SELECT at FROM tracking WHERE reference_time = 0 AND at <= ?1";
+
+/// The first reference time after `?1`: the update that ended a time
+/// unsynchronized found then.
+const SYNCHRONIZED_AFTER: &str = "SELECT reference_time FROM tracking WHERE reference_time > ?1
+     ORDER BY reference_time LIMIT 1";
+
+/// The events of kind `?3` from `?1` to `?2`, and the last of kind `?2`
+/// before `?1`.
+const LEAP_CHANGES: &str = "SELECT at, detail FROM event WHERE at >= ?1 AND at <= ?2 AND kind = ?3
+     ORDER BY at, rowid";
+const LEAP_CHANGE_BEFORE: &str = "SELECT at, detail FROM event WHERE at < ?1 AND kind = ?2
+     ORDER BY at DESC, rowid DESC LIMIT 1";
 
 /// The tables the daemon writes a row to by `at`, indexed by it, which
 /// [`last_written_sql`] finds the latest of.
@@ -2429,6 +2559,80 @@ mod tests {
         assert_eq!(latest(&db), Some(((START + 50) * NS, "normal".to_owned())));
     }
 
+    #[test]
+    fn unsynchronized_is_a_span_and_a_break() {
+        let mut db = Database::new("unsynchronized");
+        db.log
+            .write(|batch| {
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                // Updates, and between them: sync lost and regained, as
+                // leap changes; lost, as an older daemon wrote it, a row at
+                // reference time 0, until the update at 500 s; and lost at
+                // 700 s until the daemon stopped.
+                for second in (0..100).chain(200..390).chain(500..690).step_by(10) {
+                    batch.tracking(at(second), &tracking(second, 1.0))?;
+                }
+                batch.leap_change(at(105), Leap::Normal, Leap::Unsynchronized)?;
+                batch.leap_change(at(200), Leap::Unsynchronized, Leap::Normal)?;
+                batch.tracking(at(400), &reported(None))?;
+                batch.leap_change(at(700), Leap::Normal, Leap::Unsynchronized)?;
+                // Regained with a leap second scheduled, then a change
+                // between synchronized statuses, which is neither.
+                batch.leap_change(at(750), Leap::Unsynchronized, Leap::Insert)?;
+                batch.leap_change(at(760), Leap::Insert, Leap::Normal)?;
+                batch.event(at(800), EventKind::DaemonStop, None, None)?;
+                Ok(())
+            })
+            .expect("written");
+        let reader = db.reader();
+        let seconds = |spans: &[(i64, i64)]| -> Vec<(f64, f64)> {
+            spans
+                .iter()
+                .map(|(a, b)| ((START + a) as f64, (START + b) as f64))
+                .collect()
+        };
+        assert_eq!(
+            reader.unsynchronized(window(0, 999, 100)).expect("spans"),
+            seconds(&[(105, 200), (400, 500), (700, 750)])
+        );
+        // Clipped to the window, and one that began before it found.
+        assert_eq!(
+            reader.unsynchronized(window(150, 450, 100)).expect("spans"),
+            seconds(&[(150, 200), (400, 450)])
+        );
+        assert_eq!(
+            reader.unsynchronized(window(720, 999, 100)).expect("spans"),
+            seconds(&[(720, 750)])
+        );
+        // Each line breaks across the two between updates, though no
+        // recording stopped there.
+        let frequency = [column(Table::Tracking, "frequency")];
+        let between = |series: &Series| -> Vec<f64> {
+            series.plots[0]
+                .gaps
+                .iter()
+                .map(|gap| series.at[*gap] - START as f64)
+                .collect()
+        };
+        let series = reader
+            .series(Table::Tracking, None, &frequency, window(0, 999, 1000))
+            .expect("a series");
+        let gaps = between(&series);
+        assert_eq!(gaps.len(), 2, "{gaps:?}");
+        assert!((90.0..200.0).contains(&gaps[0]), "{gaps:?}");
+        assert!((380.0..500.0).contains(&gaps[1]), "{gaps:?}");
+        let filled = reader
+            .filled(
+                Table::Tracking,
+                &frequency,
+                Table::LogTracking,
+                &[column(Table::LogTracking, "frequency")],
+                window(0, 999, 1000),
+            )
+            .expect("a series");
+        assert_eq!(between(&filled), gaps);
+    }
+
     /// The plan of `sql`, one line per step.
     fn plan(reader: &Reader, sql: &str) -> Vec<String> {
         let mut statement = reader
@@ -2494,6 +2698,21 @@ mod tests {
         let written = plan(&reader, &last_written_sql());
         for table in WRITTEN {
             assert!(!scans(&written, table), "{written:?}");
+        }
+        for (sql, table) in [
+            (UNSYNCHRONIZED_ROWS, "tracking"),
+            (SYNCHRONIZED_AFTER, "tracking"),
+            (LEAP_CHANGES, "event"),
+            (LEAP_CHANGE_BEFORE, "event"),
+        ] {
+            let plan = plan(&reader, sql);
+            assert!(!scans(&plan, table), "{sql}: {plan:?}");
+            assert!(
+                !plan
+                    .iter()
+                    .any(|step| step.contains("TEMP B-TREE FOR ORDER BY")),
+                "{sql}: {plan:?}"
+            );
         }
     }
 }

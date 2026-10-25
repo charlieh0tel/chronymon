@@ -10,7 +10,7 @@ open.
 - Live, interactive charts: zoom, pan, one shared cursor and range per
   page.
 - No blanks drawn as data: gaps are gaps, a stale feed says stale, a
-  lost chronyd says down.
+  lost chronyd says down, an unsynchronized clock is shaded so.
 - Gaps explained: restarts, steps, source and leap changes and the
   daemon's own outages are events, marked on every time axis.
 - Sources by name (`sourcename`), address beside it.
@@ -43,7 +43,14 @@ beside it, as chronyc does.  No access, no start.
    chronyd reports 0 while unsynchronized (`REF_GetReferenceParams`,
    4.8 `reference.c:1216`), and a backward step moves it back, so the
    latest is not the greatest.  Unsynchronized is no time on a chart's
-   axis, nor in a table's extent.
+   axis, nor in a table's extent.  On Live's and the kiosk's charts
+   it is a span, shaded and named, the clock's lines broken across it,
+   its values stale: from a leap change to unsynchronized until one
+   from it, or from a row at reference time 0 (the daemon's first read;
+   an older daemon's every loss of sync) until the next update; at the
+   latest until the daemon stopped recording.  Leap changes are
+   chronyd's report: unsynchronized during a leap second too
+   (`leap_in_progress`, 4.8 `reference.c:1178`).
    The Sources table reads `source_report`, not the last sample row,
    so reach run down to 0, or no sample at all after a restart (age
    `(uint32_t)-1`, `SST_DoSourceReport`), shows as chronyd reports it,
@@ -145,7 +152,8 @@ The host's:
   column at query time, all of a table's columns on one grid.  The
   daemon's rows are written on change, so its lines span empty buckets
   and break only where it stopped recording (its events: stopped,
-  crashed, chronyd down; a source also where removed).  A log's line
+  crashed, chronyd down; a source also where removed; the clock also
+  where chronyd lost sync).  A log's line
   breaks at a hole wider than a few buckets and three times its own
   spacing.  Empty buckets are `null`, breaks listed as `gaps`.
 - The reader opens the database read-only (the daemon's `-shm`, or
