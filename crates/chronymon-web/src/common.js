@@ -256,7 +256,7 @@ function readings(s) {
     { k: "root dispersion", v: seconds(v.root_dispersion) },
     { k: "update interval", v: `${fmt(v.last_update_interval, 1)} s` },
     { k: "leap", v: LEAP_NAMES[t.leap] ?? t.leap },
-    { k: "last update", v: `${age(s.now - t.reference_time)} ago` },
+    { k: "last update", v: t.reference_time === null ? "none" : `${age(s.now - t.reference_time)} ago` },
   ];
 }
 

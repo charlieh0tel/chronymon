@@ -1,15 +1,15 @@
 //! The tables, as the daemon creates them and the readers expect them.
 //!
 //! Times are integer nanoseconds since the Unix epoch, UTC.  Every
-//! table but `source`, `source_report` and `status` is a time series keyed by `at`, the
-//! moment the daemon read the row, and holds a row only when what it
-//! read had changed: chronyd is polled every second, its sources far
-//! less often.
+//! table but `source`, the reports and `status` is a time series keyed
+//! by `at`, the moment the daemon read the row, and holds a row only
+//! when what it read had changed: chronyd is polled every second, its
+//! sources far less often.
 
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
@@ -55,6 +55,29 @@ pub(crate) const LOG_TABLES_BACK: &str = "
     DROP TABLE old_log_statistics;
     DROP TABLE old_refclock_sample;
     DROP TABLE old_tempcomp_sample;
+";
+
+/// The first schema with `tracking_report`, `tracking` without its
+/// unique reference time, and indexes on what the reader asks.  An
+/// older database's `tracking` is rebuilt on open, its rows kept in
+/// order.
+pub const TRACKING_REPORT: i64 = 5;
+
+/// An older schema's `tracking` renamed out of [`TABLES`]' way, and its
+/// index dropped.
+pub(crate) const TRACKING_ASIDE: &str = "
+    DROP INDEX IF EXISTS tracking_at;
+    ALTER TABLE tracking RENAME TO old_tracking;
+";
+
+/// Its rows copied into [`TABLES`]' new one in the order written, the
+/// old dropped, and `source_sample`'s indexes by `at`, which nothing
+/// reads it by, dropped.  The columns are as they were.
+pub(crate) const TRACKING_BACK: &str = "
+    INSERT INTO tracking SELECT * FROM old_tracking ORDER BY rowid;
+    DROP TABLE old_tracking;
+    DROP INDEX IF EXISTS source_sample_source;
+    DROP INDEX IF EXISTS source_sample_at;
 ";
 
 /// Facts about the database itself, the schema version first.
@@ -114,10 +137,40 @@ pub(crate) const TABLES: &str = r"
         latest_measurement_error    REAL
     ) STRICT;
 
-    -- `tracking`, one row per clock update.
+    -- `tracking`, as chronyd last reported it: what the status strip
+    -- shows.  Replaced when anything changes.  `tracking` keeps the
+    -- history, which cannot say which report is chronyd's latest: its
+    -- reference time is 0 while unsynchronized, and goes back with a
+    -- backward step.
+    CREATE TABLE IF NOT EXISTS tracking_report (
+        id                   INTEGER PRIMARY KEY CHECK (id = 1),
+        at                   INTEGER NOT NULL,
+        -- As `tracking`'s.
+        reference_time       INTEGER NOT NULL,
+        reference_id         INTEGER NOT NULL,
+        reference_address    TEXT    NOT NULL,
+        stratum              INTEGER NOT NULL,
+        leap                 TEXT    NOT NULL,
+        current_correction   REAL    NOT NULL,
+        last_offset          REAL    NOT NULL,
+        rms_offset           REAL    NOT NULL,
+        frequency            REAL    NOT NULL,
+        residual_frequency   REAL    NOT NULL,
+        skew                 REAL    NOT NULL,
+        root_delay           REAL    NOT NULL,
+        root_dispersion      REAL    NOT NULL,
+        last_update_interval REAL    NOT NULL
+    ) STRICT;
+
+    -- `tracking`, one row per clock update: per change of its reference
+    -- time from the row before, so the second of two times
+    -- unsynchronized, both at reference time 0, is kept, and a restart's
+    -- first read of an update already recorded is not.
     CREATE TABLE IF NOT EXISTS tracking (
         at                   INTEGER NOT NULL,
-        reference_time       INTEGER NOT NULL UNIQUE,
+        -- 0 while chronyd is unsynchronized (`REF_GetReferenceParams`,
+        -- chrony 4.8 `reference.c:1216`).
+        reference_time       INTEGER NOT NULL,
         reference_id         INTEGER NOT NULL,
         reference_address    TEXT    NOT NULL,
         stratum              INTEGER NOT NULL,
@@ -134,6 +187,7 @@ pub(crate) const TABLES: &str = r"
         last_update_interval REAL    NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS tracking_at ON tracking(at);
+    CREATE INDEX IF NOT EXISTS tracking_reference_time ON tracking(reference_time);
 
     -- `sources`, one row per new sample from a source.
     CREATE TABLE IF NOT EXISTS source_sample (
@@ -151,8 +205,10 @@ pub(crate) const TABLES: &str = r"
         original_latest_measurement REAL    NOT NULL,
         latest_measurement_error    REAL    NOT NULL
     ) STRICT;
-    CREATE INDEX IF NOT EXISTS source_sample_source ON source_sample(source_id, at);
-    CREATE INDEX IF NOT EXISTS source_sample_at ON source_sample(at);
+    -- By `sample_time`, which the reader places them by, not `at`.
+    CREATE INDEX IF NOT EXISTS source_sample_source_time
+        ON source_sample(source_id, sample_time);
+    CREATE INDEX IF NOT EXISTS source_sample_time ON source_sample(sample_time);
 
     -- `sourcestats`, one row per change of chronyd's regression.
     CREATE TABLE IF NOT EXISTS source_stats (
@@ -224,6 +280,7 @@ pub(crate) const TABLES: &str = r"
         detail    TEXT
     ) STRICT;
     CREATE INDEX IF NOT EXISTS event_at ON event(at);
+    CREATE INDEX IF NOT EXISTS event_source ON event(source_id, at);
 
     -- chronyd's own log files, read alongside the control protocol: the
     -- full record of every sample (the protocol gives the last), the
@@ -320,6 +377,7 @@ pub(crate) const TABLES: &str = r"
     CREATE UNIQUE INDEX IF NOT EXISTS refclock_sample_line ON refclock_sample (at, reference,
         IFNULL(driver_polls, '-'), leap, IFNULL(pulse, '-'), IFNULL(raw_offset, '-'),
         cooked_offset, dispersion);
+    CREATE INDEX IF NOT EXISTS refclock_sample_reference ON refclock_sample(reference, at);
 
     -- tempcomp.log.
     CREATE TABLE IF NOT EXISTS tempcomp_sample (

@@ -194,7 +194,8 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
     };
     let tracking = tracking.map(|t| {
         json!({
-            "reference_time": seconds(t.reference_time),
+            // None while unsynchronized, which chronyd reports as 0.
+            "reference_time": (t.reference_time != 0).then(|| seconds(t.reference_time)),
             "reference_id": format!("{:08X}", t.reference_id),
             "reference_address": t.reference_address,
             "stratum": t.stratum,

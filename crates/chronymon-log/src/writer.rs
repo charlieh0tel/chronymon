@@ -18,6 +18,8 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension as _;
 use rusqlite::Transaction;
 use rusqlite::params;
+use rusqlite::params_from_iter;
+use rusqlite::types::Value;
 
 use crate::chrony_log::Line;
 use crate::error::Error;
@@ -27,6 +29,9 @@ use crate::schema::LOG_TABLES_ASIDE;
 use crate::schema::LOG_TABLES_BACK;
 use crate::schema::META;
 use crate::schema::TABLES;
+use crate::schema::TRACKING_ASIDE;
+use crate::schema::TRACKING_BACK;
+use crate::schema::TRACKING_REPORT;
 use crate::schema::VERSION;
 use crate::schema::WHOLE_LINES;
 use crate::text;
@@ -35,6 +40,37 @@ use crate::timestamp::to_stored;
 /// How long a statement waits for another writer -- an operator's
 /// `sqlite3`, say -- before failing.  WAL readers never block it.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `tracking`'s columns, as `tracking` and `tracking_report` both have
+/// them, in [`tracking_values`]' order.
+const TRACKING_COLUMNS: &str = "at, reference_time, reference_id, reference_address, stratum,
+    leap, current_correction, last_offset, rms_offset, frequency, residual_frequency, skew,
+    root_delay, root_dispersion, last_update_interval";
+
+/// The parameters `?1` to `?15` of [`TRACKING_COLUMNS`].
+const TRACKING_PARAMETERS: &str =
+    "?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15";
+
+/// A `tracking` report read at `at`, as [`TRACKING_COLUMNS`].
+fn tracking_values(at: Timestamp, t: &Tracking) -> Result<[Value; 15]> {
+    Ok([
+        Value::Integer(to_stored(at)?),
+        Value::Integer(to_stored(t.reference_time)?),
+        Value::Integer(i64::from(t.reference_id.0)),
+        Value::Text(address(t.address)),
+        Value::Integer(i64::from(t.stratum)),
+        Value::Text(text::leap(t.leap).to_owned()),
+        Value::Real(t.current_correction.get()),
+        Value::Real(t.last_offset.get()),
+        Value::Real(t.rms_offset.get()),
+        Value::Real(t.frequency.get()),
+        Value::Real(t.residual_frequency.get()),
+        Value::Real(t.skew.get()),
+        Value::Real(t.root_delay.get()),
+        Value::Real(t.root_dispersion.get()),
+        Value::Real(t.last_update_interval.get()),
+    ])
+}
 
 /// What the daemon last saw of chronyd, for the `status` row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,9 +178,17 @@ impl Log {
         if rekey {
             transaction.execute_batch(LOG_TABLES_ASIDE)?;
         }
+        // An older `tracking`, unique by reference time, likewise.
+        let rebuild = found.is_some_and(|found| found < TRACKING_REPORT);
+        if rebuild {
+            transaction.execute_batch(TRACKING_ASIDE)?;
+        }
         transaction.execute_batch(TABLES)?;
         if rekey {
             transaction.execute_batch(LOG_TABLES_BACK)?;
+        }
+        if rebuild {
+            transaction.execute_batch(TRACKING_BACK)?;
         }
         transaction.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
@@ -261,32 +305,28 @@ impl Batch<'_> {
         )?)
     }
 
-    /// A clock update.  A repeat of one already recorded, by reference
-    /// time, is ignored.
+    /// A clock update.  One of the same reference time as the last
+    /// recorded, a restart's first read of it, is ignored.
     pub fn tracking(&self, at: Timestamp, t: &Tracking) -> Result<()> {
         self.transaction.execute(
-            "INSERT INTO tracking (at, reference_time, reference_id, reference_address,
-                 stratum, leap, current_correction, last_offset, rms_offset, frequency,
-                 residual_frequency, skew, root_delay, root_dispersion, last_update_interval)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-             ON CONFLICT (reference_time) DO NOTHING",
-            params![
-                to_stored(at)?,
-                to_stored(t.reference_time)?,
-                t.reference_id.0,
-                address(t.address),
-                t.stratum,
-                text::leap(t.leap),
-                t.current_correction.get(),
-                t.last_offset.get(),
-                t.rms_offset.get(),
-                t.frequency.get(),
-                t.residual_frequency.get(),
-                t.skew.get(),
-                t.root_delay.get(),
-                t.root_dispersion.get(),
-                t.last_update_interval.get(),
-            ],
+            &format!(
+                "INSERT INTO tracking ({TRACKING_COLUMNS})
+                 SELECT {TRACKING_PARAMETERS}
+                 WHERE ?2 IS NOT (SELECT reference_time FROM tracking ORDER BY rowid DESC LIMIT 1)"
+            ),
+            params_from_iter(tracking_values(at, t)?),
+        )?;
+        Ok(())
+    }
+
+    /// What `tracking` now says, in place of what it said before.
+    pub fn tracking_report(&self, at: Timestamp, t: &Tracking) -> Result<()> {
+        self.transaction.execute(
+            &format!(
+                "INSERT OR REPLACE INTO tracking_report (id, {TRACKING_COLUMNS})
+                 VALUES (1, {TRACKING_PARAMETERS})"
+            ),
+            params_from_iter(tracking_values(at, t)?),
         )?;
         Ok(())
     }
@@ -590,7 +630,9 @@ impl Batch<'_> {
 
 #[cfg(test)]
 mod tests {
+    use chronymon::units::Ppm;
     use chronymon::units::Seconds;
+    use chronymon_control::report::Leap;
     use chronymon_control::report::SourceState;
 
     use super::*;
@@ -700,6 +742,127 @@ mod tests {
             )
             .expect("a report");
         assert_eq!((rows, sample_time, measurement), (1, None, None));
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// The names of the database's indexes, but SQLite's own.
+    fn indexes(log: &Log) -> Vec<String> {
+        let mut statement = log
+            .connection
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'index'
+                 AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .expect("a statement");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("indexes")
+            .collect::<rusqlite::Result<_>>()
+            .expect("indexes")
+    }
+
+    #[test]
+    fn rebuilds_schema_4s_tracking() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v4-tracking-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let created = indexes(&Log::open(&path).expect("created"));
+        {
+            let log = Log::open(&path).expect("reopened");
+            // Back to schema 4: `tracking` unique by reference time, no
+            // report, and its indexes.
+            log.connection
+                .execute_batch(
+                    "DROP TABLE tracking_report;
+                     DROP TABLE tracking;
+                     CREATE TABLE tracking (
+                         at                   INTEGER NOT NULL,
+                         reference_time       INTEGER NOT NULL UNIQUE,
+                         reference_id         INTEGER NOT NULL,
+                         reference_address    TEXT    NOT NULL,
+                         stratum              INTEGER NOT NULL,
+                         leap                 TEXT    NOT NULL,
+                         current_correction   REAL    NOT NULL,
+                         last_offset          REAL    NOT NULL,
+                         rms_offset           REAL    NOT NULL,
+                         frequency            REAL    NOT NULL,
+                         residual_frequency   REAL    NOT NULL,
+                         skew                 REAL    NOT NULL,
+                         root_delay           REAL    NOT NULL,
+                         root_dispersion      REAL    NOT NULL,
+                         last_update_interval REAL    NOT NULL
+                     ) STRICT;
+                     CREATE INDEX tracking_at ON tracking(at);
+                     DROP INDEX source_sample_source_time;
+                     DROP INDEX source_sample_time;
+                     DROP INDEX event_source;
+                     DROP INDEX refclock_sample_reference;
+                     CREATE INDEX source_sample_source ON source_sample(source_id, at);
+                     CREATE INDEX source_sample_at ON source_sample(at);
+                     INSERT INTO tracking VALUES
+                         (3, 30, 1, '192.0.2.1', 2, 'normal', 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                         (1, 10, 1, '192.0.2.1', 2, 'normal', 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                         (2, 0, 0, '', 0, 'unsynchronized', 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                     UPDATE meta SET value = '4' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let mut log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        assert_eq!(indexes(&log), created);
+        // Its rows, in the order written.
+        let ats: Vec<i64> = {
+            let mut statement = log
+                .connection
+                .prepare("SELECT at FROM tracking ORDER BY rowid")
+                .expect("a statement");
+            statement
+                .query_map([], |row| row.get(0))
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("rows")
+        };
+        assert_eq!(ats, [3, 1, 2]);
+        // Unsynchronized a second time, after a clock update, is kept.
+        let at = Timestamp::new(1_800_000_000, 0).expect("in range");
+        let tracking = Tracking {
+            reference_id: ReferenceId(1),
+            address: Address::Ip([192, 0, 2, 1].into()),
+            stratum: 2,
+            leap: Leap::Normal,
+            reference_time: at,
+            current_correction: Seconds::new(0.0),
+            last_offset: Seconds::new(0.0),
+            rms_offset: Seconds::new(0.0),
+            frequency: Ppm::new(0.0),
+            residual_frequency: Ppm::new(0.0),
+            skew: Ppm::new(0.0),
+            root_delay: Seconds::new(0.0),
+            root_dispersion: Seconds::new(0.0),
+            last_update_interval: Seconds::new(0.0),
+        };
+        let unsynchronized = Tracking {
+            reference_time: Timestamp::UNIX_EPOCH,
+            leap: Leap::Unsynchronized,
+            ..tracking
+        };
+        log.write(|batch| {
+            batch.tracking(at, &tracking)?;
+            batch.tracking(at, &unsynchronized)?;
+            batch.tracking(at, &unsynchronized)
+        })
+        .expect("written");
+        let zeros: i64 = log
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracking WHERE reference_time = 0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("a count");
+        assert_eq!(zeros, 2);
         let _ = std::fs::remove_dir_all(&directory);
     }
 
