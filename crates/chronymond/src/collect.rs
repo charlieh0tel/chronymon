@@ -22,8 +22,8 @@ use chronymon_log::writer::Batch;
 use chronymon_log::writer::ChronydState;
 use jiff::Timestamp;
 
+use crate::config::Config;
 use crate::config::DEFAULT_LARGE_OFFSET;
-use crate::config::MakeStep;
 use crate::host::Process;
 
 /// The reports a poll reads, so tests can stand in for chronyd.
@@ -163,7 +163,8 @@ struct Seen {
 /// changed.
 #[derive(Debug)]
 pub(crate) struct Collector {
-    make_step: Option<MakeStep>,
+    /// chronyd's configuration, as last read.
+    config: Config,
     /// chronyd's clock updates since it started, as far as seen; `None`
     /// when it was running before they could be counted.
     updates: Option<u32>,
@@ -182,9 +183,9 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
-    pub(crate) fn new(make_step: Option<MakeStep>) -> Self {
+    pub(crate) fn new(config: Config) -> Self {
         Self {
-            make_step,
+            config,
             updates: None,
             state: None,
             pid: None,
@@ -314,12 +315,14 @@ impl Collector {
         tracking: &Tracking,
     ) -> chronymon_log::error::Result<()> {
         let threshold = self
+            .config
             .make_step
             .map_or(DEFAULT_LARGE_OFFSET, |make_step| make_step.threshold);
         if tracking.last_offset.get().abs() <= threshold.get() {
             return Ok(());
         }
         let kind = if self
+            .config
             .make_step
             .is_some_and(|make_step| make_step.steps_on(self.updates))
         {
@@ -486,6 +489,8 @@ pub(crate) mod tests {
     use chronymon_log::writer::Log;
     use rusqlite::Connection;
 
+    use crate::config::MakeStep;
+
     use super::*;
 
     /// A database in a fresh temporary file, and a second connection to
@@ -555,6 +560,11 @@ pub(crate) mod tests {
         threshold: Seconds::new(1.0),
         limit: 3,
     });
+
+    /// A configuration of `make_step` alone.
+    fn with(make_step: Option<MakeStep>) -> Config {
+        Config { make_step }
+    }
 
     fn tracking(reference_second: i64, last_offset: f64) -> Tracking {
         Tracking {
@@ -679,7 +689,7 @@ pub(crate) mod tests {
     #[test]
     fn writes_only_what_changed() {
         let mut db = Database::new("changes");
-        let mut collector = Collector::new(MAKE_STEP);
+        let mut collector = Collector::new(with(MAKE_STEP));
         let running = Process::Running(100);
         for (second, read) in [
             (0, snapshot(tracking(0, 1e-6), vec![source(5, 10)])),
@@ -709,7 +719,7 @@ pub(crate) mod tests {
     #[test]
     fn derives_events() {
         let mut db = Database::new("events");
-        let mut collector = Collector::new(MAKE_STEP);
+        let mut collector = Collector::new(with(MAKE_STEP));
         let polls = [
             (snapshot(fresh(), vec![]), Process::Running(100)),
             // A source appears.
@@ -798,12 +808,12 @@ pub(crate) mod tests {
             (tracking(7, 3.0), 200),
         ];
         assert_eq!(
-            corrections("makestep", Collector::new(MAKE_STEP), polls),
+            corrections("makestep", Collector::new(with(MAKE_STEP)), polls),
             ["step", "large_offset", "chronyd_restart", "step"]
         );
         // No makestep: chronyd never steps.
         assert_eq!(
-            corrections("no-makestep", Collector::new(None), polls),
+            corrections("no-makestep", Collector::new(Config::default()), polls),
             [
                 "large_offset",
                 "large_offset",
@@ -813,7 +823,11 @@ pub(crate) mod tests {
         );
         // Running before the daemon: its updates were not counted.
         assert_eq!(
-            corrections("unknown", Collector::new(MAKE_STEP), polls[1..7].to_vec()),
+            corrections(
+                "unknown",
+                Collector::new(with(MAKE_STEP)),
+                polls[1..7].to_vec()
+            ),
             ["large_offset"]
         );
         let always = Some(MakeStep {
@@ -821,7 +835,7 @@ pub(crate) mod tests {
             limit: -1,
         });
         assert_eq!(
-            corrections("always", Collector::new(always), polls[1..7].to_vec()),
+            corrections("always", Collector::new(with(always)), polls[1..7].to_vec()),
             ["step"]
         );
     }
@@ -891,7 +905,7 @@ pub(crate) mod tests {
             sources: vec![placeholder, source(5, 10)],
             remove: None,
         };
-        let snapshot = Collector::new(MAKE_STEP)
+        let snapshot = Collector::new(with(MAKE_STEP))
             .read(&mut fake)
             .expect("a snapshot");
         let sources = snapshot.sources.expect("sources");
@@ -917,7 +931,7 @@ pub(crate) mod tests {
         let addresses: Vec<IpAddr> = (1..=3)
             .map(|host| IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, host)))
             .collect();
-        let collector = Collector::new(MAKE_STEP);
+        let collector = Collector::new(with(MAKE_STEP));
         // The source being read goes: the next one's reports take its
         // index.  Then one not yet read goes: the one after it is moved
         // past.
@@ -937,7 +951,7 @@ pub(crate) mod tests {
     #[test]
     fn reports_reach_lost_and_samples_gone() {
         let mut db = Database::new("report");
-        let mut collector = Collector::new(MAKE_STEP);
+        let mut collector = Collector::new(with(MAKE_STEP));
         let unreached = |age, reachability| {
             let mut s = source(age, 10);
             s.data.reachability = reachability;
@@ -991,7 +1005,7 @@ pub(crate) mod tests {
     #[test]
     fn a_report_waits_for_a_change() {
         let mut db = Database::new("report-age");
-        let mut collector = Collector::new(MAKE_STEP);
+        let mut collector = Collector::new(with(MAKE_STEP));
         for (second, age) in [(0, 5), (1, 6)] {
             db.log
                 .write(|batch| {
@@ -1014,7 +1028,7 @@ pub(crate) mod tests {
     #[test]
     fn extrapolation_is_not_a_new_regression() {
         let mut db = Database::new("extrapolated");
-        let mut collector = Collector::new(MAKE_STEP);
+        let mut collector = Collector::new(with(MAKE_STEP));
         for second in 0..4 {
             // One regression, its offset and error extrapolated a second
             // further each poll, as chronyd reports them; a new sample,
@@ -1044,7 +1058,7 @@ pub(crate) mod tests {
     #[test]
     fn tracking_is_reported_as_chronyd_last_said() {
         let mut db = Database::new("tracking-report");
-        let mut collector = Collector::new(MAKE_STEP);
+        let mut collector = Collector::new(with(MAKE_STEP));
         // chronyd's while unsynchronized (`REF_GetReferenceParams`,
         // chrony 4.8 `reference.c:1216`).
         let unsynchronized = Tracking {
