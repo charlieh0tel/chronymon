@@ -67,6 +67,9 @@ const stack = {
   sync: haveUplot ? uPlot.sync("chronymon") : null,
   charts: [],
   marks: [],
+  // NMEA's wander, milliseconds against the others' microseconds, sets
+  // every axis it is on: a source's name in a title hides it.
+  toggles: true,
 };
 
 // The polling interval, a power of two seconds, as chronyc shows it.

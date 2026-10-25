@@ -195,6 +195,13 @@ Journal, Distribution, Kiosk.
   spanning hours above its selection spanning minutes put one time at
   two places, and readings that stopped short of now hid that they had.
 
+- On Sources, a source's name in a chart's title is a button
+  (`aria-pressed`) that hides its line on every chart, dimmed and struck
+  through, and the y axes refit to what is left: NMEA's milliseconds of
+  wander otherwise flatten everything else.  Hidden by name, or address
+  for one without, in the address (`?hide=NMEA,...`).  Not on the
+  kiosk, which has nothing to click and leaves `noselect` sources out,
+  nor a source's own page, which has one source.
 - Sources chronyd has removed stay listed, last and dimmed, their
   history a link away.  Removed: missing from the daemon's latest read
   (`last_seen` older than the newest), or its last event its removal.
