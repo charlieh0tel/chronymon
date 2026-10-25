@@ -168,7 +168,7 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u));
 .dot.live { background: var(--ok); }
 .dot.stale { background: var(--warn); }
 .dot.down { background: var(--bad); }
-#kiosk-sync .mode { font: 700 calc(72 * var(--u))/1 system-ui, sans-serif; color: var(--ok);
+#kiosk-sync .mode { font: 700 calc(64 * var(--u))/1 system-ui, sans-serif; color: var(--ok);
                     text-transform: uppercase; white-space: nowrap; overflow: hidden; }
 #kiosk-sync .mode.warn { color: var(--warn); }
 #kiosk-sync .mode.bad { color: var(--bad); }
@@ -201,7 +201,7 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u));
    their last rows rather than scroll. */
 #kiosk-sources, #kiosk-events { min-height: 0; overflow: hidden; position: relative; }
 #kiosk-sources { flex: 1 1 0; }
-#kiosk-sources td { font-size: calc(20 * var(--u)); padding: calc(1 * var(--u)) calc(12 * var(--u)) calc(1 * var(--u)) 0;
+#kiosk-sources td { font-size: calc(18 * var(--u)); padding: calc(1 * var(--u)) calc(12 * var(--u)) calc(1 * var(--u)) 0;
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #kiosk-sources td:first-child { width: 1.5em; }
 #kiosk-sources td:nth-child(3) { width: 2.5em; }
