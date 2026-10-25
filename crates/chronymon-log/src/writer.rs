@@ -24,6 +24,9 @@ use rusqlite::types::Value;
 use crate::chrony_log::Line;
 use crate::error::Error;
 use crate::error::Result;
+use crate::schema::INODE_KEY;
+use crate::schema::LOG_FILE_ASIDE;
+use crate::schema::LOG_FILE_BACK;
 use crate::schema::LOG_TABLES;
 use crate::schema::LOG_TABLES_ASIDE;
 use crate::schema::LOG_TABLES_BACK;
@@ -96,12 +99,11 @@ impl ChronydState {
     }
 }
 
-/// A file as its file system knows it, the same across renames.
+/// A file as its file system knows it, the same across renames: its
+/// inode.  Not its device, whose number can change across boots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileId {
-    /// The device holding it.
-    pub device: u64,
-    /// Its inode there.
+    /// Its inode.
     pub inode: u64,
 }
 
@@ -185,7 +187,16 @@ impl Log {
         if rebuild {
             transaction.execute_batch(TRACKING_ASIDE)?;
         }
+        // Schema 4 and 5's `log_file`, by device and inode, likewise.
+        // Older ones' are dropped by `rekey`, or not there.
+        let inodes = found.is_some_and(|found| (WHOLE_LINES..INODE_KEY).contains(&found));
+        if inodes {
+            transaction.execute_batch(LOG_FILE_ASIDE)?;
+        }
         transaction.execute_batch(TABLES)?;
+        if inodes {
+            transaction.execute_batch(LOG_FILE_BACK)?;
+        }
         if rekey {
             transaction.execute_batch(LOG_TABLES_BACK)?;
         }
@@ -582,9 +593,8 @@ impl Batch<'_> {
         let found: Option<(i64, i64, Vec<u8>, bool)> = self
             .transaction
             .query_row(
-                "SELECT length, read, fingerprint, rejected FROM log_file
-                 WHERE device = ?1 AND inode = ?2",
-                params![stored_u64(id.device)?, stored_u64(id.inode)?],
+                "SELECT length, read, fingerprint, rejected FROM log_file WHERE inode = ?1",
+                params![stored_u64(id.inode)?],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
@@ -603,13 +613,12 @@ impl Batch<'_> {
     /// Record how far the log file `id`, now at `path`, was read.
     pub fn set_log_file(&self, id: FileId, path: &str, file: &LogFile) -> Result<()> {
         self.transaction.execute(
-            "INSERT INTO log_file (device, inode, path, length, read, fingerprint, rejected)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT (device, inode) DO UPDATE SET path = excluded.path,
+            "INSERT INTO log_file (inode, path, length, read, fingerprint, rejected)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (inode) DO UPDATE SET path = excluded.path,
                  length = excluded.length, read = excluded.read,
                  fingerprint = excluded.fingerprint, rejected = excluded.rejected",
             params![
-                stored_u64(id.device)?,
                 stored_u64(id.inode)?,
                 path,
                 stored_u64(file.length)?,
@@ -876,6 +885,74 @@ mod tests {
     }
 
     #[test]
+    fn keys_schema_5s_log_files_by_inode() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v5-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let created = indexes(&Log::open(&path).expect("created"));
+        {
+            let log = Log::open(&path).expect("reopened");
+            // Back to schema 5's `log_file`, by device and inode: inode 7
+            // under a device a boot numbered anew, and 9.
+            log.connection
+                .execute_batch(
+                    "DROP TABLE log_file;
+                     CREATE TABLE log_file (device INTEGER NOT NULL, inode INTEGER NOT NULL,
+                         path TEXT NOT NULL, length INTEGER NOT NULL, read INTEGER NOT NULL,
+                         fingerprint BLOB NOT NULL, rejected INTEGER NOT NULL,
+                         PRIMARY KEY (device, inode)) STRICT;
+                     INSERT INTO log_file VALUES
+                         (2049, 7, 'tracking.log.1', 100, 100, x'0a', 0),
+                         (2050, 7, 'tracking.log.1', 200, 180, x'0b', 0),
+                         (2050, 9, 'tracking.log', 50, 50, x'0c', 1);
+                     UPDATE meta SET value = '5' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let mut log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        assert_eq!(indexes(&log), created);
+        let found = log
+            .write(|batch| {
+                Ok([
+                    batch.log_file(FileId { inode: 7 })?,
+                    batch.log_file(FileId { inode: 9 })?,
+                ])
+            })
+            .expect("read");
+        // Of inode 7, the row written last.
+        assert_eq!(
+            found,
+            [
+                Some(LogFile {
+                    length: 200,
+                    read: 180,
+                    fingerprint: vec![0x0b],
+                    rejected: false,
+                }),
+                Some(LogFile {
+                    length: 50,
+                    read: 50,
+                    fingerprint: vec![0x0c],
+                    rejected: true,
+                }),
+            ]
+        );
+        let old: i64 = log
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'old_log_file'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("a count");
+        assert_eq!(old, 0);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
     fn rekeys_the_log_tables_of_schema_3() {
         let directory =
             std::env::temp_dir().join(format!("chronymon-log-v3-{}", std::process::id()));
@@ -1004,10 +1081,7 @@ mod tests {
     #[test]
     fn records_where_a_log_file_was_read() {
         let mut log = Log::in_memory().expect("a database");
-        let id = FileId {
-            device: 2049,
-            inode: 7,
-        };
+        let id = FileId { inode: 7 };
         let file = LogFile {
             length: 120,
             read: 100,
