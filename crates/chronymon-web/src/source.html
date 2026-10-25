@@ -1,0 +1,164 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chronymon: source</title>
+
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE"
+      crossorigin="anonymous">
+
+<link rel="stylesheet" href="/style.css">
+
+<div class="panel" id="status"><span class="muted">connecting...</span></div>
+
+<nav class="panel nav">
+  <a href="/">Live</a>
+  <a href="/sources" aria-current="page">Sources</a>
+  <a href="/journal">Journal</a>
+  <a href="/distribution">Distribution</a>
+</nav>
+
+<div class="panel">
+  <h2 id="heading">Source</h2>
+  <div id="state"><span class="muted">waiting...</span></div>
+</div>
+
+<div class="panel">
+  <div class="controls">
+    <span class="grow"></span>
+    <span id="ranges"></span>
+  </div>
+  <div id="charts" class="stack"></div>
+  <div id="readout"></div>
+  <div id="note-tip"></div>
+  <div id="note"></div>
+</div>
+
+<footer id="colophon"></footer>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c"
+        crossorigin="anonymous"></script>
+<script src="/common.js"></script>
+<script src="/charts.js"></script>
+<script>
+"use strict";
+
+readRange(3600);
+
+// Which source, from the address.  Kept there, so the page can be
+// bookmarked; the links between pages do not carry it.
+const sourceId = new URLSearchParams(location.search).get("source");
+
+// An NTP source's packets, charted from `ntpdata`; a refclock has none
+// and is charted from `sources` instead.  Then chronyd's regression,
+// and how selection scored it.
+const NTP = ["offset", "peer_delay", "peer_dispersion", "poll"];
+const SAMPLE = ["latest_measurement", "latest_measurement_error", "poll"];
+const STATS = ["estimated_offset", "standard_deviation", "residual_frequency", "skew"];
+const SELECTION = ["score"];
+
+const stack = {
+  container: "charts",
+  readout: "readout",
+  note: "note",
+  sync: haveUplot ? uPlot.sync("chronymon") : null,
+  charts: [],
+  marks: [],
+};
+
+// The offset with the half round trip either side, as one chart: the
+// true offset lies within the round trip, so a delay that grows on one
+// side is seen against the offset it bounds.
+function offsetBounds(got) {
+  const offset = got.plots.find((p) => p.column === "offset");
+  const delay = got.plots.find((p) => p.column === "peer_delay");
+  const k = key("ntp_sample", "offset");
+  const half = (sign) => offset.mean.map((v, i) =>
+    v == null || delay.mean[i] == null ? null : v + (sign * delay.mean[i]) / 2);
+  return {
+    column: k,
+    envelope: null,
+    x: got.at,
+    title: "Offset and round trip, µs",
+    lines: [
+      { column: k, name: "offset", values: scaled(offset.mean, k), color: TRACE },
+      { column: k, name: "+ delay / 2", values: scaled(half(1), k), color: ENVELOPE },
+      { column: k, name: "− delay / 2", values: scaled(half(-1), k), color: ENVELOPE },
+    ],
+  };
+}
+
+// The drawings of `got`, from `table`, each against its own times: the
+// tables are sampled at different moments, so they cannot share one
+// grid, but the cursor follows the time across them.
+const own = (table, got, skip = []) =>
+  chartsOf(table, got.plots.filter((p) => !skip.includes(p.column))).map((d) => ({ ...d, x: got.at }));
+
+function describe(s, now) {
+  const sample = s.sample ?? {};
+  const name = s.name && s.name !== s.address ? `${s.name} (${s.address})` : s.address;
+  update($("heading"), "textContent", `${s.mode} ${name}`);
+  const tiles = [
+    { k: "state", v: s.state ?? "--" },
+    { k: "selection", v: `${s.selection_state ?? "--"} ${s.selection ? fmt(s.selection.score, 2) : ""}` },
+    { k: "stratum", v: String(sample.stratum ?? "--") },
+    { k: "poll", v: sample.poll == null ? "--" : `${age(2 ** sample.poll)}` },
+    { k: "reach", v: sample.reachability == null ? "--" : sample.reachability.toString(8) },
+    { k: "last offset", v: seconds(sample.latest_measurement, true) },
+    { k: "error bound", v: seconds(sample.latest_measurement_error) },
+    { k: "frequency", v: ppm(s.stats?.residual_frequency, true) },
+    { k: "skew", v: ppm(s.stats?.skew) },
+    { k: "first seen", v: new Date(s.first_seen * 1000).toLocaleString() },
+    { k: "last seen", v: `${age(now - s.last_seen)} ago` },
+  ];
+  showHtml($("state"), tiles.map(statTile).join(""));
+}
+
+async function load(signal) {
+  if (sourceId === null) {
+    clearStack(stack, "which source? Choose one on the Sources page.");
+    showHtml($("state"), "");
+    return;
+  }
+  const [sources, status] = await Promise.all([
+    ask("/api/sources", signal),
+    ask("/api/status", signal),
+  ]);
+  const s = sources.find((x) => String(x.id) === sourceId);
+  if (!s) throw new Error(`no source ${sourceId} is recorded`);
+  describe(s, status.now);
+  if (!haveUplot) {
+    clearStack(stack, NO_UPLOT);
+    return;
+  }
+  const { from, to } = rangeBounds();
+  const events = await eventsFor(signal, from, to);
+  stack.marks = events.marks.filter((m, n) =>
+    events.events[n].source_id == null || String(events.events[n].source_id) === sourceId);
+  const ntp = s.mode !== "refclock";
+  const [measured, stats, selection] = await Promise.all([
+    readHistory(signal, ntp ? "ntp_sample" : "source_sample", ntp ? NTP : SAMPLE, sourceId),
+    readHistory(signal, "source_stats", STATS, sourceId),
+    readHistory(signal, "selection", SELECTION, sourceId),
+  ]);
+  const drawn = [
+    ...(ntp && measured.at.length ? [offsetBounds(measured)] : []),
+    ...own(ntp ? "ntp_sample" : "source_sample", measured, ntp ? ["offset"] : []),
+    ...own("source_stats", stats),
+    ...own("selection", selection),
+  ];
+  drawStack(stack, { x: [], drawn }, "no samples from this source in this range");
+}
+
+rangeControl($("ranges"), soon);
+addEventListener("resize", soon);
+content({
+  floor: 5,
+  clear(why) {
+    clearStack(stack, why);
+  },
+  load,
+});
+</script>

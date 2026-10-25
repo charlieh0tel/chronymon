@@ -1,0 +1,145 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chronymon</title>
+
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE"
+      crossorigin="anonymous">
+
+<link rel="stylesheet" href="/style.css">
+
+<div class="panel" id="status"><span class="muted">connecting...</span></div>
+
+<nav class="panel nav">
+  <a href="/" aria-current="page">Live</a>
+  <a href="/sources">Sources</a>
+  <a href="/journal">Journal</a>
+  <a href="/distribution">Distribution</a>
+</nav>
+
+<div class="panel">
+  <div class="controls">
+    <span id="columns"></span>
+    <span class="grow"></span>
+    <span id="ranges"></span>
+  </div>
+  <div id="charts"></div>
+  <div id="readout"></div>
+  <div id="note-tip"></div>
+  <div id="note"></div>
+</div>
+
+<div class="panel">
+  <div class="controls">
+    <h2>What happened</h2>
+  </div>
+  <div id="journal"><span class="muted">waiting...</span></div>
+</div>
+
+<footer id="colophon"></footer>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c"
+        crossorigin="anonymous"></script>
+<script src="/common.js"></script>
+<script src="/charts.js"></script>
+<script>
+"use strict";
+
+// The view is taken from the address so a particular one can be kept.
+const view = new URLSearchParams(location.search);
+
+readRange(3600);
+
+const TABLE = "tracking";
+// What is shown unless the address says otherwise, in the order it is
+// stacked; the menu offers the rest of the table's columns after these.
+const DEFAULT_COLUMNS = [
+  "last_offset", "frequency", "skew", "rms_offset", "root_delay", "root_dispersion",
+];
+const OFFERED = [
+  ...DEFAULT_COLUMNS,
+  "residual_frequency", "current_correction", "last_update_interval", "stratum",
+];
+
+let columns = (view.get("columns") ?? DEFAULT_COLUMNS.join(","))
+  .split(",")
+  .filter((c) => OFFERED.includes(c));
+
+// uPlot ties charts together by a shared key: hovering one moves the
+// cursor on all of them, which is most of what makes a stack readable.
+const stack = {
+  container: "charts",
+  readout: "readout",
+  note: "note",
+  sync: haveUplot ? uPlot.sync("chronymon") : null,
+  charts: [],
+  marks: [],
+};
+
+// How far either side of an event the charts show when it is clicked
+// in the journal, in seconds.
+const EVENT_SPAN = 1800;
+
+// Center the charts on an event's time, and bring them into view.
+function showEvent(at) {
+  fixRange(at - EVENT_SPAN, at + EVENT_SPAN);
+  $("charts").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function pickers() {
+  $("columns").innerHTML = OFFERED.map((c) => {
+    const k = key(TABLE, c);
+    const tip = hintText(k);
+    return `<label${tip ? ` title="${esc(tip)}"` : ""}>` +
+      `<input type="checkbox" data-col="${c}"${columns.includes(c) ? " checked" : ""}> ` +
+      `<span${tip ? ' class="hinted"' : ""}>${esc(columnName(k).split(",")[0])}</span></label>`;
+  }).join(" ");
+  for (const box of $("columns").querySelectorAll("input[data-col]")) {
+    box.onchange = () => {
+      const wanted = new Set(columns);
+      if (box.checked) wanted.add(box.dataset.col);
+      else wanted.delete(box.dataset.col);
+      // Kept in the menu's order rather than the order they were
+      // ticked, so the stack does not reshuffle as it is built.
+      columns = OFFERED.filter((c) => wanted.has(c));
+      remember({ columns: columns.join(",") });
+      soon();
+    };
+  }
+}
+
+async function load(signal) {
+  const { from, to } = rangeBounds();
+  const events = await eventsFor(signal, from, to);
+  stack.marks = events.marks;
+  showHtml($("journal"), eventsTable(events.events));
+  for (const link of $("journal").querySelectorAll(".note-link")) {
+    link.onclick = () => showEvent(Number(link.dataset.at));
+  }
+  if (!haveUplot) {
+    clearStack(stack, NO_UPLOT);
+    return;
+  }
+  if (!columns.length) {
+    clearStack(stack, "nothing selected");
+    return;
+  }
+  const got = await readHistory(signal, TABLE, columns);
+  drawStack(stack, { x: got.at, drawn: chartsOf(TABLE, got.plots) }, "no clock updates in this range");
+}
+
+pickers();
+rangeControl($("ranges"), soon);
+addEventListener("resize", soon);
+content({
+  floor: 5,
+  clear(why) {
+    clearStack(stack, why);
+    showHtml($("journal"), `<span class="muted">${esc(why)}</span>`);
+  },
+  load,
+});
+</script>

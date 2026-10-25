@@ -1,0 +1,801 @@
+// Chart helpers shared by the pages that draw time series: what each
+// column is called and in what units, and how a y axis is fitted to
+// it.  Loaded after common.js.
+"use strict";
+
+// By `table.column`: the name, the factor that puts the column in units
+// worth reading, and an optional qualifier said beside the name in the
+// chart's title only: the menu and the cursor readout use the bare
+// name.  Offsets are stored in seconds and are microseconds: plotted as
+// seconds, every axis tick rounds to 0.
+const LABELS = {
+  "tracking.last_offset": ["Last offset, µs", 1e6],
+  "tracking.current_correction": ["Current correction, µs", 1e6],
+  "tracking.rms_offset": ["RMS offset, µs", 1e6],
+  "tracking.frequency": ["Frequency, ppm", 1, "positive is fast"],
+  "tracking.residual_frequency": ["Residual frequency, ppm", 1],
+  "tracking.skew": ["Skew, ppm", 1],
+  "tracking.root_delay": ["Root delay, ms", 1e3],
+  "tracking.root_dispersion": ["Root dispersion, ms", 1e3],
+  "tracking.last_update_interval": ["Update interval, s", 1],
+  "tracking.stratum": ["Stratum", 1],
+  "source_sample.latest_measurement": ["Offset, µs", 1e6],
+  "source_sample.original_latest_measurement": ["Offset as measured, µs", 1e6],
+  "source_sample.latest_measurement_error": ["Offset error bound, µs", 1e6],
+  "source_sample.poll": ["Poll, log₂ s", 1],
+  "source_sample.stratum": ["Stratum", 1],
+  "source_sample.reachability": ["Reachability register", 1],
+  "source_stats.estimated_offset": ["Estimated offset, µs", 1e6],
+  "source_stats.estimated_offset_error": ["Estimated offset error, µs", 1e6],
+  "source_stats.standard_deviation": ["Standard deviation, µs", 1e6],
+  "source_stats.residual_frequency": ["Frequency difference, ppm", 1],
+  "source_stats.skew": ["Skew, ppm", 1],
+  "source_stats.samples": ["Samples", 1],
+  "source_stats.runs": ["Runs", 1],
+  "source_stats.span": ["Span, s", 1],
+  "ntp_sample.offset": ["Offset, µs", 1e6],
+  "ntp_sample.peer_delay": ["Delay, ms", 1e3],
+  "ntp_sample.peer_dispersion": ["Dispersion, µs", 1e6],
+  "ntp_sample.response_time": ["Response time, µs", 1e6],
+  "ntp_sample.root_delay": ["Root delay, ms", 1e3],
+  "ntp_sample.root_dispersion": ["Root dispersion, ms", 1e3],
+  "ntp_sample.poll": ["Poll, log₂ s", 1],
+  "ntp_sample.stratum": ["Stratum", 1],
+  "selection.score": ["Selection score", 1, "the selected source's is 1"],
+  "selection.low_limit": ["Offset interval low, µs", 1e6],
+  "selection.high_limit": ["Offset interval high, µs", 1e6],
+};
+
+// Hover text by `table.column`: what each is, from chronyc's
+// documentation (chronyc.adoc), which a name and a unit cannot carry.
+const HINTS = {
+  "tracking.last_offset": "The offset measured on the last clock update (chronyc tracking, Last offset).",
+  "tracking.rms_offset": "A long-term average of the offset (chronyc tracking, RMS offset).",
+  "tracking.frequency":
+    "The rate at which the system clock would be wrong without chronyd's correction (chronyc tracking).",
+  "tracking.residual_frequency":
+    "The selected source's frequency less the current one; nonzero while chronyd is still converging.",
+  "tracking.skew": "The estimated error bound on the frequency.",
+  "tracking.root_delay": "Total network path delay to the stratum-1 at the root.",
+  "tracking.root_dispersion": "Total dispersion accumulated to the stratum-1 at the root.",
+  "source_stats.residual_frequency":
+    "The source's frequency relative to the local clock, from chronyd's regression (chronyc sourcestats, Freq).",
+  "source_stats.skew": "The error bound on that frequency (chronyc sourcestats, Freq Skew).",
+  "source_stats.estimated_offset": "The source's offset as the regression estimates it (chronyc sourcestats).",
+  "ntp_sample.offset": "The offset of the source's last valid packet (chronyc ntpdata).",
+  "ntp_sample.peer_delay": "The round-trip delay of the source's last valid packet.",
+  "ntp_sample.peer_dispersion": "The dispersion of the source's last valid packet.",
+};
+
+// Columns whose axis is linear near zero and logarithmic beyond: an
+// offset of a microsecond and a spike of a millisecond are both read on
+// one chart.  uPlot's `asinh` scale (distr 4) does it.
+const ASINH_COLUMNS = new Set([
+  "tracking.last_offset",
+  "tracking.current_correction",
+  "source_sample.latest_measurement",
+  "source_sample.original_latest_measurement",
+  "source_stats.estimated_offset",
+  "ntp_sample.offset",
+]);
+
+const key = (table, column) => `${table}.${column}`;
+const columnName = (k) => (LABELS[k] ?? [k.split(".").at(-1), 1])[0];
+const label = (k) => {
+  const qualifier = LABELS[k]?.[2];
+  return qualifier ? `${columnName(k)} (${qualifier})` : columnName(k);
+};
+const factor = (k) => (LABELS[k] ?? [k, 1])[1];
+const scaled = (values, k) =>
+  factor(k) === 1 ? values : values.map((v) => (v === null || v === undefined ? v : v * factor(k)));
+
+// The hover text for the columns a chart draws, each once.
+const hintText = (...keys) => [...new Set(keys)].map((k) => HINTS[k]).filter(Boolean).join(" ");
+
+// Give a chart's title the hover text for its columns, underlined so it
+// is found.
+const hint = (chart, ...keys) => hintAs(chart, hintText(...keys));
+
+function hintAs(chart, text) {
+  const heading = chart.root.querySelector(".u-title");
+  if (!text || !heading) return;
+  heading.title = text;
+  heading.classList.add("hinted");
+}
+
+// Points to ask for: enough that a long window is not thinned to
+// half-hour bins, bounded by what the server will give.
+function pointsFor(seconds) {
+  if (!seconds) return 5000;
+  return Math.min(5000, Math.max(1500, Math.round(seconds / 30)));
+}
+
+// A y scale that begins and ends on a labeled gridline.
+//
+// uPlot scales to the data and then places round ticks inside it, so
+// the top and bottom lines fall short by whatever the data happens to
+// need -- by a different amount on every plot, which across a stack
+// reads as ragged.  Snapping the scale itself to the tick step fixes
+// it, at the cost of some empty space above and below the trace.
+//
+// Steps are 1, 2, 5 or 10 times a power of ten, so the labels are
+// numbers a person would choose.
+const TICK_COUNT_WEIGHT = 0.3;
+
+// `room`, as `mostTicks` gives it, caps the gaps between labels, unless
+// no round step fits under it.
+function niceScale(min, max, target, room) {
+  if (!isFinite(min) || !isFinite(max)) return null;
+  // A series that never moved still needs an axis with room around it.
+  // "Never moved" cannot be exact equality: averaging the same number
+  // in floating point does not give it back exactly.
+  const noise = Math.max(Math.abs(min), Math.abs(max)) * 1e-9;
+  if (max - min <= noise) {
+    const pad = Math.max(Math.abs(min) * 0.05, 1);
+    min -= pad;
+    max += pad;
+  }
+  const span = max - min;
+  const aim = Math.min(target, room);
+  const mag = Math.pow(10, Math.floor(Math.log10(span / aim)));
+  // Under a cap, a step a decade up as well: a span just under a power
+  // of ten otherwise has no round step that few ticks cover.
+  return roundScale(min, max, span, mag, aim, Math.min(room, MOST_TICKS), [1, 2, 5, 10, 20, 50]) ??
+    roundScale(min, max, span, mag, aim, MOST_TICKS, [1, 2, 5, 10]);
+}
+
+// Two lines is not an axis; nine is a grid.
+const MOST_TICKS = 8;
+
+// The best step of `multiples` of `mag` over `min` to `max`, with at
+// most `most` gaps, as `niceScale` scores them; null for none.
+function roundScale(min, max, span, mag, target, most, multiples) {
+  let best = null;
+  for (const m of multiples) {
+    const step = m * mag;
+    const lo = Math.floor(min / step) * step;
+    const hi = Math.ceil(max / step) * step;
+    const n = Math.round((hi - lo) / step);
+    if (n < 2 || n > most) continue;
+    // Both matter and the balance is empirical: weighting the tick
+    // count heavily gives round axes that use less than half the plot.
+    const score = Math.abs(n - target) * TICK_COUNT_WEIGHT + (hi - lo - span) / span;
+    if (!best || score < best.score) best = { lo, hi, step, n, score };
+  }
+  return best;
+}
+
+// How many gaps between labels suit a plot of this height.  About
+// forty pixels each: closer and the labels crowd, further and a short
+// plot ends up with two.
+function tickTarget(height) {
+  return Math.min(6, Math.max(3, Math.round(height / 40)));
+}
+
+// The least room a y label needs, in CSS pixels, with the gap to the
+// next: closer and they overprint.
+const LABEL_ROOM = 24;
+
+// The most gaps between labels a stack chart of this height has room
+// for, on the plot inside its ends.
+const mostTicks = (height) => Math.max(2, Math.floor((height - 2 * STACK_END) / LABEL_ROOM));
+
+// How tall each chart of a stack is, given how many there are, less
+// the time axis under the bottom one.  One gets the room it always had;
+// a stack divides a similar budget, with a floor below which a plot
+// stops being readable.
+function plotHeight(count) {
+  return count === 1 ? 420 : Math.max(150, Math.round(720 / count));
+}
+
+// One tick label, at the precision its step implies.  Fixed places
+// rather than toLocaleString's default, or a step of 0.05 renders as
+// 35.9 and 36 and the axis looks unevenly spaced when it is not.
+function tickLabel(v, places) {
+  return v.toLocaleString(undefined, {
+    minimumFractionDigits: places,
+    maximumFractionDigits: places,
+  });
+}
+
+// A y axis for `values` of column `k` on a plot `height` pixels tall:
+// the range its scale is snapped to, and the axis's ticks, labels and
+// width to match, so the lines and the range cannot disagree.  Both
+// empty when there is nothing to fit.
+function yAxis(k, values, height) {
+  if (ASINH_COLUMNS.has(k)) {
+    const asinh = asinhAxis(values);
+    if (asinh) return asinh;
+  }
+  return linearAxis(values, height);
+}
+
+// A linear y axis, in the shape `yAxis` returns.
+function linearAxis(values, height) {
+  const nice = !values.length
+    ? null
+    : niceScale(Math.min(...values), Math.max(...values), tickTarget(height), mostTicks(height));
+  const places = nice ? Math.max(0, -Math.floor(Math.log10(nice.step))) : 0;
+  const ticks = [];
+  if (nice) {
+    for (let i = 0; i <= nice.n; i++) ticks.push(nice.lo + i * nice.step);
+  }
+  // Wide enough for the longest label this axis will actually draw.
+  // Measured from the ticks rather than from the data, since a tick
+  // can be wider than every value under it, and the default gutter
+  // silently clips instead of overflowing.
+  const widest = Math.max(
+    ...(ticks.length ? ticks : [0]).map((v) => tickLabel(v, places).length),
+    4,
+  );
+  return {
+    axis: {
+      size: 30 + widest * 8,
+      ...(nice
+        ? {
+            splits: () => ticks,
+            values: (u, vals) => vals.map((v) => tickLabel(v, places)),
+          }
+        : {}),
+    },
+    range: nice ? [nice.lo, nice.hi] : null,
+  };
+}
+
+// The linear part of an asinh axis spans a 1, 2 or 5 times a power of
+// ten at or above the median magnitude: the usual wander is read on a
+// linear scale and only the excursions are compressed.
+function linearThreshold(values) {
+  const magnitudes = values.map(Math.abs).filter((v) => v > 0).sort((a, b) => a - b);
+  if (!magnitudes.length) return 1;
+  const median = magnitudes[Math.floor(magnitudes.length / 2)];
+  const e = Math.floor(Math.log10(median));
+  const m = median / 10 ** e;
+  return [1, 2, 5, 10].find((s) => s >= m) * 10 ** e;
+}
+
+// How far past its linear threshold the data must reach for an asinh
+// axis to be worth it: within ten times it, a linear axis reads better.
+const ASINH_REACH = 10;
+
+// An axis for `values` on uPlot's asinh scale, in the shape `yAxis`
+// returns, or null when the data stays near its threshold.  Its ticks
+// are zero, the threshold, and decades of it beyond, on each side the
+// data reaches: uPlot's own asinh splits crowd the linear part with
+// grid lines.
+function asinhAxis(values) {
+  if (!values.length) return null;
+  const threshold = linearThreshold(values);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  if (Math.max(Math.abs(lo), Math.abs(hi)) <= ASINH_REACH * threshold) return null;
+  // The ticks out to the first at or beyond `reach`.
+  const out = (reach) => {
+    const ticks = [];
+    for (let t = threshold; ; t *= 10) {
+      ticks.push(t);
+      if (t >= reach) break;
+    }
+    return ticks;
+  };
+  const ticks = [
+    ...(lo < 0 ? out(-lo).map((t) => -t).reverse() : []),
+    0,
+    ...(hi > 0 ? out(hi) : []),
+  ];
+  const format = (v) => (v == null ? null : v.toLocaleString(undefined, { maximumSignificantDigits: 3 }));
+  const widest = Math.max(4, ...ticks.map((v) => format(v).length));
+  return {
+    axis: {
+      size: 30 + widest * 8,
+      splits: () => ticks,
+      // uPlot keeps only powers of ten on a log or asinh axis; these
+      // ticks are decades of the threshold, which need not be one.
+      filter: (u, splits) => splits,
+      values: (u, splits) => splits.map(format),
+    },
+    range: [ticks[0], ticks.at(-1)],
+    scale: { distr: 4, asinh: threshold },
+  };
+}
+
+// Charts in a stack share a time axis only if their plotting areas line
+// up: each gets the widest y axis of the stack, and the same right
+// padding, wide enough for the bottom chart's last time label, which
+// uPlot would otherwise make room for on that chart alone.
+const STACK_RIGHT = 32;
+
+// The colors every chart's axes are drawn in: the labels, then the grid
+// and ticks, recessive so the readings are seen first.
+const AXIS_INK = "#8b929c";
+const AXIS_RULE = "#2b3038";
+// An axis as every chart draws one.
+const AXIS = { stroke: AXIS_INK, grid: { stroke: AXIS_RULE }, ticks: { stroke: AXIS_RULE } };
+// uPlot's own time axis height, for its own font.
+const TIME_SIZE = 50;
+
+// The room above and below a stack chart's plot, for half its top and
+// bottom y labels: uPlot's own default, a third of its time axis.
+// Under the bottom chart the time axis takes its place.
+const STACK_END = Math.round(TIME_SIZE / 3);
+
+// The height of chart `n` of a stack of `count`, each given `height`.
+// The bottom chart's time axis is drawn inside its height, so it is
+// given the axis's room on top: otherwise its plot is that much shorter
+// than the others'.
+const stackChartHeight = (height, n, count) => height + (n === count - 1 ? TIME_SIZE - STACK_END : 0);
+
+// The options every chart in a stack of time charts shares:
+//   width, height  its size, as `stackChartHeight` gives the height
+//   title          its title
+//   series         its series after the time
+//   fitted, ySize  its y axis as `yAxis` fitted it, and the stack's
+//                  shared y axis width
+//   last           whether it is the bottom chart, the one that
+//                  carries the time labels
+//   yStroke        the y axis labels' color
+//   legend, hooks  uPlot's, the hooks added to the drag that sets
+//                  the range
+function stackOptions(stack) {
+  return {
+    width: stack.width,
+    height: stack.height,
+    padding: [STACK_END, STACK_RIGHT, stack.last ? 0 : STACK_END, null],
+    title: stack.title,
+    series: [{}, ...stack.series],
+    axes: [
+      { ...AXIS, size: TIME_SIZE, show: stack.last },
+      { ...AXIS, ...(stack.yStroke ? { stroke: stack.yStroke } : {}), ...stack.fitted.axis, size: stack.ySize },
+    ],
+    scales: {
+      x: { time: true },
+      ...(stack.fitted.range || stack.fitted.scale
+        ? { y: { ...stack.fitted.scale, ...(stack.fitted.range ? { range: stack.fitted.range } : {}) } }
+        : {}),
+    },
+    legend: stack.legend ?? { show: true, live: true },
+    cursor: { drag: { x: true, y: false }, sync: { key: stack.sync, setSeries: false } },
+    hooks: { ...stack.hooks, ...TIME_HOOKS },
+  };
+}
+
+// Give every chart in a stack the width its container has settled at.
+// Each was made at the width the container had then, and adding charts
+// can bring on a scrollbar that narrows it partway down the stack.
+function settleWidths(charts, container) {
+  const width = container.clientWidth;
+  for (const c of charts) {
+    if (width && c.width !== width) c.setSize({ width, height: c.height });
+  }
+}
+
+// Hold a chart container at the height it has now, while its charts are
+// drawn again, until `release`.  Called before they are taken down:
+// emptied, the page would be too short for the place it was scrolled
+// to, and the browser would put it back at the top.
+function hold(container) {
+  container.style.minHeight = `${container.offsetHeight}px`;
+}
+
+// Let a container held by `hold` take its own height again.
+function release(container) {
+  container.style.minHeight = "";
+}
+
+// The y axis width a stack of fitted axes shares.
+const stackWidth = (fits) => Math.max(...fits.map((f) => f.axis.size ?? 50));
+
+// Tie a time chart to the range: a drag fixes the range to the stretch
+// it covered, a double click zooms out, as in Grafana.  The drag is
+// read from setSelect, not setScale: setScale also fires when uPlot
+// fits the scale to new data, on every draw.
+const TIME_HOOKS = {
+  setSelect: [
+    (u) => {
+      if (u.select.width <= 0) return;
+      fixRange(u.posToVal(u.select.left, "x"), u.posToVal(u.select.left + u.select.width, "x"));
+    },
+  ],
+};
+function ranged(chart) {
+  chart.over.addEventListener("dblclick", () => zoomOut());
+  return chart;
+}
+
+// ---------------------------------------------------------------- stack
+//
+// A stack of time charts, a chart per column sharing one time axis.
+
+// The trace colors, named once.  Both the plot and the things that say
+// which line is which read them from here, because a key that disagrees
+// with the lines is worse than no key.
+const TRACE = "#38bdf8";
+const MATE = "#fbbf24";
+// One color per source on the overlay charts, none of them an event's.
+const SOURCE_COLORS = ["#38bdf8", "#fbbf24", "#a78bfa", "#2dd4bf", "#fb923c", "#e2e8f0", "#84cc16", "#f472b6"];
+// The envelope behind a line: each bucket's lowest and highest.
+const ENVELOPE = "#0e7490";
+
+// `/api/history` for `columns` of `table` over the range, for `source`
+// when given.
+function historyQuery(table, columns, bounds, source) {
+  const q = new URLSearchParams({ table, columns: columns.join(","), points: pointsFor(bounds.seconds) });
+  if (bounds.from) q.set("from", Math.round(bounds.from));
+  if (bounds.to) q.set("to", Math.round(bounds.to));
+  if (source != null) q.set("source", source);
+  return "/api/history?" + q;
+}
+
+// The range's bounds, and for `all` the extent `first` gave: how far
+// back the database goes is only knowable once it has been asked, so
+// `all` costs a second request.
+async function readHistory(signal, table, columns, source) {
+  const bounds = rangeBounds();
+  let got = await ask(historyQuery(table, columns, bounds, source), signal, HISTORY_TIMEOUT);
+  if (range.last === "all" && got.first != null && got.last > got.first) {
+    const all = { from: got.first, to: got.last, seconds: got.last - got.first };
+    got = await ask(historyQuery(table, columns, all, source), signal, HISTORY_TIMEOUT);
+  }
+  return got;
+}
+
+// The drawings of a stack from the server's plots of `table`: a chart
+// per column, each
+//   column    its key, which its y axis is fitted to and its hover
+//             text is for
+//   envelope  { min, max }, drawn behind the line, or null
+//   lines     [{ column, values, color, name }] on one y axis
+function chartsOf(table, plots) {
+  return plots.map((plot) => {
+    const k = key(table, plot.column);
+    return {
+      column: k,
+      envelope: { min: scaled(plot.min, k), max: scaled(plot.max, k) },
+      lines: [{ column: k, values: scaled(plot.mean, k), color: TRACE }],
+    };
+  });
+}
+
+// A line's values on an overlay's grid: a bucket it has no sample in
+// is `undefined`, which uPlot draws across, and only its gaps `null`,
+// which uPlot breaks at.  A source polled every 64 s beside a refclock
+// polled every 16 s has nothing in most of the grid's buckets.
+function overlayValues(line) {
+  const values = line.mean.map((v) => (v === null ? undefined : v));
+  for (const gap of line.gaps) values[gap] = null;
+  return values;
+}
+
+// A drawing of `overlay`, one column of every source, a line each in
+// the source's color.  `names` maps a source ID to its name.
+function overlayChart(table, column, overlay, names) {
+  const k = key(table, column);
+  return {
+    column: k,
+    envelope: null,
+    x: overlay.at,
+    title: label(k),
+    lines: overlay.lines.map((line) => ({
+      column: k,
+      name: names(line.source_id),
+      values: scaled(overlayValues(line), k),
+      color: sourceColor(line.source_id),
+    })),
+  };
+}
+
+// A source's color, the same on every chart and page.
+const sourceColor = (id) => SOURCE_COLORS[(Number(id) - 1) % SOURCE_COLORS.length];
+
+// A multi-line chart's title, each line's own words in its color, so
+// the title says which line is which with the legend off.
+function groupTitle(drawing) {
+  const lines = drawing.lines;
+  return (
+    esc(drawing.title ?? label(lines[0].column)) +
+    '<span class="muted">: </span>' +
+    lines
+      .map((l) => `<span style="color:${l.color}">${esc(l.name ?? columnName(l.column))}</span>`)
+      .join('<span class="muted">, </span>')
+  );
+}
+
+// Every value a drawing plots, its envelope's as well as its lines'.
+const drawingArrays = (d) => [
+  ...(d.envelope ? [d.envelope.min, d.envelope.max] : []),
+  ...d.lines.map((l) => l.values),
+];
+
+// Whether a drawing has anything to plot.  One with no data has no y
+// axis, which would shift its plot out of line with the rest of a stack.
+const drawsAnything = (d) => drawingArrays(d).flat().some((v) => v != null && isFinite(v));
+
+// Each chart's y axis, fitted to what it draws.  The scale has to cover
+// the envelope, not just the lines: the min and max are drawn, and an
+// axis that ends below them would clip the very excursions they exist
+// to show.
+const stackFits = (read, height) =>
+  read.drawn.map((chart) =>
+    yAxis(chart.column, drawingArrays(chart).flat().filter((v) => v != null && isFinite(v)), height));
+
+// What a chart of the stack is drawn as, less its data and its y axis's
+// range, ticks and width: its lines, and the kind of y axis.  Two reads
+// that give a chart the same shape can share it.
+const stackShape = (drawing, fitted) =>
+  JSON.stringify([
+    drawing.lines.map((l) => [l.column, l.name, l.color]),
+    Boolean(drawing.envelope),
+    Boolean(fitted.range),
+    Boolean(fitted.axis.splits),
+    Boolean(fitted.axis.filter),
+    fitted.scale ?? null,
+  ]);
+
+// A fitted y axis, as `yAxis` gives it, that reads its range, ticks and
+// labels from `held.fit` each time the chart draws: `restack` refits a
+// chart in place by changing `held`, without drawing it afresh.
+function heldAxis(held) {
+  const { fit } = held;
+  return {
+    axis: {
+      ...(fit.axis.splits ? { splits: (...args) => held.fit.axis.splits(...args) } : {}),
+      ...(fit.axis.values ? { values: (...args) => held.fit.axis.values(...args) } : {}),
+      ...(fit.axis.filter ? { filter: (...args) => held.fit.axis.filter(...args) } : {}),
+    },
+    range: fit.range && (() => held.fit.range),
+    scale: fit.scale,
+  };
+}
+
+// Draw the stack `read` -- `{ x, drawn }` -- into `container`, and
+// answer its charts.  A drawing with an `x` of its own is plotted
+// against that rather than the stack's.  `style` is
+//   height(count)  each chart's height, given how many there are
+//   sync           the cursor's sync key
+//   hooks          uPlot's, as `stackOptions` takes them
+function stackCharts(container, read, style) {
+  const height = style.height(read.drawn.length);
+  const fits = stackFits(read, height);
+  const ySize = stackWidth(fits);
+  const charts = read.drawn.map((drawing, n) => {
+    const several = drawing.lines.length > 1;
+    const host = document.createElement("div");
+    container.appendChild(host);
+    const held = { fit: fits[n], ySize };
+    const opts = stackOptions({
+      width: container.clientWidth || 800,
+      height: stackChartHeight(height, n, read.drawn.length),
+      title: drawing.title ?? label(drawing.column),
+      series: [
+        ...(drawing.envelope
+          ? [
+              { label: "min", stroke: ENVELOPE, width: 1, points: { show: false } },
+              { label: "max", stroke: ENVELOPE, width: 1, points: { show: false } },
+            ]
+          : []),
+        ...drawing.lines.map((l) => ({
+          label: l.name ?? columnName(l.column),
+          stroke: l.color,
+          width: 1.5,
+          points: { show: false },
+          spanGaps: false,
+        })),
+      ],
+      fitted: heldAxis(held),
+      ySize: () => held.ySize,
+      // Only the bottom chart carries the time labels.  Repeating them
+      // under every plot costs the height that makes the stack worth
+      // having, and says the axes might differ when the whole point is
+      // that they cannot.
+      last: n === read.drawn.length - 1,
+      yStroke: several ? AXIS_INK : TRACE,
+      // No per-chart legend.  With the cursor synced there is one
+      // instant being pointed at, not one per plot, so the values
+      // belong in one row, which the page builds.
+      legend: { show: false },
+      sync: style.sync,
+      hooks: style.hooks,
+    });
+    const chart = ranged(new uPlot(opts, stackData(read, drawing), host));
+    chart.chronymonShape = stackShape(drawing, fits[n]);
+    chart.chronymonAxis = held;
+    // Which lines this chart draws, and from which series, so a shared
+    // readout can label them without reaching back into the request
+    // that built it.
+    chart.chronymonLines = drawing.lines.map((l, i) => ({
+      column: l.column,
+      name: l.name,
+      series: 1 + (drawing.envelope ? 2 : 0) + i,
+      color: several ? l.color : null,
+    }));
+    hint(chart, ...drawing.lines.map((l) => l.column));
+    // uPlot's title is plain text, and with the legend off a chart of
+    // several lines otherwise names them without saying which is which.
+    if (several) {
+      const heading = chart.root.querySelector(".u-title");
+      if (heading) heading.innerHTML = groupTitle(drawing);
+    }
+    return chart;
+  });
+  settleWidths(charts, container);
+  return charts;
+}
+
+// What a chart of the stack plots: its time axis, then its series.
+const stackData = (read, drawing) => [drawing.x ?? read.x, ...drawingArrays(drawing)];
+
+// The stack `charts`, drawn in `container`, brought up to `read`: each
+// chart given its new data, y axis and size in place while the stack
+// keeps its shape -- the same charts and lines -- so a page read again
+// on a timer neither flashes nor moves, and drawn afresh when it does
+// not.  Answers the charts, the same ones or new.
+function restack(container, charts, read, style) {
+  const height = style.height(read.drawn.length);
+  const fits = stackFits(read, height);
+  const ySize = stackWidth(fits);
+  const kept = charts.length === read.drawn.length &&
+    charts.every((c, n) => c.chronymonShape === stackShape(read.drawn[n], fits[n]));
+  if (kept) {
+    charts.forEach((c, n) => {
+      const held = c.chronymonAxis;
+      const widened = held.ySize !== ySize;
+      held.fit = fits[n];
+      held.ySize = ySize;
+      c.setData(stackData(read, read.drawn[n]));
+      const size = {
+        width: container.clientWidth || c.width,
+        height: stackChartHeight(height, n, charts.length),
+      };
+      if (size.width !== c.width || size.height !== c.height) c.setSize(size);
+      // A new width alone changes no scale, which is what uPlot measures
+      // its axes again on.
+      else if (widened) c.redraw(false, true);
+    });
+    return charts;
+  }
+  hold(container);
+  for (const c of charts) c.destroy();
+  container.innerHTML = "";
+  const drawn = stackCharts(container, read, style);
+  release(container);
+  return drawn;
+}
+
+// One value per line at the instant the cursor is on, plus the time
+// once, for a stack sharing one cursor: uPlot's legend is per chart.
+// The same cells are drawn whether or not anything is under the
+// pointer, with dashes for the values when nothing is, so the row does
+// not move what is below it.  `mark` is the text of an event near the
+// cursor, or null.
+function readoutHtml(charts, mark) {
+  const idx = charts.map((c) => c.cursor.idx).find((i) => i != null);
+  const show = (v) =>
+    v == null ? "--" : v.toLocaleString(undefined, { maximumSignificantDigits: 6 });
+  const under = charts.find((c) => c.cursor.idx != null) ?? charts[0];
+  const at = idx == null ? null : new Date(under.data[0][idx] * 1000);
+  // A line of a chart of several is named with its chart's measure too,
+  // or a stack of overlays reads as the same source names over again.
+  const name = (l, several) => {
+    const measure = columnName(l.column).split(",")[0];
+    return several && l.name ? `${measure}, ${l.name}` : l.name ?? columnName(l.column);
+  };
+  const cells = charts.flatMap((c) =>
+    c.chronymonLines.map((l) => {
+      const v = c.cursor.idx == null ? null : c.data[l.series][c.cursor.idx];
+      return `<span><span class="k"${l.color ? ` style="color:${l.color}"` : ""}>` +
+        `${esc(name(l, c.chronymonLines.length > 1))}</span> <span class="v">${esc(show(v))}</span></span>`;
+    }));
+  return `<span class="v">${at ? esc(at.toLocaleTimeString()) : "--:--:--"}</span>` +
+    cells.join("") +
+    `<span class="note">${mark ? esc(mark) : "&nbsp;"}</span>`;
+}
+
+// ---------------------------------------------------------------- marks
+
+// How near the cursor must be to an event's line, in CSS pixels, for its
+// text to be shown.
+const MARK_REACH = 6;
+
+// Each event's line, dashed across the plot area at its time, in its
+// own color.  `marks` is a list of `{ at, text, color }`, `at` in unix
+// seconds.
+function drawMarks(u, marks) {
+  const [lo, hi] = [u.scales.x.min, u.scales.x.max];
+  const { ctx } = u;
+  ctx.save();
+  ctx.lineWidth = devicePixelRatio;
+  ctx.setLineDash([4 * devicePixelRatio, 4 * devicePixelRatio]);
+  for (const { at, color } of marks) {
+    if (at < lo || at > hi) continue;
+    const x = Math.round(u.valToPos(at, "x", true));
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x, u.bbox.top);
+    ctx.lineTo(x, u.bbox.top + u.bbox.height);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// The text of the events in `marks` under the cursor, if any are within
+// reach.
+function markAt(u, marks) {
+  if (u.cursor.left == null || u.cursor.left < 0) return null;
+  const near = marks.filter(({ at }) => Math.abs(u.valToPos(at, "x") - u.cursor.left) <= MARK_REACH);
+  return near.length ? near.map((m) => m.text).join("; ") : null;
+}
+
+// How far the event's text sits from the pointer, and how near the
+// window's edge it may come, in CSS pixels.
+const TIP_OFFSET = 12;
+const TIP_MARGIN = 4;
+
+// An event's text beside the pointer on `chart`, in the page's
+// `#note-tip`; hidden when there is none.  It goes below and to the
+// right of the pointer, or to the left and above where that would
+// leave the window, so an event near the right edge can still be read.
+function markTip(chart, text) {
+  const tip = $("note-tip");
+  if (!tip) return;
+  if (!chart || text == null) {
+    tip.style.display = "none";
+    return;
+  }
+  const box = chart.over.getBoundingClientRect();
+  const x = box.left + chart.cursor.left;
+  const y = box.top + chart.cursor.top;
+  tip.textContent = text;
+  tip.style.display = "block";
+  const { width, height } = tip.getBoundingClientRect();
+  const right = x + TIP_OFFSET;
+  const below = y + TIP_OFFSET;
+  const left = right + width > innerWidth - TIP_MARGIN ? x - TIP_OFFSET - width : right;
+  const top = below + height > innerHeight - TIP_MARGIN ? y - TIP_OFFSET - height : below;
+  tip.style.left = `${Math.max(TIP_MARGIN, left)}px`;
+  tip.style.top = `${Math.max(TIP_MARGIN, top)}px`;
+}
+
+// A stack of time charts with event marks and one shared readout,
+// which a page keeps in `view` across reads:
+//   container, readout   its elements
+//   sync                 the cursor's sync key
+//   charts, marks        the charts drawn and the events marked
+// `read` is `{ x, drawn }`; `why` what to say when there is nothing.
+function drawStack(view, read, why) {
+  read.drawn = read.drawn.filter(drawsAnything);
+  if (!read.drawn.length) {
+    clearStack(view, why || "no readings in this range");
+    return;
+  }
+  update($(view.note), "textContent", "");
+  const readout = () => {
+    const mark = view.charts.map((c) => markAt(c, view.marks)).find((m) => m != null);
+    showHtml($(view.readout), readoutHtml(view.charts, mark));
+    const under = view.charts.find((c) => c.over.matches(":hover"));
+    markTip(under, under ? markAt(under, view.marks) : null);
+  };
+  view.charts = restack($(view.container), view.charts, read, {
+    height: view.height ?? plotHeight,
+    sync: view.sync.key,
+    hooks: {
+      setCursor: [readout],
+      draw: [(u) => drawMarks(u, view.marks)],
+    },
+  });
+  readout();
+}
+
+// Take a stack's charts down, saying why in their place.
+function clearStack(view, why) {
+  for (const c of view.charts) c.destroy();
+  view.charts = [];
+  $(view.container).innerHTML = "";
+  showHtml($(view.readout), "");
+  markTip(null, null);
+  update($(view.note), "textContent", why);
+}
+
+// The chart library is fetched from a CDN, so say so plainly rather
+// than leaving an empty rectangle if it did not arrive.
+const haveUplot = typeof uPlot !== "undefined";
+const NO_UPLOT =
+  "The chart library did not load. It comes from a CDN, so this page needs internet access; the strip above does not.";

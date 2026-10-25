@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chronymon: journal</title>
+
+<link rel="stylesheet" href="/style.css">
+
+<div class="panel" id="status"><span class="muted">connecting...</span></div>
+
+<nav class="panel nav">
+  <a href="/">Live</a>
+  <a href="/sources">Sources</a>
+  <a href="/journal" aria-current="page">Journal</a>
+  <a href="/distribution">Distribution</a>
+</nav>
+
+<div class="panel">
+  <div class="controls">
+    <h2>What happened</h2>
+    <span class="grow"></span>
+    <span id="ranges"></span>
+  </div>
+  <div id="events"><span class="muted">waiting...</span></div>
+</div>
+
+<footer id="colophon"></footer>
+
+<script src="/common.js"></script>
+<script>
+"use strict";
+
+// A day by default: events are rare, and an hour of none says little.
+readRange(86400);
+
+// How far either side of an event the live page shows when one is
+// followed from here, in seconds.
+const EVENT_SPAN = 1800;
+const around = (at) =>
+  `/?from=${Math.floor(at - EVENT_SPAN)}&to=${Math.ceil(at + EVENT_SPAN)}`;
+
+async function load(signal) {
+  const { from, to } = rangeBounds();
+  const { events } = await eventsFor(signal, from, to);
+  showHtml($("events"), eventsTable(events, around));
+}
+
+rangeControl($("ranges"), soon);
+content({
+  floor: 5,
+  clear(why) {
+    showHtml($("events"), `<span class="muted">${esc(why)}</span>`);
+  },
+  load,
+});
+</script>

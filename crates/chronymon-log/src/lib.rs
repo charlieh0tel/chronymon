@@ -5,6 +5,7 @@
 
 pub mod chrony_log;
 pub mod error;
+pub mod reader;
 pub mod schema;
 mod text;
 pub mod timestamp;

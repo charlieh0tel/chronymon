@@ -1,0 +1,162 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chronymon: sources</title>
+
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE"
+      crossorigin="anonymous">
+
+<link rel="stylesheet" href="/style.css">
+
+<div class="panel" id="status"><span class="muted">connecting...</span></div>
+
+<nav class="panel nav">
+  <a href="/">Live</a>
+  <a href="/sources" aria-current="page">Sources</a>
+  <a href="/journal">Journal</a>
+  <a href="/distribution">Distribution</a>
+</nav>
+
+<div class="panel">
+  <h2>Sources, as last reported</h2>
+  <div id="table-wrap"><div id="sources"><span class="muted">waiting...</span></div></div>
+</div>
+
+<div class="panel">
+  <div class="controls">
+    <h2>Every source</h2>
+    <span class="grow"></span>
+    <span id="ranges"></span>
+  </div>
+  <div id="charts" class="stack"></div>
+  <div id="readout"></div>
+  <div id="note-tip"></div>
+  <div id="note"></div>
+</div>
+
+<footer id="colophon"></footer>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c"
+        crossorigin="anonymous"></script>
+<script src="/common.js"></script>
+<script src="/charts.js"></script>
+<script>
+"use strict";
+
+readRange(3600);
+
+// The charts, a line per source: what the sources measured, then what
+// chronyd's regression made of it.
+const OVERLAID = [
+  ["ntp_sample", "offset"],
+  ["ntp_sample", "peer_delay"],
+  ["source_stats", "residual_frequency"],
+  ["source_stats", "skew"],
+  ["source_stats", "standard_deviation"],
+];
+
+const stack = {
+  container: "charts",
+  readout: "readout",
+  note: "note",
+  sync: haveUplot ? uPlot.sync("chronymon") : null,
+  charts: [],
+  marks: [],
+};
+
+// A source's state as chronyc's `sources` marks it, and the class
+// that colors it.
+const STATES = {
+  selected: ["*", "state-selected"],
+  combined: ["+", ""],
+  not_combined: ["-", ""],
+  nonselectable: ["?", "state-warn"],
+  falseticker: ["x", "state-bad"],
+  jittery: ["~", "state-warn"],
+};
+
+// The polling interval, a power of two seconds, as chronyc shows it.
+const poll = (p) => (p == null ? "--" : `${p} (${age(2 ** p)})`);
+
+function sourcesTable(sources, now) {
+  if (!sources.length) return `<span class="muted">no sources recorded</span>`;
+  const rows = sources.map((s) => {
+    const [mark, cls] = STATES[s.state] ?? ["", ""];
+    const sample = s.sample ?? {};
+    const stats = s.stats ?? {};
+    const since = s.last_seen ? `${age(now - s.last_seen)} ago` : "--";
+    const name = s.name && s.name !== s.address ? s.name : s.address;
+    return `<tr>` +
+      `<td><span class="${cls}" title="${esc(s.state ?? "")}">${esc(mark)}</span></td>` +
+      `<td><a href="/source?source=${s.id}" style="color:${sourceColor(s.id)}">${esc(name)}</a></td>` +
+      `<td class="muted">${esc(s.address)}</td>` +
+      `<td>${esc(s.mode)}</td>` +
+      `<td>${sample.stratum ?? "--"}</td>` +
+      `<td>${esc(poll(sample.poll))}</td>` +
+      `<td>${sample.reachability == null ? "--" : sample.reachability.toString(8)}</td>` +
+      `<td>${esc(seconds(sample.latest_measurement, true))} ` +
+      `<span class="muted">± ${esc(seconds(sample.latest_measurement_error))}</span></td>` +
+      `<td>${esc(s.selection_state ?? "--")} ${s.selection ? fmt(s.selection.score, 2) : ""}</td>` +
+      `<td>${stats.samples ?? "--"}</td>` +
+      `<td>${esc(ppm(stats.residual_frequency, true))}</td>` +
+      `<td>${esc(ppm(stats.skew))}</td>` +
+      `<td>${esc(seconds(stats.standard_deviation))}</td>` +
+      `<td class="muted">${esc(since)}</td>` +
+      `</tr>`;
+  });
+  return `<table><thead><tr><th></th><th>name</th><th>address</th><th>mode</th>` +
+    `<th>stratum</th><th>poll</th><th>reach</th><th>last offset</th><th>selection</th>` +
+    `<th>samples</th><th>frequency</th><th>skew</th><th>std dev</th><th>seen</th>` +
+    `</tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+
+function overlayQuery([table, column], bounds) {
+  const q = new URLSearchParams({ table, column, points: pointsFor(bounds.seconds) });
+  if (bounds.from) q.set("from", Math.round(bounds.from));
+  if (bounds.to) q.set("to", Math.round(bounds.to));
+  return "/api/overlay?" + q;
+}
+
+async function load(signal) {
+  const [sources, status] = await Promise.all([
+    ask("/api/sources", signal),
+    ask("/api/status", signal),
+  ]);
+  showHtml($("sources"), sourcesTable(sources, status.now));
+  if (!haveUplot) {
+    clearStack(stack, NO_UPLOT);
+    return;
+  }
+  const names = new Map(sources.map((s) => [s.id, s.name || s.address]));
+  let bounds = rangeBounds();
+  const { from, to } = bounds;
+  const events = await eventsFor(signal, from, to);
+  stack.marks = events.marks;
+  let got = await Promise.all(OVERLAID.map((o) => ask(overlayQuery(o, bounds), signal, HISTORY_TIMEOUT)));
+  if (range.last === "all") {
+    const first = Math.min(...got.map((g) => g.first ?? Infinity));
+    const last = Math.max(...got.map((g) => g.last ?? -Infinity));
+    if (last > first) {
+      bounds = { from: first, to: last, seconds: last - first };
+      got = await Promise.all(OVERLAID.map((o) => ask(overlayQuery(o, bounds), signal, HISTORY_TIMEOUT)));
+    }
+  }
+  const drawn = OVERLAID.map(([table, column], n) =>
+    overlayChart(table, column, got[n], (id) => names.get(id) ?? `source ${id}`));
+  drawStack(stack, { x: [], drawn }, "no samples in this range");
+}
+
+rangeControl($("ranges"), soon);
+addEventListener("resize", soon);
+content({
+  floor: 5,
+  clear(why) {
+    clearStack(stack, why);
+    showHtml($("sources"), `<span class="muted">${esc(why)}</span>`);
+  },
+  load,
+});
+</script>
