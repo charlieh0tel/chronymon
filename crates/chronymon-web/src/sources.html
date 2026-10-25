@@ -106,13 +106,6 @@ function sourcesTable(sources, now) {
     `</tr></thead><tbody>${rows.join("")}</tbody></table>`;
 }
 
-function overlayQuery([table, column], bounds) {
-  const q = new URLSearchParams({ table, column, points: pointsFor(bounds.seconds) });
-  if (bounds.from) q.set("from", Math.round(bounds.from));
-  if (bounds.to) q.set("to", Math.round(bounds.to));
-  return "/api/overlay?" + q;
-}
-
 async function load(signal) {
   const [sources, status] = await Promise.all([
     ask("/api/sources", signal),
