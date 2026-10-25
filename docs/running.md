@@ -39,15 +39,18 @@ and restart it.  The view is read-only and asks for no password.
 
 `http://<host>:8323/kiosk` is one screen for an unattended landscape
 display: the sync state, reference, offset, frequency and skew in
-large type, the sources, the newest events, and six hours of charts.
+large type, the sources, the newest events, and a day of charts.
 No nav, controls or pointer, and it never scrolls: full size from
 1440x1080 CSS pixels, scaled down to fit a smaller screen.  It never
-changes its address.
+changes its address.  A reload paints the last status, sources and
+events, kept in the browser's local storage and marked LAST SEEN,
+before the first poll answers; without storage it starts empty.
 
 | Parameter | |
 | - | - |
-| `last` | range in seconds, default 21600 (`from`/`to` as on the other pages) |
+| `last` | range in seconds, default 86400 (`from`/`to` as on the other pages) |
 | `inset` | overscan margin: `N` percent (of width at the sides, of height top and bottom, at most 25), `Npx` pixels; one value for every edge or `X,Y` for sides, then top and bottom (`3`, `2,4`, `40px`); anything else is ignored |
+| `debug` | a foot line: how many times this browser has loaded the page with `debug`, whether this load was a navigation or a reload, its uptime, the Chrome version, the viewport, device pixel ratio and scale, and the last uncaught error |
 
 ## chronyd's logs
 

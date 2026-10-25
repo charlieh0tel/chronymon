@@ -222,6 +222,60 @@ test("Kiosk: laid out inside the inset an overscanning display asks for", async 
   expect(await fits(page)).toBe(true);
 });
 
+test("Kiosk: reloaded, paints the last state before the first poll answers", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await page.goto("/kiosk");
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
+  // How long the server's answers are held back after the reload, in ms.
+  const held = 3000;
+  await page.route(/\/api\/(status|sources|events)/, async (route) => {
+    await new Promise((done) => setTimeout(done, held));
+    await route.continue();
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const head = page.locator("#kiosk-head");
+  await expect(head).toContainText("LAST SEEN", { timeout: held / 2 });
+  await expect(page.locator("#kiosk-reference")).toHaveText("PPS");
+  await expect(page.locator("#kiosk-tiles .tile")).toHaveCount(8);
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
+  await expect(head).not.toContainText("LAST SEEN", { timeout: 3 * held });
+});
+
+test("Kiosk: works with storage refused", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", {
+      get() {
+        throw new Error("storage refused");
+      },
+    });
+  });
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await page.goto("/kiosk?debug");
+  await expect(page.locator("#kiosk-mode")).toHaveText(/^(synchronized|stale)$/);
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(charts(page)).toHaveCount(4);
+  await expect(page.locator("#kiosk-foot")).toContainText("load ? (navigate)");
+});
+
+test("Kiosk: with debug, the foot counts loads and says how each came about", async ({ page }) => {
+  await page.goto("/kiosk");
+  await expect(page.locator("#kiosk-foot")).toBeHidden();
+  await page.goto("/kiosk?debug");
+  const foot = page.locator("#kiosk-foot");
+  await expect(foot).toContainText(/^load 1 \(navigate\), up .*, Chrome \d+, \d+x\d+ at /);
+  await page.reload();
+  await expect(foot).toContainText("load 2 (reload)");
+  await page.evaluate(() => setTimeout(() => {
+    throw new Error("thrown for the test");
+  }));
+  await expect(foot).toContainText("error: Uncaught Error: thrown for the test");
+  // That error is the test's own.
+  const errors = pageErrors.get(test.info().testId);
+  pageErrors.set(test.info().testId, errors.filter((e) => !e.includes("thrown for the test")));
+});
+
 test("Kiosk: with no database, says so", async ({ page }) => {
   await page.goto(MISSING + "/kiosk");
   await expect(page.locator("#kiosk-mode")).toHaveText("no data");
