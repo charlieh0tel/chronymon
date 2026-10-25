@@ -7,6 +7,7 @@
 //! TCP port has none of the authorization chronyd's socket does.
 
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use chronymon_http::Response;
@@ -32,6 +33,35 @@ const TEMPERATURE: &str = include_str!("temperature.html");
 const JOURNAL: &str = include_str!("journal.html");
 /// Percentiles and histograms over a range.
 const DISTRIBUTION: &str = include_str!("distribution.html");
+/// One screen for an unattended display: the clock's state in large
+/// type and its history, with nothing to click; or other pages in turn.
+const KIOSK: &str = include_str!("kiosk.html");
+
+/// The kiosk as served: its stylesheet and this server's scripts
+/// inlined, so a reload paints from one answer and waits on no other
+/// request, which a signage player shows as a white screen.
+static KIOSK_SERVED: LazyLock<String> = LazyLock::new(|| inlined(KIOSK));
+
+/// What `inlined` replaces: each tag, and the element and text it
+/// becomes.
+const INLINED: [(&str, &str, &str); 3] = [
+    (
+        "<link rel=\"stylesheet\" href=\"/style.css\">",
+        "style",
+        STYLE,
+    ),
+    ("<script src=\"/common.js\"></script>", "script", COMMON),
+    ("<script src=\"/charts.js\"></script>", "script", CHARTS),
+];
+
+/// `page` with the files `INLINED` names written into it.
+fn inlined(page: &str) -> String {
+    INLINED
+        .iter()
+        .fold(page.to_owned(), |page, (tag, element, text)| {
+            page.replace(tag, &format!("<{element}>\n{text}</{element}>"))
+        })
+}
 
 /// Shared by every page.
 const STYLE: &str = include_str!("style.css");
@@ -117,6 +147,7 @@ fn main() -> Result<()> {
             "/temperature" => Response::ok(HTML, TEMPERATURE.to_owned()),
             "/journal" => Response::ok(HTML, JOURNAL.to_owned()),
             "/distribution" => Response::ok(HTML, DISTRIBUTION.to_owned()),
+            "/kiosk" => Response::ok(HTML, KIOSK_SERVED.clone()),
             "/style.css" => Response::ok(CSS, STYLE.to_owned()),
             "/common.js" => Response::ok(JAVASCRIPT, COMMON.to_owned()),
             "/charts.js" => Response::ok(JAVASCRIPT, CHARTS.to_owned()),
@@ -132,4 +163,30 @@ fn main() -> Result<()> {
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CHARTS;
+    use super::COMMON;
+    use super::INLINED;
+    use super::KIOSK;
+    use super::STYLE;
+    use super::inlined;
+
+    /// The kiosk is served whole: every file it would ask this server
+    /// for is in it, and nothing an inlined file says ends its element
+    /// early.
+    #[test]
+    fn the_kiosk_is_served_with_its_files_inlined() {
+        let served = inlined(KIOSK);
+        for (tag, element, text) in INLINED {
+            assert!(KIOSK.contains(tag), "{tag} is not in kiosk.html");
+            assert!(!served.contains(tag));
+            assert!(!text.contains(&format!("</{element}")));
+        }
+        for text in [STYLE, COMMON, CHARTS] {
+            assert!(served.contains(text));
+        }
+    }
 }

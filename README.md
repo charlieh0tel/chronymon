@@ -14,6 +14,8 @@ Early days: see `PLAN.md` for the design and the phases, and
 | **Temperature** | **Distribution** |
 | ![The temperature page: tempcomp's temperature and compensation over six hours, and the clock's frequency](docs/images/web-temperature.png) | ![The distribution page: a histogram and percentiles of six hours' offsets](docs/images/web-distribution.png) |
 
+![The kiosk: the clock's state in large type, its sources and events, and six hours of its offset, frequency and skew, for a display across a room](docs/images/web-kiosk.png)
+
 Shown from the synthetic database below; `make screenshots` takes
 them again.
 
@@ -34,7 +36,8 @@ environment (`CHRONYMOND_*`).
 own page, the refclocks and tempcomp's temperature from chronyd's
 logs, the journal of events, and distributions over any range.  Where
 the daemon was not running, the clock's charts are filled from
-`tracking.log`, dashed.
+`tracking.log`, dashed.  `/kiosk` is one screen for a display across
+a room, with nothing to click ([options](docs/running.md#kiosk)).
 It reads the database and nothing else, so it needs no access to
 chronyd, only to the database: run it as a user in the database's
 group, with no write access to its directory.  `--listen 0.0.0.0:8323`

@@ -1,0 +1,348 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>chronymon kiosk</title>
+
+<!-- Nothing here waits on the network before the first paint, which a
+     player that reloads the page would otherwise show as a white
+     screen: the server inlines style.css, common.js and charts.js
+     into this page, and uPlot's stylesheet, which only the charts need
+     and which they are drawn well after, is applied once it arrives. -->
+<link rel="stylesheet" media="print" onload="this.media = 'all'"
+      href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE"
+      crossorigin="anonymous">
+
+<link rel="stylesheet" href="/style.css">
+
+<body class="kiosk">
+
+<section id="kiosk-state">
+  <div id="kiosk-head"><span class="muted">connecting...</span></div>
+  <div class="panel" id="kiosk-sync">
+    <div class="mode" id="kiosk-mode"></div>
+    <div class="reference"><span id="kiosk-reference">--</span> <span class="muted" id="kiosk-stratum"></span></div>
+    <div class="muted" id="kiosk-update"></div>
+  </div>
+  <div class="panel" id="kiosk-tiles"></div>
+  <div class="panel" id="kiosk-sources">
+    <h2>Sources</h2>
+    <div id="kiosk-source-rows"></div>
+  </div>
+  <div class="panel" id="kiosk-events">
+    <h2>What happened</h2>
+    <div id="kiosk-event-rows"></div>
+    <!-- A hidden copy of the events, laid out whole to see how many
+         fit.  Hidden here rather than in style.css, so it never paints
+         even before or without the stylesheet. -->
+    <div id="kiosk-event-measure" aria-hidden="true"
+         style="position: absolute; top: 0; left: 0; width: 100%; box-sizing: border-box;
+                padding: inherit; visibility: hidden; pointer-events: none"></div>
+  </div>
+  <footer id="colophon"></footer>
+</section>
+
+<section id="kiosk-history">
+  <div class="panel" id="kiosk-stack">
+    <div id="charts"></div>
+    <div id="note"></div>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c"
+        crossorigin="anonymous"></script>
+<script src="/common.js"></script>
+<script src="/charts.js"></script>
+<script>
+"use strict";
+
+// One page for an unattended display: the clock's state at a glance,
+// nothing to click, no scrolling.  chronyd's state in large type on
+// the left, from the status row the strip polls every second, its
+// sources and what happened lately; on the right the clock's offset,
+// frequency and skew and every source's offset, over one range (six
+// hours unless `?last=` says otherwise).
+
+addressFixed = true;
+
+const view = new URLSearchParams(location.search);
+
+// The margin a display that overscans hides at its edges, from
+// `?inset=`: one length for every edge, or two, the sides' then the
+// top and bottom's.  A bare number is a percent of the screen's width
+// (the sides) or height (top and bottom), as overscan is given; a
+// number with `px` is pixels.  Anything else is ignored.
+const INSET = /^(\d+(?:\.\d+)?)(px)?$/;
+const INSET_MOST = 25;
+function inset() {
+  const asked = view.get("inset");
+  if (!asked) return;
+  const parts = asked.split(",").map((x) => x.trim().match(INSET));
+  if (!parts.length || parts.length > 2 || parts.some((m) => !m)) return;
+  const [sides, ends = sides] = parts;
+  const length = (m, unit) => m[2] ? `${m[1]}px` : `${Math.min(Number(m[1]), INSET_MOST)}${unit}`;
+  document.body.style.setProperty("--inset-x", length(sides, "vw"));
+  document.body.style.setProperty("--inset-y", length(ends, "vh"));
+}
+inset();
+
+// The least room, in CSS pixels inside the inset, the kiosk is drawn
+// full size in.  On less it is scaled down to fit: a player's display
+// zoom can leave a 1920x1080 screen a 1280x720 page.
+const FULL_SIZE = { width: 1440, height: 1080 };
+// The stylesheet's own padding at each edge, in kiosk pixels.
+const EDGE = 12;
+// One of the stylesheet's kiosk pixels in CSS pixels, as `--u`: 1 at
+// full size, less on a smaller page.
+let unitPx = 1;
+// Set `--u` for the room the page has now.  Answers whether it changed.
+function scale() {
+  const style = getComputedStyle(document.body);
+  const padding = (a, b) => parseFloat(style[a]) + parseFloat(style[b]);
+  // The inset alone: the padding less the stylesheet's own.
+  const room = {
+    width: innerWidth - padding("paddingLeft", "paddingRight") + 2 * EDGE * unitPx,
+    height: innerHeight - padding("paddingTop", "paddingBottom") + 2 * EDGE * unitPx,
+  };
+  const next = Math.min(1, room.width / FULL_SIZE.width, room.height / FULL_SIZE.height);
+  if (next === unitPx) return false;
+  unitPx = next;
+  document.body.style.setProperty("--u", `${next}px`);
+  return true;
+}
+
+// The strip's readings shown as tiles, by name, in order.
+const KIOSK_TILES = [
+  "last offset", "RMS offset", "frequency", "skew",
+  "root delay", "root dispersion", "residual freq", "leap",
+];
+// The clock's charts, as the live page draws them, with chronyd's log
+// where the daemon has no rows; then every source's offset.
+const KIOSK_COLUMNS = ["last_offset", "frequency", "skew"];
+const KIOSK_FILLS = { last_offset: "offset", frequency: "frequency", skew: "skew" };
+const KIOSK_OVERLAY = ["source_sample", "latest_measurement"];
+// The most events read for the list, the newest whatever the range; it
+// shows as many as fit.
+const KIOSK_EVENTS = 20;
+
+// Each chart title's height in kiosk pixels, as style.css sets it,
+// taken from the room each chart is given.
+const TITLE_HEIGHT = 30;
+// The least a chart is drawn at, however little room there is, in
+// kiosk pixels.
+const SHORTEST_CHART = 60;
+// The axes' type in kiosk pixels, larger than the other pages', to be
+// read from further away; and uPlot's own, which the axes' room is
+// sized for.
+const KIOSK_TYPE = 17;
+const UPLOT_TYPE = 12;
+// The range shown unless `?last=` says otherwise, in seconds: six
+// hours, long enough to see the frequency follow the day's temperature.
+const KIOSK_RANGE = 21600;
+// The shortest refresh, in seconds: the status is polled every second
+// regardless; the charts, sources and events are read at this.
+const KIOSK_FLOOR = 30;
+
+const stack = {
+  container: "charts",
+  readout: null,
+  note: "note",
+  sync: haveUplot ? uPlot.sync("kiosk") : null,
+  charts: [],
+  marks: [],
+  // Each chart's height, so the stack, with the time axis under its
+  // bottom chart, fills its panel and no more.
+  height(count) {
+    const room = ($("charts").clientHeight - (TIME_SIZE - STACK_END) * stack.scale) / unitPx;
+    return Math.max(SHORTEST_CHART, Math.floor(room / Math.max(1, count)) - TITLE_HEIGHT) * unitPx;
+  },
+};
+
+// Set the stack's type for the scale the page is drawn at.  uPlot reads
+// a font's size as the whole pixels before "px".
+function stackType() {
+  const px = Math.round(KIOSK_TYPE * unitPx);
+  stack.font = `${px}px system-ui, sans-serif`;
+  stack.scale = px / UPLOT_TYPE;
+}
+
+// A tile: a reading `v` in large type over what it is, `k`.  `tone` is
+// "", "warn" or "bad".
+const tile = (k, v, tone = "") => ({ k, v: String(v), tone });
+
+// The tiles, kept and their text changed in place, so a reading that
+// changes repaints only itself.  Drawn afresh only when which tiles
+// there are changes.
+function showTiles(list) {
+  const el = $("kiosk-tiles");
+  const which = list.map((t) => t.k).join("\n");
+  if (el.dataset.which !== which) {
+    el.dataset.which = which;
+    el.innerHTML = list.map((t) =>
+      `<div class="tile"><span class="v"></span><span class="k">${esc(t.k)}</span></div>`,
+    ).join("");
+  }
+  list.forEach((t, n) => {
+    const shown = el.children[n];
+    update(shown, "className", `tile ${t.tone}`);
+    update(shown.children[0], "textContent", t.v);
+  });
+}
+
+// The leap status's tone: a second to come is worth noticing, and an
+// unsynchronized clock is wrong.
+const LEAP_TONES = { insert: "warn", delete: "warn", unsynchronized: "bad" };
+
+// Whether the clock is synchronized, in a word, and how it should be
+// read: the feed's own state when that is not live.
+function syncOf(s) {
+  const [state, words] = feedState(s);
+  if (state !== "live") return [words.toLowerCase(), state === "stale" ? "warn" : "bad"];
+  if (!s.tracking) return ["no update yet", "warn"];
+  if (s.tracking.leap === "unsynchronized") return ["unsynchronized", "bad"];
+  return ["synchronized", ""];
+}
+
+function renderKiosk(s) {
+  const [state, words] = feedState(s);
+  showHtml($("kiosk-head"),
+    `<span class="dot ${state}"></span><span>chronyd</span>` +
+    (state === "live" ? "" : `<span class="pill ${state}">${esc(words)}</span>`) +
+    (s.status ? `<span class="muted">polled ${esc(age(s.status.age))} ago</span>` : ""));
+  const [sync, tone] = syncOf(s);
+  update($("kiosk-mode"), "textContent", sync);
+  update($("kiosk-mode"), "className", `mode ${tone}`);
+  const r = Object.fromEntries(readings(s).map((x) => [x.k, x]));
+  update($("kiosk-reference"), "textContent", r.reference?.v ?? "--");
+  update($("kiosk-stratum"), "textContent", r.stratum ? `stratum ${r.stratum.v}` : "");
+  update($("kiosk-update"), "textContent", r["last update"]
+    ? `updated ${r["last update"].v}, every ${r["update interval"].v}`
+    : s.status?.detail ?? "");
+  showTiles(KIOSK_TILES.filter((k) => r[k]).map((k) =>
+    tile(k, r[k].v, k === "leap" ? LEAP_TONES[s.tracking.leap] ?? "" : "")));
+  stale(state !== "live");
+}
+
+function lostKiosk(what, why) {
+  showHtml($("kiosk-head"), `<span class="dot down"></span><span class="pill down">${esc(what)}</span>`);
+  update($("kiosk-mode"), "textContent", what);
+  update($("kiosk-mode"), "className", "mode bad");
+  update($("kiosk-update"), "textContent", why ?? "");
+  stale(true);
+}
+
+// The tiles and sources dimmed, while what they say is the last seen
+// rather than current: kept, so a poll that fails once does not blank
+// them for a second.
+function stale(dim) {
+  for (const id of ["kiosk-tiles", "kiosk-sources"]) $(id).classList.toggle("dim", dim);
+}
+
+// Each source on a line: chronyc's mark for its state, its name in its
+// color on the charts, its reach, and its last offset.
+function sourceRows(sources) {
+  if (!sources.length) return `<span class="muted">no sources recorded</span>`;
+  return `<table><tbody>${sources.map((s) => {
+    const [mark, cls] = SOURCE_STATES[s.state] ?? ["", ""];
+    const sample = s.sample ?? {};
+    return `<tr><td class="${cls}" title="${esc(s.state ?? "")}">${esc(mark)}</td>` +
+      `<td style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</td>` +
+      `<td class="muted">${sample.reachability == null ? "--" : sample.reachability.toString(8)}</td>` +
+      `<td>${esc(seconds(sample.latest_measurement, true))}</td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+// The events last read, newest first.
+let events = [];
+
+// As many of the events as fit, newest first, rather than a fixed count
+// that leaves the panel half empty or cut off.  Laid out whole in a
+// hidden copy to see how many that is, so what is shown is written
+// once.
+function drawEvents() {
+  const drawn = (n) => events.length
+    ? `<table><tbody>${events.slice(0, n).map((e) =>
+        `<tr><td>${esc(shortTime(e.at))}</td>` +
+        `<td><span style="color:${eventColor(e.kind)}">${esc(eventWords(e.kind))}</span>` +
+        `${e.source ? ` <span class="muted">${esc(e.source)}</span>` : ""}</td></tr>`).join("")}</tbody></table>`
+    : `<span class="muted">nothing recorded</span>`;
+  const panel = $("kiosk-events");
+  const measure = $("kiosk-event-measure");
+  showHtml(measure, drawn(events.length));
+  const box = panel.getBoundingClientRect();
+  const room = box.top + panel.clientTop + panel.clientHeight - parseFloat(getComputedStyle(panel).paddingBottom);
+  const rows = [...measure.querySelectorAll("tr")];
+  showHtml($("kiosk-event-rows"), drawn(rows.filter((row) => row.getBoundingClientRect().bottom <= room).length));
+}
+
+function overlayQuery([table, column], bounds) {
+  const q = new URLSearchParams({ table, column, points: pointsFor(bounds.seconds) });
+  if (bounds.from) q.set("from", Math.round(bounds.from));
+  if (bounds.to) q.set("to", Math.round(bounds.to));
+  return "/api/overlay?" + q;
+}
+
+async function load(signal) {
+  const { from, to } = rangeBounds();
+  const [sources, marked, latest] = await Promise.all([
+    ask("/api/sources", signal),
+    eventsFor(signal, from, to),
+    ask(`/api/events?limit=${KIOSK_EVENTS}`, signal),
+  ]);
+  showHtml($("kiosk-source-rows"), sourceRows(sources));
+  events = [...latest].reverse();
+  drawEvents();
+  stack.marks = marked.marks;
+  if (!haveUplot) {
+    clearStack(stack, NO_UPLOT);
+    return;
+  }
+  const fill = { table: "log_tracking", columns: KIOSK_COLUMNS.map((c) => KIOSK_FILLS[c]) };
+  const clock = await readHistory(signal, "tracking", KIOSK_COLUMNS, null, fill);
+  const overlay = await ask(overlayQuery(KIOSK_OVERLAY, boundsOf(clock)), signal, HISTORY_TIMEOUT);
+  const names = new Map(sources.map((s) => [s.id, sourceName(s)]));
+  const drawn = [
+    ...filledCharts("tracking", clock, KIOSK_FILLS),
+    overlayChart(...KIOSK_OVERLAY, overlay, (id) => names.get(id) ?? `source ${id}`),
+  ];
+  drawStack(stack, { x: clock.at, drawn }, "no clock updates in this range");
+}
+
+// The window's size the page was last fitted to.
+let fitted = null;
+
+// Fit the page to its window again, once it has changed: at another
+// scale the charts' type is another size, which uPlot takes only when
+// a chart is made.
+function fit() {
+  const size = `${innerWidth}x${innerHeight}`;
+  if (size === fitted) return;
+  fitted = size;
+  if (scale()) {
+    stackType();
+    clearStack(stack, "");
+  }
+  drawEvents();
+  soon();
+}
+
+scale();
+stackType();
+fitted = `${innerWidth}x${innerHeight}`;
+readRange(KIOSK_RANGE);
+new ResizeObserver(fit).observe(document.body);
+content({
+  floor: KIOSK_FLOOR,
+  render: renderKiosk,
+  lost: lostKiosk,
+  clear(why) {
+    clearStack(stack, why);
+    events = [];
+    showHtml($("kiosk-source-rows"), "");
+    showHtml($("kiosk-event-rows"), `<span class="muted">${esc(why)}</span>`);
+  },
+  load,
+});
+</script>

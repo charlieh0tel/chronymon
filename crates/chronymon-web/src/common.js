@@ -106,6 +106,7 @@ async function ask(url, signal, timeout = QUICK_TIMEOUT) {
 // makes the change a step the browser's Back button undoes; only a
 // change of range is one.
 function remember(params, push = false) {
+  if (addressFixed) return;
   const q = new URLSearchParams(location.search);
   for (const [k, v] of Object.entries(params)) {
     if (v === null || v === undefined) q.delete(k);
@@ -117,6 +118,10 @@ function remember(params, push = false) {
   else history.replaceState(null, "", url);
   remembered = location.search;
 }
+// Whether the page leaves its address as it was loaded.  The kiosk
+// does: a signage player may take a changed address as a cue to reload.
+let addressFixed = false;
+
 // The address as this page last wrote it.  Back restores an older
 // address whole, and only its range is wanted from it.
 let remembered = location.search;
