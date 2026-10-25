@@ -28,6 +28,8 @@ use rusqlite::OptionalExtension as _;
 use rusqlite::params;
 use rusqlite::types::Value;
 
+use chronymon::event::EventKind;
+
 use crate::error::Error;
 use crate::error::Result;
 
@@ -173,6 +175,13 @@ impl Table {
             self,
             Self::SourceSample | Self::SourceStats | Self::NtpSample | Self::Selection
         )
+    }
+
+    /// Whether the daemon writes it, a row whenever what chronyd reports
+    /// changes, while it records: a hole in it then is nothing having
+    /// changed, not a gap.
+    const fn recorded(self) -> bool {
+        matches!(self, Self::Tracking) || self.by_id()
     }
 
     /// The numeric columns that may be charted.  Checked against this
@@ -675,15 +684,27 @@ impl Reader {
             .copied()
             .filter(|c| c.table == table)
             .collect();
-        let buckets = broken_at_gaps(self.buckets(table, source, &columns, window)?);
+        let breaks = if table.recorded() {
+            Breaks::Stops(self.stops(source)?)
+        } else {
+            Breaks::Holes
+        };
+        let buckets = broken(self.buckets(table, source, &columns, window)?, &breaks);
         Ok(assemble(&columns, buckets, window))
     }
 
-    /// `columns` of `table`, and in the buckets where it has no rows
+    /// `columns` of `table`, and where the daemon was not recording
     /// `fill_columns` of `fill`, on one grid over `window`: the
-    /// protocol's tracking, say, and where the daemon was not running,
-    /// tracking.log's.  The plots are `columns`' and then
-    /// `fill_columns`', each `None` where the other table's are drawn.
+    /// protocol's tracking, say, and before the daemon ran, while it was
+    /// stopped or while chronyd was down, tracking.log's.  The plots are
+    /// `columns`' and then `fill_columns`', each `None` where the other
+    /// table's are drawn.
+    ///
+    /// Not wherever `table` merely has no rows: the daemon writes a row
+    /// only when the report changes, so at a long update interval most
+    /// buckets have none while it records, and the log lands in some of
+    /// those.  The two lines would take turns, bucket by bucket, and
+    /// neither be drawn.
     pub fn filled(
         &self,
         table: Table,
@@ -702,35 +723,139 @@ impl Reader {
             .copied()
             .filter(|c| c.table == fill)
             .collect();
-        let primary = self.buckets(table, None, &columns, window)?;
+        let recording = self.recording()?;
+        let primary = broken(
+            self.buckets(table, None, &columns, window)?,
+            &Breaks::Stops(recording.ends()),
+        );
+        // Not where `table` has a row either: the daemon's first row
+        // after a start is placed at its reference time, which can be
+        // before the start.
         let taken: HashSet<i64> = primary.iter().map(|b| b.index).collect();
+        let logged: Vec<Bucket> = self
+            .buckets(fill, None, &fill_columns, window)?
+            .into_iter()
+            .filter(|b| !taken.contains(&b.index) && !recording.contains(b.at))
+            .collect();
+        let logged = broken(logged, &Breaks::Around(&recording));
         let mut merged: Vec<Bucket> = primary
             .into_iter()
-            .map(|mut b| {
-                b.values.extend(vec![[None; 3]; fill_columns.len()]);
-                b.broken.extend(vec![false; fill_columns.len()]);
-                b
-            })
+            .map(|b| b.padded(0, fill_columns.len()))
+            .chain(logged.into_iter().map(|b| b.padded(columns.len(), 0)))
             .collect();
-        merged.extend(
-            self.buckets(fill, None, &fill_columns, window)?
-                .into_iter()
-                .filter(|b| !taken.contains(&b.index))
-                .map(|b| Bucket {
-                    values: vec![[None; 3]; columns.len()]
-                        .into_iter()
-                        .chain(b.values)
-                        .collect(),
-                    broken: vec![false; columns.len()]
-                        .into_iter()
-                        .chain(b.broken)
-                        .collect(),
-                    ..b
-                }),
-        );
         merged.sort_by_key(|b| b.index);
         let all: Vec<Column> = columns.into_iter().chain(fill_columns).collect();
-        Ok(assemble(&all, broken_at_gaps(merged), window))
+        Ok(assemble(&all, merged, window))
+    }
+
+    /// When the daemon was recording: running, and chronyd answering.
+    /// From the events it wrote: its start and stop, and chronyd down
+    /// and up again.  A run that did not stop, the daemon crashing or
+    /// killed or the host going down under it, ended at the last row or
+    /// event it wrote; the latest run, if it has not stopped, at its last
+    /// poll.  `unsupported` is not counted: the daemon also writes it for
+    /// a log it cannot read.
+    fn recording(&self) -> Result<Recording> {
+        let kinds = [
+            EventKind::DaemonStart,
+            EventKind::DaemonStop,
+            EventKind::ChronydDown,
+            EventKind::ChronydCrash,
+            EventKind::ChronydUp,
+        ];
+        let names: Vec<String> = kinds.iter().map(|k| format!("'{}'", k.name())).collect();
+        let sql = format!(
+            "SELECT at, kind FROM event WHERE kind IN ({}) ORDER BY at, rowid",
+            names.join(", ")
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let events = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut spans = Vec::new();
+        // The run in progress's start, and the span in progress's.
+        let mut run: Option<i64> = None;
+        let mut since: Option<i64> = None;
+        for (at, kind) in events {
+            match EventKind::from_name(&kind) {
+                Some(EventKind::DaemonStart) => {
+                    if let (Some(start), Some(open)) = (run, since) {
+                        spans.push((open, self.last_written(start, at)?));
+                    }
+                    run = Some(at);
+                    since = Some(at);
+                }
+                Some(EventKind::DaemonStop) => {
+                    if let Some(open) = since.take() {
+                        spans.push((open, at));
+                    }
+                    run = None;
+                }
+                Some(EventKind::ChronydDown | EventKind::ChronydCrash) => {
+                    if let Some(open) = since.take() {
+                        spans.push((open, at));
+                    }
+                }
+                Some(EventKind::ChronydUp) if run.is_some() => {
+                    since = since.or(Some(at));
+                }
+                _ => {}
+            }
+        }
+        if let (Some(start), Some(open)) = (run, since) {
+            let end = match self.status()? {
+                Some(status) => status.polled_at,
+                None => self.last_written(start, i64::MAX)?,
+            };
+            spans.push((open, end));
+        }
+        // One opened and closed at once, the daemon starting with chronyd
+        // down, is none.
+        spans.retain(|(open, end)| end > open);
+        Ok(Recording { spans })
+    }
+
+    /// The latest time the daemon wrote a row of `tracking` or an event
+    /// from `from` until before `to`, unix nanoseconds; `from` if none.
+    fn last_written(&self, from: i64, to: i64) -> Result<i64> {
+        let latest: Option<i64> = self.connection.query_row(
+            "SELECT MAX(at) FROM (
+                 SELECT MAX(at) AS at FROM tracking WHERE at >= ?1 AND at < ?2
+                 UNION ALL
+                 SELECT MAX(at) FROM event WHERE at >= ?1 AND at < ?2
+             )",
+            params![from, to],
+            |row| row.get(0),
+        )?;
+        Ok(latest.unwrap_or(from))
+    }
+
+    /// Where a line of the daemon's own rows breaks, unix nanoseconds,
+    /// sorted: where it stopped recording, and for one source where
+    /// `source` says, where chronyd stopped reporting it.
+    fn stops(&self, source: Option<&Key>) -> Result<Vec<i64>> {
+        let stops = self.recording()?.ends();
+        match source {
+            Some(Key::Id(id)) => self.with_removals(stops, *id),
+            _ => Ok(stops),
+        }
+    }
+
+    /// `stops`, sorted, and when `source_id` was reported removed.
+    fn with_removals(&self, mut stops: Vec<i64>, source_id: i64) -> Result<Vec<i64>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT at FROM event WHERE kind = ?1 AND source_id = ?2")?;
+        let removals = statement
+            .query_map(params![EventKind::SourceRemoved.name(), source_id], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        stops.extend(removals);
+        stops.sort_unstable();
+        Ok(stops)
     }
 
     /// The buckets of `columns` of `table` over `window`, in order.
@@ -791,7 +916,7 @@ impl Reader {
         let time = table.time();
         let sql = format!(
             "SELECT source_id, CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
-                    AVG({column})
+                    AVG({column}), AVG({time})
              FROM {}
              WHERE {time} >= ?1 AND {time} <= ?2
              GROUP BY source_id, bucket ORDER BY source_id, bucket",
@@ -804,9 +929,11 @@ impl Reader {
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, Option<f64>>(2)?,
+                    row.get::<_, f64>(3)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let recording = self.recording()?;
         // Every bucket any source has, and per source its buckets with a
         // break before each gap, then laid on that grid.
         let mut grid: Vec<i64> = rows.iter().map(|r| r.1).collect();
@@ -814,19 +941,25 @@ impl Reader {
         sources.dedup();
         let mut lines = Vec::new();
         for source in &sources {
+            let mine: Vec<(i64, f64)> = rows
+                .iter()
+                .filter(|r| r.0 == *source)
+                .map(|r| (r.1, r.3))
+                .collect();
             let own: HashMap<i64, Option<f64>> = rows
                 .iter()
                 .filter(|r| r.0 == *source)
                 .map(|r| (r.1, r.2))
                 .collect();
-            let mut buckets: Vec<i64> = own.keys().copied().collect();
-            buckets.sort_unstable();
-            // A break is the bucket before the one after the gap.
-            let breaks: Vec<i64> = buckets
-                .iter()
-                .zip(gaps(&buckets))
-                .filter(|(_, broken)| *broken)
-                .map(|(bucket, _)| bucket - 1)
+            let stops = Breaks::Stops(self.with_removals(recording.ends(), *source)?);
+            // A break is the bucket before the one after the gap, so
+            // there is none between two buckets side by side: a stop
+            // shorter than a bucket.
+            let breaks: Vec<i64> = breaks(&mine, &stops)
+                .into_iter()
+                .enumerate()
+                .filter(|(n, broken)| *broken && mine[n - 1].0 < mine[*n].0 - 1)
+                .map(|(n, _)| mine[n].0 - 1)
                 .collect();
             grid.extend(&breaks);
             lines.push((*source, own, breaks));
@@ -942,10 +1075,96 @@ struct Bucket {
     broken: Vec<bool>,
 }
 
-/// `buckets`, each broken before for every column where a gap precedes
-/// it.
-fn broken_at_gaps(buckets: Vec<Bucket>) -> Vec<Bucket> {
-    let breaks = gaps(&buckets.iter().map(|b| b.index).collect::<Vec<_>>());
+impl Bucket {
+    /// It with `before` columns of nothing ahead of its own and `after`
+    /// behind, for a series of two tables' columns.
+    fn padded(self, before: usize, after: usize) -> Self {
+        let pad = |n| std::iter::repeat_n(([None; 3], false), n);
+        let (values, broken) = pad(before)
+            .chain(self.values.into_iter().zip(self.broken))
+            .chain(pad(after))
+            .unzip();
+        Self {
+            values,
+            broken,
+            ..self
+        }
+    }
+}
+
+/// When the daemon was recording, as [`Reader::recording`] finds it:
+/// spans of unix nanoseconds, inclusive, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Recording {
+    spans: Vec<(i64, i64)>,
+}
+
+impl Recording {
+    /// Whether it was recording at `at`, unix nanoseconds.
+    fn contains(&self, at: f64) -> bool {
+        self.spans
+            .iter()
+            .any(|(start, end)| *start as f64 <= at && at <= *end as f64)
+    }
+
+    /// Whether it was recording at any time after `a` and before `b`.
+    fn between(&self, a: f64, b: f64) -> bool {
+        self.spans
+            .iter()
+            .any(|(start, end)| (*start as f64) < b && (*end as f64) > a)
+    }
+
+    /// Where each span ended, oldest first.
+    fn ends(&self) -> Vec<i64> {
+        self.spans.iter().map(|(_, end)| *end).collect()
+    }
+}
+
+/// Where a line breaks between two of its buckets.
+enum Breaks<'a> {
+    /// At a hole much wider than its own cadence, as [`gaps`] finds
+    /// them: a log's, for which nothing says when chronyd was running.
+    Holes,
+    /// Only where the daemon stopped recording, at these times, unix
+    /// nanoseconds, sorted: one of its own tables', whose rows are
+    /// written only on change, so that a hole while it recorded is
+    /// nothing having changed, however long.
+    Stops(Vec<i64>),
+    /// At holes, and wherever the daemon recorded: a log filling in
+    /// around it.
+    Around(&'a Recording),
+}
+
+/// For each of `buckets`, `(index, time)` sorted by index, whether its
+/// line breaks before it.
+fn breaks(buckets: &[(i64, f64)], how: &Breaks<'_>) -> Vec<bool> {
+    let holes = gaps(&buckets.iter().map(|b| b.0).collect::<Vec<_>>());
+    holes
+        .iter()
+        .enumerate()
+        .map(|(n, hole)| {
+            let Some(before) = n.checked_sub(1).map(|m| buckets[m].1) else {
+                return false;
+            };
+            let after = buckets[n].1;
+            match how {
+                Breaks::Holes => *hole,
+                Breaks::Stops(stops) => stops
+                    .get(stops.partition_point(|t| (*t as f64) < before))
+                    .is_some_and(|t| (*t as f64) < after),
+                Breaks::Around(recording) => *hole || recording.between(before, after),
+            }
+        })
+        .collect()
+}
+
+/// `buckets`, each broken before for every column where `how` says its
+/// line breaks.
+fn broken(buckets: Vec<Bucket>, how: &Breaks<'_>) -> Vec<Bucket> {
+    let breaks = breaks(
+        &buckets.iter().map(|b| (b.index, b.at)).collect::<Vec<_>>(),
+        how,
+    );
     buckets
         .into_iter()
         .zip(breaks)
@@ -976,10 +1195,14 @@ fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series 
             })
             .collect(),
     };
+    let mut previous: Option<f64> = None;
     for bucket in buckets {
         if bucket.broken.contains(&true) {
             let gap = series.at.len();
-            series.at.push(seconds_f(bucket.at - width));
+            // Between the two, since in a series of two tables' columns
+            // the one before may be the other's, a bucket or less back.
+            let marker = previous.map_or(bucket.at - width, |p| f64::midpoint(p, bucket.at));
+            series.at.push(seconds_f(marker));
             for (plot, broken) in series.plots.iter_mut().zip(&bucket.broken) {
                 plot.mean.push(None);
                 plot.min.push(None);
@@ -989,6 +1212,7 @@ fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series 
                 }
             }
         }
+        previous = Some(bucket.at);
         series.at.push(seconds_f(bucket.at));
         for (plot, [mean, min, max]) in series.plots.iter_mut().zip(bucket.values) {
             plot.mean.push(mean);
@@ -1138,6 +1362,25 @@ mod tests {
         }
     }
 
+    /// A `tracking.log` line.
+    fn logged(second: i64, frequency: f64) -> Line {
+        Line::Tracking(TrackingLine {
+            at: at(second),
+            reference: "PPS".to_owned(),
+            stratum: 1,
+            frequency,
+            skew: 0.01,
+            offset: 1e-6,
+            leap: 'N',
+            combined_sources: 1,
+            offset_sd: 1e-7,
+            remaining_correction: 0.0,
+            root_delay: 1e-9,
+            root_dispersion: 1e-5,
+            max_error: 1e-5,
+        })
+    }
+
     const SERVER: [u8; 4] = [192, 0, 2, 1];
     const OTHER: [u8; 4] = [192, 0, 2, 2];
 
@@ -1195,31 +1438,19 @@ mod tests {
     }
 
     #[test]
-    fn the_log_fills_where_the_protocol_has_no_rows() {
+    fn the_log_fills_where_the_daemon_was_not_recording() {
         let mut db = Database::new("filled");
         db.log
             .write(|batch| {
                 // The protocol for the first 50 s, the log from 40 s on:
                 // they overlap, and only the protocol is drawn there.
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.event(at(49), EventKind::DaemonStop, None, None)?;
                 for second in 0..50 {
                     batch.tracking(at(second), &tracking(second, 1.0))?;
                 }
                 for second in 40..100 {
-                    batch.log_line(&Line::Tracking(TrackingLine {
-                        at: at(second),
-                        reference: "PPS".to_owned(),
-                        stratum: 1,
-                        frequency: 2.0,
-                        skew: 0.01,
-                        offset: 1e-6,
-                        leap: 'N',
-                        combined_sources: 1,
-                        offset_sd: 1e-7,
-                        remaining_correction: 0.0,
-                        root_delay: 1e-9,
-                        root_dispersion: 1e-5,
-                        max_error: 1e-5,
-                    }))?;
+                    batch.log_line(&logged(second, 2.0))?;
                 }
                 Ok(())
             })
@@ -1241,6 +1472,119 @@ mod tests {
         assert!(reported.mean[50..].iter().all(Option::is_none));
         assert!(logged.mean[..50].iter().all(Option::is_none));
         assert!(logged.mean[50..].iter().all(|v| *v == Some(2.0)));
+    }
+
+    #[test]
+    fn a_long_update_interval_spans_and_is_not_filled() {
+        // chronyd's log every 16 s throughout; the daemon recording from
+        // 1200 s to 2400 s and from 3000 s, a clock update every 16 s
+        // and then, from 1800 s, every 65 s, a row only for each.  At
+        // 10 s a bucket, most buckets of a run then have no row, and the
+        // log has lines in many of them.
+        let runs = [(1200, 2400), (3000, 3600)];
+        let updates: Vec<i64> = (1200..1800)
+            .step_by(16)
+            .chain((1800..2400).step_by(65))
+            .chain((3000..3600).step_by(65))
+            .collect();
+        let mut db = Database::new("interval");
+        db.log
+            .write(|batch| {
+                for second in (0..3600).step_by(16) {
+                    batch.log_line(&logged(second, 2.0))?;
+                }
+                for (start, stop) in runs {
+                    batch.event(at(start), EventKind::DaemonStart, None, None)?;
+                    batch.event(at(stop), EventKind::DaemonStop, None, None)?;
+                }
+                for second in &updates {
+                    batch.tracking(at(second + 1), &tracking(*second, 1.0))?;
+                }
+                Ok(())
+            })
+            .expect("written");
+        let series = db
+            .reader()
+            .filled(
+                Table::Tracking,
+                &[column(Table::Tracking, "frequency")],
+                Table::LogTracking,
+                &[column(Table::LogTracking, "frequency")],
+                window(0, 3599, 360),
+            )
+            .expect("a series");
+        let [reported, logged] = [&series.plots[0], &series.plots[1]];
+        let recorded = |t: f64| {
+            runs.iter()
+                .any(|(start, stop)| ((START + start) as f64..=(START + stop) as f64).contains(&t))
+        };
+        // The log only where the daemon was not recording.
+        let shown: Vec<f64> = series
+            .at
+            .iter()
+            .zip(&logged.mean)
+            .filter(|(_, v)| v.is_some())
+            .map(|(t, _)| *t)
+            .collect();
+        assert!(!shown.is_empty());
+        assert!(shown.iter().all(|t| !recorded(*t)), "{shown:?}");
+        // Every update, and in no bucket both.
+        assert_eq!(reported.mean.iter().flatten().count(), updates.len());
+        assert!(
+            reported
+                .mean
+                .iter()
+                .zip(&logged.mean)
+                .all(|(r, l)| r.is_none() || l.is_none())
+        );
+        // The protocol's line breaks once, between its last update before
+        // the stop and its first after, and spans every bucket of a run
+        // without a row, at either update interval; the log's breaks
+        // once, around the first run.
+        let between = |gaps: &[usize], after: i64, before: i64| {
+            gaps.len() == 1
+                && ((START + after) as f64..(START + before) as f64).contains(&series.at[gaps[0]])
+        };
+        assert!(between(&reported.gaps, 2385, 3000), "{:?}", reported.gaps);
+        assert!(between(&logged.gaps, 1184, 2416), "{:?}", logged.gaps);
+    }
+
+    #[test]
+    fn recording_is_running_with_chronyd_up() {
+        let mut db = Database::new("recording");
+        db.log
+            .write(|batch| {
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.event(at(100), EventKind::ChronydDown, None, None)?;
+                batch.event(at(200), EventKind::ChronydUp, None, None)?;
+                batch.tracking(at(250), &tracking(249, 1.0))?;
+                // Killed after 250 s, started again at 400 s.
+                batch.event(at(400), EventKind::DaemonCrash, None, None)?;
+                batch.event(at(400), EventKind::DaemonStart, None, None)?;
+                // A log it could not read is not chronyd down.
+                batch.event(at(450), EventKind::Unsupported, None, None)?;
+                batch.event(at(500), EventKind::DaemonStop, None, None)?;
+                // Started with chronyd down, which comes up later.
+                batch.event(at(600), EventKind::DaemonStart, None, None)?;
+                batch.event(at(600), EventKind::ChronydDown, None, None)?;
+                batch.event(at(650), EventKind::ChronydUp, None, None)?;
+                batch.status(at(700), ChronydState::Up, None, Some(42))?;
+                Ok(())
+            })
+            .expect("written");
+        let spans = [(0, 100), (200, 250), (400, 500), (650, 700)]
+            .map(|(start, end)| ((START + start) * NS, (START + end) * NS));
+        assert_eq!(db.reader().recording().expect("spans").spans, spans);
+        // With no daemon ever, never.
+        let only_logs = Database::new("only-logs");
+        assert!(
+            only_logs
+                .reader()
+                .recording()
+                .expect("spans")
+                .spans
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1353,8 +1697,11 @@ mod tests {
         let mut db = Database::new("series");
         db.log
             .write(|batch| {
-                // An update a second for 100 s, then 100 s of nothing,
-                // then 100 more.
+                // An update a second for 100 s, then 100 s of the daemon
+                // stopped, then 100 more.
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.event(at(100), EventKind::DaemonStop, None, None)?;
+                batch.event(at(200), EventKind::DaemonStart, None, None)?;
                 for second in (0..100).chain(200..300) {
                     batch.tracking(at(second), &tracking(second, second as f64))?;
                 }
@@ -1456,8 +1803,11 @@ mod tests {
                     batch.source_sample(at(n * 10), a, &sample(SERVER, 1.0))?;
                     batch.source_sample(at(n * 10 + 5), b, &sample(OTHER, 2.0))?;
                 }
-                // One more of `a` after a long silence: a gap in its line
-                // alone.
+                // One more of `a` after the daemon was stopped: a gap in
+                // its line alone.
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.event(at(100), EventKind::DaemonStop, None, None)?;
+                batch.event(at(185), EventKind::DaemonStart, None, None)?;
                 batch.source_sample(at(190), a, &sample(SERVER, 1.0))?;
                 Ok(())
             })

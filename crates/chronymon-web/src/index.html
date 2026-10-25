@@ -67,8 +67,8 @@ const OFFERED = [
 ];
 
 // tracking.log's column for each of the protocol's it has, drawn where
-// the protocol has no rows: before the daemon ran, and while it was
-// down.  The log's offset is the update's, as the report's last offset
+// the daemon was not recording: before it ran, while it was stopped,
+// and while chronyd was down.  The log's offset is the update's, as the report's last offset
 // is.
 const FILLS = {
   last_offset: "offset",

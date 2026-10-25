@@ -5,7 +5,10 @@
 //! restart and a step along the way; and chronyd's logs as the daemon
 //! reads them: refclock and tempcomp samples throughout, and tracking
 //! for some hours before the daemon started, for the charts to fill
-//! from.
+//! from.  Later, chronyd restarted with tracking.log on and a 64 s
+//! update interval, a row only every few buckets, the daemon stopped
+//! for a while and then recording beside the log: the log fills the
+//! charts only while the daemon was stopped.
 //!
 //!     cargo run -p chronymon-web --example synthetic -- DATABASE [HOURS]
 //!
@@ -54,6 +57,19 @@ const OUTAGE_FOR: i64 = 1800;
 const STEP_AT: f64 = 0.7;
 /// Hours of `tracking.log` from before the daemon's first poll.
 const LOG_ONLY_HOURS: i64 = 6;
+/// When, as a fraction of the span, chronyd restarts with tracking.log
+/// on and updates the clock every `SLOW_UPDATE_EVERY` s, the daemon
+/// stopped for its first `SLOW_STOPPED_FOR` s; and when the clock is
+/// back to updating every `UPDATE_EVERY` s.  Before the last six hours,
+/// which the README's screenshots show.
+const SLOW_AT: f64 = 0.78;
+const SLOW_UNTIL: f64 = 0.86;
+const SLOW_UPDATE_EVERY: i64 = 64;
+const SLOW_STOPPED_FOR: i64 = 1200;
+/// Seconds a clock update's reference time, its sample's, is before
+/// chronyd logs the update: so the log and the daemon's rows are in
+/// different buckets.
+const REFERENCE_LAG: i64 = 23;
 /// Degrees of the tempcomp sensor's daily swing about its mean.
 const TEMPERATURE_MEAN: f64 = 41.0;
 const TEMPERATURE_SWING: f64 = 4.0;
@@ -122,6 +138,25 @@ fn feeds() -> [Feed; 3] {
     ]
 }
 
+/// A `tracking.log` line at `second`.
+fn logged(second: i64, frequency: f64, noise: &mut Noise) -> Line {
+    Line::Tracking(TrackingLine {
+        at: Timestamp::new(second, 0).expect("in range"),
+        reference: "PPS".to_owned(),
+        stratum: 1,
+        frequency,
+        skew: 0.004 + noise.uniform() * 0.002,
+        offset: noise.normal(3e-7),
+        leap: 'N',
+        combined_sources: 1,
+        offset_sd: 3e-7,
+        remaining_correction: noise.normal(1e-7),
+        root_delay: 1e-9,
+        root_dispersion: 1.5e-5 + noise.uniform() * 5e-6,
+        max_error: 2e-5,
+    })
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let path = PathBuf::from(args.next().ok_or("usage: synthetic DATABASE [HOURS]")?);
@@ -136,6 +171,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let start = end - span;
     let outage = start + (span as f64 * OUTAGE_AT) as i64;
     let step = start + (span as f64 * STEP_AT) as i64;
+    // On the grid of updates, so that the loop below meets them.
+    let on_grid = |fraction: f64| {
+        let after = (span as f64 * fraction) as i64;
+        start + after / SLOW_UPDATE_EVERY * SLOW_UPDATE_EVERY
+    };
+    let slow = on_grid(SLOW_AT);
+    let resumed = slow + SLOW_STOPPED_FOR;
+    let fast = on_grid(SLOW_UNTIL);
     let mut noise = Noise(0x2545_f491_4f6c_dd1d);
     let feeds = feeds();
     let at = |second: i64| Timestamp::new(second, 0);
@@ -162,21 +205,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         for second in (start - LOG_ONLY_HOURS * 3600..start).step_by(UPDATE_EVERY as usize) {
             let phase = (second as f64 % DAY) / DAY * TAU;
-            batch.log_line(&Line::Tracking(TrackingLine {
-                at: at(second).expect("in range"),
-                reference: "PPS".to_owned(),
-                stratum: 1,
-                frequency: -12.4 + 0.35 * phase.sin() + noise.normal(0.002),
-                skew: 0.004 + noise.uniform() * 0.002,
-                offset: noise.normal(3e-7),
-                leap: 'N',
-                combined_sources: 1,
-                offset_sd: 3e-7,
-                remaining_correction: noise.normal(1e-7),
-                root_delay: 1e-9,
-                root_dispersion: 1.5e-5 + noise.uniform() * 5e-6,
-                max_error: 2e-5,
-            }))?;
+            let frequency = -12.4 + 0.35 * phase.sin() + noise.normal(0.002);
+            batch.log_line(&logged(second, frequency, &mut noise))?;
         }
         let mut offset = 0.0_f64;
         let mut valid = vec![0_u32; feeds.len()];
@@ -205,8 +235,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Some("pid 812 to 1907"),
                 )?;
             }
+            if second == slow {
+                batch.event(when, EventKind::DaemonStop, None, None)?;
+            }
+            if second == resumed {
+                batch.event(when, EventKind::DaemonStart, None, Some("synthetic"))?;
+            }
+            let recording = !(slow..resumed).contains(&second);
+            let updated =
+                !(slow..fast).contains(&second) || (second - slow) % SLOW_UPDATE_EVERY == 0;
             let phase = (second as f64 % DAY) / DAY * TAU;
             let frequency = -12.4 + 0.35 * phase.sin() + noise.normal(0.002);
+            if updated && second >= slow {
+                batch.log_line(&logged(second, frequency, &mut noise))?;
+            }
             let temperature = TEMPERATURE_MEAN + TEMPERATURE_SWING * phase.sin();
             batch.log_line(&Line::Tempcomp(TempcompLine {
                 at: when,
@@ -226,31 +268,39 @@ fn main() -> Result<(), Box<dyn Error>> {
                     dispersion: jitter,
                 }))?;
             }
+            if !recording {
+                continue;
+            }
             offset = 0.6 * offset + noise.normal(3e-7);
             let stepped = (step..step + UPDATE_EVERY).contains(&second);
             if stepped {
                 offset = 0.18;
                 batch.event(when, EventKind::Step, None, Some("0.18 s"))?;
             }
-            batch.tracking(
-                when,
-                &Tracking {
-                    reference_id: ReferenceId(feeds[0].reference_id),
-                    address: feeds[0].address,
-                    stratum: 1,
-                    leap: Leap::Normal,
-                    reference_time: when,
-                    current_correction: Seconds::new(offset * 0.5),
-                    last_offset: Seconds::new(offset),
-                    rms_offset: Seconds::new(4e-7 + offset.abs() * 0.1),
-                    frequency: Ppm::new(frequency),
-                    residual_frequency: Ppm::new(noise.normal(0.001)),
-                    skew: Ppm::new(0.004 + noise.uniform() * 0.002),
-                    root_delay: Seconds::new(1e-9),
-                    root_dispersion: Seconds::new(1.5e-5 + noise.uniform() * 5e-6),
-                    last_update_interval: Seconds::new(UPDATE_EVERY as f64),
-                },
-            )?;
+            let interval = if (slow..fast).contains(&second) {
+                SLOW_UPDATE_EVERY
+            } else {
+                UPDATE_EVERY
+            };
+            let tracking = Tracking {
+                reference_id: ReferenceId(feeds[0].reference_id),
+                address: feeds[0].address,
+                stratum: 1,
+                leap: Leap::Normal,
+                reference_time: at(second - REFERENCE_LAG).expect("in range"),
+                current_correction: Seconds::new(offset * 0.5),
+                last_offset: Seconds::new(offset),
+                rms_offset: Seconds::new(4e-7 + offset.abs() * 0.1),
+                frequency: Ppm::new(frequency),
+                residual_frequency: Ppm::new(noise.normal(0.001)),
+                skew: Ppm::new(0.004 + noise.uniform() * 0.002),
+                root_delay: Seconds::new(1e-9),
+                root_dispersion: Seconds::new(1.5e-5 + noise.uniform() * 5e-6),
+                last_update_interval: Seconds::new(interval as f64),
+            };
+            if updated {
+                batch.tracking(when, &tracking)?;
+            }
             for (n, f) in feeds.iter().enumerate() {
                 let every = if f.mode == SourceMode::Refclock {
                     UPDATE_EVERY

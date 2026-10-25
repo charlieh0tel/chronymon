@@ -468,8 +468,8 @@ const ENVELOPE = "#0e7490";
 
 // `/api/history` for `columns` of `table` over the range, for `source`
 // when given.
-// `fill`, when given, is `{ table, columns }`: chronyd's log, drawn in
-// the buckets where `table` has no rows.
+// `fill`, when given, is `{ table, columns }`: chronyd's log, drawn
+// where the daemon was not recording.
 function historyQuery(table, columns, bounds, source, fill) {
   const q = new URLSearchParams({ table, columns: columns.join(","), points: pointsFor(bounds.seconds) });
   if (bounds.from) q.set("from", Math.round(bounds.from));
@@ -516,11 +516,11 @@ function filledCharts(table, got, fills) {
     .map((plot) => {
       const k = key(table, plot.column);
       const logged = got.plots.find((p) => p.table !== table && p.column === fills[plot.column]);
-      const lines = [{ column: k, values: scaled(plot.mean, k), color: TRACE, name: "reported" }];
+      const lines = [{ column: k, values: scaled(spanned(plot.mean, plot.gaps), k), color: TRACE, name: "reported" }];
       if (logged && logged.mean.some((v) => v != null)) {
         lines.push({
           column: k,
-          values: scaled(logged.mean, k),
+          values: scaled(spanned(logged.mean, logged.gaps), k),
           color: LOGGED,
           dash: LOGGED_DASH,
           name: LOGGED_NAME,
@@ -529,7 +529,7 @@ function filledCharts(table, got, fills) {
       return {
         column: k,
         title: label(k),
-        envelope: { min: scaled(plot.min, k), max: scaled(plot.max, k) },
+        envelope: envelopeOf(plot, k),
         lines: lines.length > 1 ? lines : [{ ...lines[0], name: undefined }],
       };
     });
@@ -546,21 +546,30 @@ function chartsOf(table, plots) {
     const k = key(table, plot.column);
     return {
       column: k,
-      envelope: { min: scaled(plot.min, k), max: scaled(plot.max, k) },
-      lines: [{ column: k, values: scaled(plot.mean, k), color: TRACE }],
+      envelope: envelopeOf(plot, k),
+      lines: [{ column: k, values: scaled(spanned(plot.mean, plot.gaps), k), color: TRACE }],
     };
   });
 }
 
-// A line's values on an overlay's grid: a bucket it has no sample in
-// is `undefined`, which uPlot draws across, and only its gaps `null`,
+// A line's values on a grid it shares: a bucket it has no row in is
+// `undefined`, which uPlot draws across, and only its `gaps` `null`,
 // which uPlot breaks at.  A source polled every 64 s beside a refclock
-// polled every 16 s has nothing in most of the grid's buckets.
-function overlayValues(line) {
-  const values = line.mean.map((v) => (v === null ? undefined : v));
-  for (const gap of line.gaps) values[gap] = null;
-  return values;
+// polled every 16 s has nothing in most of an overlay's buckets; the
+// clock, written only when it updates, nothing in most of a long
+// range's while chronyd's log fills around it.
+function spanned(values, gaps) {
+  const out = values.map((v) => (v === null ? undefined : v));
+  for (const gap of gaps) out[gap] = null;
+  return out;
 }
+
+// A plot's envelope, its each bucket's lowest and highest, spanned as
+// its line is.
+const envelopeOf = (plot, k) => ({
+  min: scaled(spanned(plot.min, plot.gaps), k),
+  max: scaled(spanned(plot.max, plot.gaps), k),
+});
 
 // A drawing of `overlay`, one column of every source, a line each in
 // the source's color.  `names` maps a source ID to its name.
@@ -574,7 +583,7 @@ function overlayChart(table, column, overlay, names) {
     lines: overlay.lines.map((line) => ({
       column: k,
       name: names(line.source_id),
-      values: scaled(overlayValues(line), k),
+      values: scaled(spanned(line.mean, line.gaps), k),
       color: sourceColor(line.source_id),
     })),
   };
