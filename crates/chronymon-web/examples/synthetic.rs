@@ -353,7 +353,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             let tracking = Tracking {
                 reference_id: ReferenceId(feeds[0].reference_id),
-                address: feeds[0].address,
+                // chronyd's tracking leaves a refclock's address
+                // unspecified.
+                address: Address::Unspecified,
                 stratum: 1,
                 leap: Leap::Normal,
                 reference_time: at(second - REFERENCE_LAG).expect("in range"),

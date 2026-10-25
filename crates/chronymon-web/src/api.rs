@@ -179,12 +179,17 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
         })
     });
     let tracking = reader.latest_tracking()?;
+    // A refclock's address is its reference ID among the sources, but
+    // tracking leaves it unspecified (chrony 4.6.1 `reference.c:959`).
     let reference_name = match &tracking {
-        Some(t) => reader
-            .sources()?
-            .into_iter()
-            .find(|s| s.address == t.reference_address)
-            .and_then(|s| s.name),
+        Some(t) => {
+            let reference_id = format!("{:08X}", t.reference_id);
+            reader
+                .sources()?
+                .into_iter()
+                .find(|s| s.address == t.reference_address || s.address == reference_id)
+                .and_then(|s| s.name)
+        }
         None => None,
     };
     let tracking = tracking.map(|t| {
