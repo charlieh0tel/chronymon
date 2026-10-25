@@ -21,18 +21,25 @@ const CURSOR = 0.6;
 // readings end when they are written, and with no daemon writing more
 // the strip would turn stale partway through the shots.
 const POLL_AGE = 1;
+// chronymon-web's default database.
+const DATABASE = "/var/lib/chronymon/chronymon.sqlite";
 
 // Seconds of readings each page shows: six hours, quiet, after the
 // synthetic run's step.
 const LAST = 21600;
 
-// File, path, and what shows the page is drawn.
+// A kiosk's display: landscape, as a television is.
+const KIOSK_VIEWPORT = { width: 1920, height: 1080 };
+
+// File, path, what shows the page is drawn, and the viewport if not
+// VIEWPORT.
 const SHOTS = [
   ["web-live.png", `/?last=${LAST}`, "#charts .uplot"],
   ["web-sources.png", `/sources?last=${LAST}`, "#charts .uplot"],
   ["web-refclocks.png", `/refclocks?last=${LAST}`, "#charts .uplot"],
   ["web-temperature.png", `/temperature?last=${LAST}`, "#scatter .uplot"],
   ["web-distribution.png", `/distribution?last=${LAST}`, "#figures .uplot"],
+  ["web-kiosk.png", `/kiosk?last=${LAST}`, "#charts .uplot", KIOSK_VIEWPORT],
 ];
 
 const browser = await chromium.launch();
@@ -45,7 +52,16 @@ try {
     status.status.age = POLL_AGE;
     return route.fulfill({ response, json: status });
   });
-  for (const [file, path, drawn] of SHOTS) {
+  // The colophon names the database where it is installed, not where
+  // the shots' synthetic one happens to be.
+  await page.route("**/api/about", async (route) => {
+    const response = await route.fetch();
+    const about = await response.json();
+    about.database = DATABASE;
+    return route.fulfill({ response, json: about });
+  });
+  for (const [file, path, drawn, viewport = VIEWPORT] of SHOTS) {
+    await page.setViewportSize(viewport);
     await page.goto(FULL + path);
     await page.waitForSelector(drawn);
     const chart = await page.locator(drawn).first().boundingBox();

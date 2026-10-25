@@ -144,3 +144,63 @@ table.numbers td { padding: 3px 18px 3px 0; font-variant-numeric: tabular-nums; 
 #table-wrap td, #table-wrap th { white-space: nowrap; padding-right: 14px; }
 #events td { padding-right: 14px; }
 #figures h2 { margin-top: 14px; }
+
+/* The kiosk: one screen for an unattended display, full size from
+   1440x1080 and scaled down below by `--u`, which the page sets.  The
+   clock's state in large type on the left, its history on the right,
+   filling the window and never scrolling; nothing to click, so no
+   pointer either. */
+body.kiosk { --u: 1px; font-size: calc(13 * var(--u));
+             height: 100vh; overflow: hidden; cursor: none;
+             padding: calc(12 * var(--u) + var(--inset-y, 0px)) calc(12 * var(--u) + var(--inset-x, 0px));
+             gap: calc(12 * var(--u));
+             grid-template-columns: calc(640 * var(--u)) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.kiosk .panel { padding: calc(12 * var(--u)); }
+.kiosk h2 { font-size: calc(14 * var(--u)); margin-bottom: calc(6 * var(--u)); }
+.kiosk section { display: flex; flex-direction: column; gap: calc(12 * var(--u)); min-height: 0; }
+#kiosk-head { display: flex; gap: calc(12 * var(--u)); align-items: center; font-size: calc(20 * var(--u));
+              padding: 0 calc(2 * var(--u)); white-space: nowrap; }
+#kiosk-head .pill { font-size: calc(15 * var(--u)); }
+/* The feed's state at a glance: green while live. */
+.dot { width: calc(14 * var(--u)); height: calc(14 * var(--u)); border-radius: 50%; background: var(--dim); flex: none; }
+.dot.live { background: var(--ok); }
+.dot.stale { background: var(--warn); }
+.dot.down { background: var(--bad); }
+#kiosk-sync .mode { font: 700 calc(72 * var(--u))/1 system-ui, sans-serif; color: var(--ok);
+                    text-transform: uppercase; white-space: nowrap; overflow: hidden; }
+#kiosk-sync .mode.warn { color: var(--warn); }
+#kiosk-sync .mode.bad { color: var(--bad); }
+#kiosk-sync .reference { font-size: calc(48 * var(--u)); line-height: 1.2; margin-top: calc(10 * var(--u));
+                         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#kiosk-sync .reference .muted { font-size: calc(24 * var(--u)); }
+#kiosk-sync > .muted { font-size: calc(18 * var(--u)); }
+#kiosk-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: calc(14 * var(--u)) calc(20 * var(--u)); }
+.tile { display: flex; flex-direction: column; min-width: 0; }
+.tile .v { font-size: calc(40 * var(--u)); line-height: 1.1; font-variant-numeric: tabular-nums;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .k { font-size: calc(17 * var(--u)); color: var(--dim); }
+.tile.warn .v { color: var(--warn); }
+.tile.bad .v { color: var(--bad); }
+/* What was read last, while the feed is not live: kept, dimmed. */
+#kiosk-tiles.dim, #kiosk-sources.dim { opacity: 0.4; }
+#kiosk-sources table, #kiosk-events table { table-layout: fixed; }
+#kiosk-sources td { font-size: calc(22 * var(--u)); padding: calc(2 * var(--u)) calc(12 * var(--u)) calc(2 * var(--u)) 0;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#kiosk-sources td:first-child { width: 1.5em; }
+#kiosk-sources td:nth-child(3) { width: 4em; }
+#kiosk-sources td:last-child { width: 8em; text-align: right; padding-right: 0; }
+/* The events take what the column has left, and lose their oldest
+   rows rather than scroll. */
+#kiosk-events { flex: 1 1 0; min-height: 0; overflow: hidden; position: relative; }
+#kiosk-events td { font-size: calc(16 * var(--u)); padding: calc(1 * var(--u)) calc(10 * var(--u)) calc(1 * var(--u)) 0;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#kiosk-events td:first-child { color: var(--dim); width: 11em; }
+.kiosk footer { font-size: calc(12 * var(--u)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kiosk footer a { color: inherit; text-decoration: none; }
+#kiosk-stack { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#kiosk-stack #charts { flex: 1 1 0; min-height: 0; overflow: hidden; }
+/* Nobody points: a pointer resting on a chart draws no cursor, and
+   nothing can drag a range. */
+.kiosk .u-over { pointer-events: none; }
+/* Titles a fixed height, which the page takes from each chart's room. */
+.kiosk .u-title { font-size: calc(20 * var(--u)); line-height: calc(30 * var(--u)); height: calc(30 * var(--u)); }

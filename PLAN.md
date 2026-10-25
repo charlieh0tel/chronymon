@@ -233,6 +233,18 @@ Pages:
   the update's, as the report's last offset is.
 - A page whose table is empty, or which the database predates, says
   why: chronyd logs refclocks and tempcomp only when told to.
+- **Kiosk** (`/kiosk`): smartclock's kiosk, for an unattended
+  landscape display: no nav, controls, pointer or scrolling, full size
+  from 1440x1080 and scaled down below, with `?inset=` for a display
+  that overscans.  Left, the sync state, reference and the strip's
+  readings in large type, the sources, and the newest events, cut to
+  fit; right, Live's offset, frequency and skew and every source's
+  offset over six hours.  Tiles and charts are updated in place, and
+  it never writes its address.  It inlines style.css, common.js and
+  charts.js, so a reload waits on nothing.  One page only: it is
+  enough to read the clock from across a room, and the other pages
+  are for diagnosis, by a person at a browser.  Showing them in turn,
+  in frames, was built and dropped as more to keep than it gave.
 
 ## Phases
 
@@ -269,7 +281,8 @@ Pages:
    against synthetic data
    (`cargo run -p chronymon-web --example synthetic`) and against the
    daemon writing in a container, with chronyd stopped and restarted
-   under it.
+   under it.  Later the kiosk, smartclock's; tested in Chromium the
+   same way.
 4. **Log ingest.**  Backfill, rotated and `.gz` files, header-based
    columns; then the Refclocks and Temperature pages.  Ingest done:
    schema 2 adds a table per log (`log_tracking`, `log_measurement`,
@@ -294,7 +307,7 @@ Pages:
    `_chrony` reading chronyd's socket and logs, chronymon-web reading
    its database read-only.  A tag also triggers the APT repository's
    rebuild.
-6. **Later, maybe.**  A kiosk page, smartclock-sensord's ambient
+6. **Later, maybe.**  smartclock-sensord's ambient
    readings, a Prometheus exporter, every packet from
    `measurements.log` on the Sources page.
 
@@ -336,6 +349,7 @@ Pages:
 ## Decisions
 
 - Copy smartclock's web assets and HTTP crate now; share them later.
+- The kiosk is one summary page, with no rotation through the others.
 - One host per daemon and view.
 - Raw rows kept forever.
 - No alerting.

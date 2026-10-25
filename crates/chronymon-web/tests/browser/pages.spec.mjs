@@ -152,6 +152,82 @@ test("Journal: the synthetic run's events", async ({ page }) => {
   }
 });
 
+// A kiosk's display: landscape, as a television is.
+const KIOSK_VIEWPORT = { width: 1920, height: 1080 };
+
+// Whether the page fits its window, with nothing to scroll.
+const fits = (page) => page.evaluate(() =>
+  Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) <= innerHeight &&
+  Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth);
+
+test("Kiosk: the clock's state, its sources, events and charts, on one screen", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await page.goto("/kiosk?last=86400");
+  // The synthetic data's status row is minutes old by now.
+  await expect(page.locator("#kiosk-mode")).toHaveText(/^(synchronized|stale)$/);
+  await expect(page.locator("#kiosk-reference")).toHaveText("PPS");
+  await expect(page.locator("#kiosk-stratum")).toHaveText("stratum 1");
+  for (const name of ["last offset", "frequency", "skew", "leap"]) {
+    await expect(page.locator("#kiosk-tiles .tile .k", { hasText: name }).first()).toBeVisible();
+  }
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(page.locator("#kiosk-source-rows")).toContainText("ntp1.example.net");
+  await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
+  await expect(charts(page)).toHaveCount(4);
+  await expect(page.locator("nav")).toHaveCount(0);
+  expect(await fits(page)).toBe(true);
+});
+
+test("Kiosk: never changes its address, and redraws in place", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  const address = "/kiosk?last=86400";
+  await page.goto(address);
+  await expect(charts(page)).toHaveCount(4);
+  const length = await page.evaluate(() => history.length);
+  await page.evaluate(() => {
+    window.first = [...document.querySelectorAll("#charts .uplot"), ...$("kiosk-tiles").children];
+  });
+  await page.evaluate(() => renew());
+  await page.waitForFunction(() => !running);
+  // Two status polls.
+  await page.waitForTimeout(2500);
+  expect(await page.evaluate(() =>
+    [...document.querySelectorAll("#charts .uplot"), ...$("kiosk-tiles").children]
+      .every((el, n) => el === first[n]))).toBe(true);
+  expect(new URL(page.url()).pathname + new URL(page.url()).search).toBe(address);
+  expect(await page.evaluate(() => history.length)).toBe(length);
+});
+
+test("Kiosk: scaled down to fit a smaller screen", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/kiosk");
+  await expect(charts(page)).toHaveCount(4);
+  const unit = await page.evaluate(() => parseFloat(getComputedStyle(document.body).getPropertyValue("--u")));
+  expect(unit).toBeCloseTo(720 / 1080, 2);
+  expect(await fits(page)).toBe(true);
+});
+
+test("Kiosk: laid out inside the inset an overscanning display asks for", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await page.goto("/kiosk?inset=2,4");
+  const [left, top, unit] = await page.evaluate(() => {
+    const style = getComputedStyle(document.body);
+    return [style.paddingLeft, style.paddingTop, style.getPropertyValue("--u")].map(parseFloat);
+  });
+  // Its own margin, in kiosk pixels, then the inset; and less room
+  // than full size inside it, so scaled down.
+  expect(unit).toBeLessThan(1);
+  expect(left).toBeCloseTo(12 * unit + 0.02 * KIOSK_VIEWPORT.width, 0);
+  expect(top).toBeCloseTo(12 * unit + 0.04 * KIOSK_VIEWPORT.height, 0);
+  expect(await fits(page)).toBe(true);
+});
+
+test("Kiosk: with no database, says so", async ({ page }) => {
+  await page.goto(MISSING + "/kiosk");
+  await expect(page.locator("#kiosk-mode")).toHaveText("no data");
+  await expect(page.locator("#kiosk-update")).toContainText("no database");
+});
+
 test("Distribution: percentiles and a histogram", async ({ page }) => {
   await page.goto("/distribution?last=86400");
   await expect(page.locator("#figures .uplot").first()).toBeVisible();

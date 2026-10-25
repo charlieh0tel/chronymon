@@ -35,6 +35,20 @@ chronyd as down until chronyd answers.
 Set `CHRONYMON_WEB_LISTEN=0.0.0.0:8323` in `/etc/default/chronymon-web`
 and restart it.  The view is read-only and asks for no password.
 
+## Kiosk
+
+`http://<host>:8323/kiosk` is one screen for an unattended landscape
+display: the sync state, reference, offset, frequency and skew in
+large type, the sources, the newest events, and six hours of charts.
+No nav, controls or pointer, and it never scrolls: full size from
+1440x1080 CSS pixels, scaled down to fit a smaller screen.  It never
+changes its address.
+
+| Parameter | |
+| - | - |
+| `last` | range in seconds, default 21600 (`from`/`to` as on the other pages) |
+| `inset` | overscan margin: `N` percent (of width at the sides, of height top and bottom, at most 25), `Npx` pixels; one value for every edge or `X,Y` for sides, then top and bottom (`3`, `2,4`, `40px`); anything else is ignored |
+
 ## chronyd's logs
 
 chronyd's logs give chronymon what its control socket cannot: every
