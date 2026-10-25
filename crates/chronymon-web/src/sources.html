@@ -91,7 +91,8 @@ function sourcesTable(sources, now) {
     const life = s.removed ? `&from=${Math.floor(s.first_seen)}&to=${Math.ceil(s.last_seen)}` : "";
     return `<tr${s.removed ? ` class="removed" title="removed by chronyd"` : ""}>` +
       `<td><span class="${cls}" title="${esc(s.state ?? "")}">${esc(mark)}</span></td>` +
-      `<td><a href="${esc(`/source?source=${s.id}${life}`)}" style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</a></td>` +
+      `<td><a href="${esc(`/source?source=${s.id}${life}`)}" style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</a>` +
+      (s.locked_by ? ` <span class="muted paired">${esc(s.locked_by)} locked to it</span>` : "") + `</td>` +
       `<td class="muted">${esc(s.address)}</td>` +
       `<td>${esc(s.mode)}</td>` +
       `<td>${report.stratum ?? "--"}</td>` +

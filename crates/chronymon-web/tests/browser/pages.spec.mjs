@@ -369,6 +369,16 @@ test("API: a refclock a PPS is locked to says which", async ({ page }) => {
   expect(lockedBy["ntp1.example.net"]).toBeNull();
 });
 
+test("Sources: the table marks a refclock a PPS is locked to, quietly", async ({ page }) => {
+  await page.goto("/sources?last=3600");
+  const row = (name) => page.locator("#sources tbody tr", { has: page.locator("a", { hasText: new RegExp(`^${name}$`) }) });
+  const paired = row("NMEA").locator(".paired");
+  await expect(paired).toHaveText("PPS locked to it");
+  await expect(paired).toHaveClass(/\bmuted\b/);
+  await expect(row("PPS").locator(".paired")).toHaveCount(0);
+  await expect(row("ntp1.example.net").locator(".paired")).toHaveCount(0);
+});
+
 test("Sources: a refclock a PPS is locked to starts hidden, shown by its name, kept in the address", async ({ page }) => {
   await drawnSources(page, `/sources?${fixedDay()}`);
   const before = await lineCharts(page, "NMEA");

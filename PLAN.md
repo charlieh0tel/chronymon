@@ -229,8 +229,9 @@ Journal, Distribution, Kiosk.
   NMEA`), its PPS's pulses numbered by its time of day.  Beside the PPS
   its offsets are noise: with only an NMEA it is the source, with a
   PPS locked to it not.  `/api/sources` names the refclock locked to it
-  (`locked_by`); Sources starts with its lines hidden, shown by its
-  name (`?show=NMEA`), and the kiosk leaves it out.  A lone NMEA,
+  (`locked_by`), which Sources' table says beside its name, muted
+  ("PPS locked to it"); Sources starts with its lines hidden, shown
+  by its name (`?show=NMEA`), and the kiosk leaves it out.  A lone NMEA,
   `noselect` or not, is charted as any source.  The kiosk once left out
   `noselect` sources instead, which hid a lone NMEA and kept a paired
   one that was not `noselect`.
