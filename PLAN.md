@@ -157,10 +157,15 @@ The smartclock layout, so the two read the same:
   typical spacing: a source sampled every 64 s leaves dozens of empty
   buckets between samples at an hour's zoom, which is its cadence, not
   a gap.
-- The reader opens the database read-write but `query_only`, and never
-  creates it: the web view's user may write the file (that is what
-  keeps the WAL index without `unsafe`), and `query_only` keeps it
-  from doing so.
+- The reader opens the database read-only, and never creates it.
+  While the daemon runs it reads the daemon's own `-shm` (SQLite's
+  read-only WAL); while the daemon is stopped, when SQLite has removed
+  the `-wal`, it opens the file `immutable`, which needs no WAL index.
+  It must never be able to make a `-wal` or `-shm` of its own: one
+  owned by the web view's user locks the daemon out of its database
+  ("unable to open database file", seen in a container), so the web
+  view has no write access to the directory.  No `unsafe` to keep the
+  WAL files, as smartclock needs.
 
 Rough volume: ten sources at a 64 s poll plus tracking is about 20,000
 rows a day, 7 million a year.  Raw retention is affordable.
@@ -175,16 +180,24 @@ with SRI, assets compiled into the binary.  smartclock's `style.css`,
 into something shared once both have settled.  Served directly on a
 port, as smartclock-web is: 127.0.0.1:8323 by default, set in
 `/etc/default/chronymon-web` (0.0.0.0 for the LAN).  Read-only, no
-authentication.  Live updates as smartclock
-does them: the page polls a `since` cursor every few seconds and
-appends what is new.  Nothing arrives faster than chronyd's own
-updates, so a push channel would buy nothing.
+authentication.  Live updates as smartclock does them: the strip
+polls the `status` row every second, and the charts read their range
+again on a refresh timer (Grafana's Auto, about one read per pixel of
+time, never oftener than 5 s), redrawn in place.  One bucketed query
+per read is cheap at chronymon's volume, and drawing from the same
+query whether live or zoomed leaves one path to get right, where a
+`since` cursor appending rows would be a second.  Nothing arrives
+faster than chronyd's own updates, so a push channel would buy
+nothing.
 
 The y axis of offset charts is linear near zero and logarithmic beyond
-(uPlot's `asinh` scale option, the linear threshold, present in
-1.6.32; threshold from the median magnitude), so a
-microsecond wander and a millisecond spike are both readable on one
-chart.  Percentile lines (1, 5, 50, 95, 99) on request.
+(uPlot's `asinh` scale, `distr: 4`, in 1.6.32), so a microsecond
+wander and a millisecond spike are both readable on one chart.  The
+linear threshold is 1, 2 or 5 times a power of ten at or above the
+median magnitude; the axis is used only when the data reaches past
+ten times it, a linear one otherwise, and its ticks are zero, the
+threshold and decades of it (uPlot's own asinh splits crowd the
+linear part).  Percentiles and histograms are on their own page.
 
 Pages:
 
@@ -229,7 +242,13 @@ Pages:
    `status` row, written every poll, which leaves one path for data
    and nothing for the daemon to serve.
 3. **Web.**  Copy in smartclock's HTTP crate and web assets; Live,
-   Sources, Journal; then Distribution.
+   Sources, Journal; then Distribution.  Done: `chronymon-http`,
+   `chronymon-log`'s reader, `chronymon-web` with all five pages
+   (Live, Sources and each source's own, Journal, Distribution),
+   checked in headless Chrome against synthetic data
+   (`cargo run -p chronymon-web --example synthetic`) and against the
+   daemon writing in a container, with chronyd stopped and restarted
+   under it.
 4. **Log ingest.**  Backfill, rotated and `.gz` files, header-based
    columns; then the Refclocks and Temperature pages.
 5. **Packaging.**  One Debian package, `chronymon`, amd64 and arm64,
@@ -294,10 +313,11 @@ Pages:
   `_chrony` group, which the socket's mode does not allow).  The web
   view runs as `chronymon`.
 - The database is `/var/lib/chronymon/chronymon.sqlite`
-  (`StateDirectory=chronymon`, owned `_chrony:chronymon`, 2770, the
-  daemon under `UMask=0007`), so the web view, in group `chronymon`,
-  opens it like the daemon.  No `unsafe` to keep WAL files for
-  read-only readers, as smartclock needs.
+  (`StateDirectory=chronymon`, owned `_chrony:chronymon`, 2750), so
+  the web view, in group `chronymon`, reads it and can create nothing
+  beside it.  Decided first as 2770 with the daemon under
+  `UMask=0007`, so the web view could keep the WAL index itself; it
+  then made WAL files the daemon could not open.
 - Polled every second by default, set in `/etc/default/chronymond`.
 - Web on 127.0.0.1:8323 by default; one package for amd64 and arm64.
 - Timestamps stored as integer nanoseconds since the epoch, as

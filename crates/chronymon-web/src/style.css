@@ -1,0 +1,146 @@
+:root {
+  color-scheme: dark;
+  --bg: #14161a; --panel: #1d2026; --line: #2b3038;
+  --text: #e6e8eb; --dim: #8b929c;
+  --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #38bdf8;
+  --font: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+/* One column.  There was a 340px sidebar for the sky plot; the sky
+   moved to a page of its own and left the column empty, which stopped
+   the charts spanning the window for no reason a reader could see. */
+body {
+  margin: 0; padding: 12px; gap: 12px;
+  /* minmax(0, ...), not 1fr, whose minimum is its content: a wide
+     line inside a panel, like the 80-column status screen, would
+     otherwise widen the page instead of scrolling in its own box. */
+  display: grid; grid-template-columns: minmax(0, 1fr);
+  background: var(--bg); color: var(--text);
+  font: 13px/1.5 var(--font);
+}
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--dim);
+     text-transform: uppercase; letter-spacing: .08em; }
+
+/* Status strip: the few things worth seeing before anything else. */
+#status, #state { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline; }
+/* A fixed column, so a reading that gets wider -- "-5.8 ns" to
+   "+122.6 ns" -- does not shove every tile after it sideways. */
+.stat { display: flex; flex-direction: column; gap: 2px; min-width: 10ch; }
+.stat .v { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stat .k { font-size: 11px; color: var(--dim); }
+.pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+#age { min-width: 18ch; }
+.live { background: #14532d; color: var(--ok); }
+.stale { background: #422006; color: var(--warn); }
+.down { background: #450a0a; color: var(--bad); }
+
+/* Controls */
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+button, select {
+  background: #262b33; color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer;
+}
+button:hover, select:hover { border-color: #3d4452; }
+button[aria-pressed="true"] { background: var(--accent); color: #07121a; border-color: var(--accent); }
+.grow { flex: 1; }
+label { color: var(--dim); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th { text-align: left; color: var(--dim); font-weight: 500; padding: 3px 6px 6px 0; }
+td { padding: 2px 6px 2px 0; font-variant-numeric: tabular-nums; }
+.muted { color: var(--dim); }
+#note { color: var(--warn); }
+/* A standing caution, as distinct from a state that has gone wrong. */
+.banner { color: var(--warn); font-size: 12px; }
+footer { grid-column: 1 / -1; color: var(--dim); font-size: 11px; }
+.uplot { width: 100% !important; }
+/* One readout for the whole stack, since the cursor is one cursor.  A
+   grid of equal cells, label left and value right, so the values line
+   up in columns and the row count does not change as the cursor moves
+   and the values change width, which would move the panels below. */
+#readout { display: grid; grid-template-columns: repeat(auto-fill, minmax(36ch, 1fr));
+           gap: 2px 24px; min-height: 1.4em; font-size: 12px;
+           font-variant-numeric: tabular-nums; }
+#readout > span { display: flex; justify-content: space-between; gap: 1ch;
+                  min-width: 0; white-space: nowrap; }
+#readout .w { color: var(--dim); }
+#readout .k { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+#readout .v { color: var(--text); }
+#readout .note { grid-column: 1 / -1; display: block; overflow: hidden;
+                 text-overflow: ellipsis; }
+/* An event, beside the pointer while it is on the event's line. */
+#note-tip { position: fixed; display: none; pointer-events: none; z-index: 10;
+            max-width: 48ch; padding: 2px 6px; font-size: 12px;
+            background: var(--panel); color: var(--text); border: 1px solid var(--ok); }
+/* An event in the journal, which centers the charts on its time.  The
+   journal scrolls on its own rather than pushing the charts off the
+   screen. */
+.note-link { color: var(--ok); cursor: pointer; text-decoration: underline dotted; }
+#journal { max-height: 20rem; overflow-y: auto; }
+#journal table { font-variant-numeric: tabular-nums; }
+#journal td:first-child { color: var(--dim); white-space: nowrap; padding-right: 10px; }
+/* The panel heading sits on the controls row here, so it drops the
+   bottom margin the standalone headings keep. */
+.controls h2 { margin: 0; }
+/* One row of pages, the same on every page, with the current one
+   marked.  Arrows were worse than nothing: two links each ending in one
+   read as a breadcrumb, as though one page were inside another. */
+.nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 6px; }
+.nav a { color: var(--dim); text-decoration: none; padding: 4px 10px;
+         border-radius: 4px; border: 1px solid transparent; }
+.nav a:hover { color: var(--text); background: var(--bg); }
+.nav a[aria-current] { color: var(--text); border-color: var(--line);
+                       background: var(--bg); }
+
+/* Charts that are redrawn are not what the browser keeps the page's
+   scroll position against: it anchored to a chart, lost it when the
+   chart was replaced, and moved the page on every refresh. */
+#charts, .stack { overflow-anchor: none; }
+/* Left, where the eye starts, and where the y axis label already is;
+   as wide as its words, so a title's hover text and its underline are
+   over the title, not across the whole chart. */
+.u-title { text-align: left; padding-left: 2px; width: fit-content; }
+#ranges { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#ranges input[type=number] { width: 5em; }
+/* Every control on the line one height, its text centered in it, so
+   the text along the line shares a baseline whatever each control's
+   own default size. */
+#ranges button, #ranges select, #ranges input {
+  box-sizing: border-box; height: 30px; padding-top: 0; padding-bottom: 0; vertical-align: middle;
+}
+#ranges label { display: inline-flex; gap: 6px; align-items: center; }
+/* Buttons that act together stay on one line when the control wraps. */
+#ranges .range-group { display: inline-flex; gap: 4px; align-items: center; }
+/* A one-glyph button: the glyph larger than text, the button no taller
+   than the rest. */
+#ranges button.glyph { font-size: 1.9em; line-height: 0; padding: 0 8px; min-width: 2em; }
+/* Wide enough for two times whatever the range, so the line does not
+   change width as the range changes. */
+#range-shown { display: inline-block; min-width: 36ch; text-align: center;
+  font-variant-numeric: tabular-nums; }
+#ranges input, #ranges select { padding: 3px 6px; }
+
+/* Something to hover.  A title attribute announces itself to nobody,
+   so anything carrying one is underlined the way a footnote is. */
+.hinted { border-bottom: 1px dotted var(--dim); }
+
+
+/* A source's name in a table links to its own page. */
+a { color: var(--accent); }
+td a, .source-link { color: var(--text); text-decoration: underline dotted; }
+/* The sources table's state column: the selected source stands out. */
+.state-selected { color: var(--ok); }
+.state-bad { color: var(--bad); }
+.state-warn { color: var(--warn); }
+/* A distribution's figures beside its histogram. */
+table.numbers { border-collapse: collapse; width: auto; }
+table.numbers th { font-weight: 400; color: var(--dim); padding: 3px 18px 3px 0; white-space: nowrap; }
+table.numbers td { padding: 3px 18px 3px 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A wide table scrolls in its own box rather than widening the page,
+   and no cell wraps: a figure broken across two lines is unreadable. */
+#table-wrap { max-width: 100%; overflow-x: auto; }
+#table-wrap td, #table-wrap th { white-space: nowrap; padding-right: 14px; }
+#events td { padding-right: 14px; }
+#figures h2 { margin-top: 14px; }

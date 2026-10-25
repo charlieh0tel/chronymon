@@ -1,14 +1,24 @@
 //! Reading the database, for the web view.
 //!
-//! Opened read-write but `query_only`: the daemon's group may write the
-//! file, which is what lets SQLite keep the WAL index without `unsafe`,
-//! and `query_only` makes sure this side never does.  Not created: a
-//! missing database is the daemon not having run yet, which the page
-//! says, rather than an empty file this side made.
+//! Opened read-only, and never created: a missing database is the
+//! daemon not having run yet, which the page says, rather than an empty
+//! file this side made.
+//!
+//! Read-only all the way down, the WAL's files included.  A reader that
+//! may write the directory creates `-wal` and `-shm` of its own when the
+//! daemon is not running, owned by the web view's user, and the daemon,
+//! another user, then cannot open its database at all: seen, in a
+//! container, as "unable to open database file".  So the web view has
+//! no write access to the directory, and while the daemon is not running
+//! -- no `-wal` beside the database, since SQLite removes it on the last
+//! clean close -- the file is opened `immutable`, which needs no WAL
+//! index and is safe because nothing is writing.  While it runs, its own
+//! `-shm` is read as it is (SQLite's read-only WAL, from 3.22).
 //!
 //! Bucketed in SQL rather than by the caller, so a year costs what a
 //! day does to send and draw.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -210,13 +220,17 @@ pub struct Overlay {
 }
 
 /// One source's buckets, against [`Overlay::at`]; `None` where it has
-/// none, or a gap.
+/// none.  A source's samples fall in few of the grid's buckets when the
+/// others are sampled more often, so `None` is not a gap: [`Line::gaps`]
+/// says where the line breaks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
     /// The source's ID.
     pub source_id: i64,
     /// Each bucket's mean.
     pub mean: Vec<Option<f64>>,
+    /// Indexes into [`Overlay::at`] where the line breaks.
+    pub gaps: Vec<usize>,
 }
 
 /// A time range and how finely to bucket it.
@@ -319,15 +333,24 @@ pub struct Reader {
 impl Reader {
     /// Open the database at `path`, which must exist.
     pub fn open(path: &Path) -> Result<Self> {
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        let writing = Path::new(&wal).exists();
+        let uri = format!(
+            "file:{}?mode=ro{}",
+            uri_path(path),
+            if writing { "" } else { "&immutable=1" }
+        );
         let connection = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|source| Error::Open {
             path: path.to_owned(),
             source,
         })?;
-        connection.pragma_update(None, "query_only", "ON")?;
         Ok(Self { connection })
     }
 
@@ -575,25 +598,27 @@ impl Reader {
         let mut sources: Vec<i64> = rows.iter().map(|r| r.0).collect();
         sources.dedup();
         let mut lines = Vec::new();
-        let mut breaks_at = Vec::new();
         for source in &sources {
-            let own: Vec<(i64, Option<f64>)> = rows
+            let own: HashMap<i64, Option<f64>> = rows
                 .iter()
                 .filter(|r| r.0 == *source)
                 .map(|r| (r.1, r.2))
                 .collect();
-            let breaks = gaps(&own.iter().map(|b| b.0).collect::<Vec<_>>());
+            let mut buckets: Vec<i64> = own.keys().copied().collect();
+            buckets.sort_unstable();
             // A break is the bucket before the one after the gap.
-            for ((bucket, _), broken) in own.iter().zip(&breaks) {
-                if *broken {
-                    breaks_at.push(bucket - 1);
-                }
-            }
+            let breaks: Vec<i64> = buckets
+                .iter()
+                .zip(gaps(&buckets))
+                .filter(|(_, broken)| *broken)
+                .map(|(bucket, _)| bucket - 1)
+                .collect();
+            grid.extend(&breaks);
             lines.push((*source, own, breaks));
         }
-        grid.extend(&breaks_at);
         grid.sort_unstable();
         grid.dedup();
+        let index: HashMap<i64, usize> = grid.iter().enumerate().map(|(n, b)| (*b, n)).collect();
         let width = (to - from + 1) as f64 / points as f64;
         let at = grid
             .iter()
@@ -601,19 +626,65 @@ impl Reader {
             .collect();
         let lines = lines
             .into_iter()
-            .map(|(source_id, own, _)| {
-                let mean = grid
+            .map(|(source_id, own, breaks)| Line {
+                source_id,
+                mean: grid
                     .iter()
-                    .map(|bucket| {
-                        own.iter()
-                            .find(|(b, _)| b == bucket)
-                            .and_then(|(_, value)| *value)
-                    })
-                    .collect();
-                Line { source_id, mean }
+                    .map(|bucket| own.get(bucket).copied().flatten())
+                    .collect(),
+                gaps: breaks
+                    .iter()
+                    .filter_map(|b| index.get(b).copied())
+                    .collect(),
             })
             .collect();
         Ok(Overlay { at, lines })
+    }
+
+    /// Every value of `column` from `from` to `to`, unix seconds, for
+    /// one source where the table is per source and `source_id` says,
+    /// sorted, and whether there were more than `limit`, in which case
+    /// they are the newest `limit`.  For a distribution, which buckets
+    /// would bias: a bucket's mean is not a reading.
+    pub fn values(
+        &self,
+        column: Column,
+        source_id: Option<i64>,
+        from: f64,
+        to: f64,
+        limit: usize,
+    ) -> Result<(Vec<f64>, bool)> {
+        let table = column.table;
+        let (from, to, _) = Window {
+            from,
+            to,
+            points: MIN_POINTS,
+        }
+        .stored();
+        let time = table.time();
+        let source = if table.per_source() {
+            "AND (?3 IS NULL OR source_id = ?3)"
+        } else {
+            // Always true, as in `series`.
+            "AND (?3 IS NULL OR ?3 IS NOT NULL)"
+        };
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {time} >= ?1 AND {time} <= ?2 {source}
+             ORDER BY {time} DESC LIMIT ?4",
+            column.name,
+            table.name()
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let asked = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+        let mut values = statement
+            .query_map(params![from, to, source_id, asked], |row| {
+                row.get::<_, f64>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let more = values.len() > limit;
+        values.truncate(limit);
+        values.sort_by(f64::total_cmp);
+        Ok((values, more))
     }
 
     /// Events from `from` to `to`, unix seconds, oldest first, at most
@@ -643,6 +714,18 @@ impl Reader {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
+}
+
+/// `path` as the path of a `file:` URI: the characters a URI gives a
+/// meaning to percent-encoded, the rest as they are.
+fn uri_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .chars()
+        .map(|c| match c {
+            '%' | '?' | '#' => format!("%{:02X}", u32::from(c)),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 /// For each bucket of a sorted list, whether a gap precedes it: a hole
@@ -774,6 +857,39 @@ mod tests {
     }
 
     #[test]
+    fn reads_with_and_without_the_daemon() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-reader-closed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let log = Log::open(&path).expect("a database");
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        // The daemon running: its WAL is there.
+        assert!(Path::new(&wal).exists());
+        let reader = Reader::open(&path).expect("a reader");
+        assert!(reader.status().expect("a read").is_none());
+        drop(reader);
+        // The daemon stopped: SQLite takes the WAL away on the last
+        // close, and the reader must not make one.
+        drop(log);
+        assert!(!Path::new(&wal).exists());
+        let reader = Reader::open(&path).expect("a reader");
+        assert!(reader.status().expect("a read").is_none());
+        assert!(!Path::new(&wal).exists());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_path_is_escaped_for_its_uri() {
+        assert_eq!(
+            uri_path(Path::new("/var/lib/a?b#c%d")),
+            "/var/lib/a%3Fb%23c%25d"
+        );
+    }
+
+    #[test]
     fn a_missing_database_is_not_created() {
         let path =
             std::env::temp_dir().join(format!("chronymon-missing-{}.sqlite", std::process::id()));
@@ -822,6 +938,12 @@ mod tests {
         assert_eq!(plot.min[0], Some(0.0));
         assert_eq!(plot.max[0], Some(9.0));
         assert_eq!(plot.mean[0], Some(4.5));
+        let (values, more) = reader
+            .values(frequency, None, START as f64, (START + 99) as f64, 50)
+            .expect("values");
+        assert!(more);
+        assert_eq!(values.len(), 50);
+        assert_eq!((values[0], values[49]), (50.0, 99.0));
         assert_eq!(
             reader.extent(Table::Tracking).expect("an extent"),
             Some((START as f64, (START + 299) as f64))
@@ -896,6 +1018,9 @@ mod tests {
                     batch.source_sample(at(n * 10), a, &sample(SERVER, 1.0))?;
                     batch.source_sample(at(n * 10 + 5), b, &sample(OTHER, 2.0))?;
                 }
+                // One more of `a` after a long silence: a gap in its line
+                // alone.
+                batch.source_sample(at(190), a, &sample(SERVER, 1.0))?;
                 Ok(())
             })
             .expect("written");
@@ -903,15 +1028,21 @@ mod tests {
             .reader()
             .overlay(
                 column(Table::SourceSample, "latest_measurement"),
-                window(0, 99, 100),
+                window(0, 199, 200),
             )
             .expect("an overlay");
         assert_eq!(overlay.lines.len(), 2);
-        assert_eq!(overlay.at.len(), 20);
+        // Each source's ten, `a`'s last, and the bucket marking its gap.
+        assert_eq!(overlay.at.len(), 22);
         for line in &overlay.lines {
             assert_eq!(line.mean.len(), overlay.at.len());
-            assert_eq!(line.mean.iter().filter(|v| v.is_some()).count(), 10);
         }
+        let [a, b] = [&overlay.lines[0], &overlay.lines[1]];
+        assert_eq!(a.mean.iter().filter(|v| v.is_some()).count(), 11);
+        assert_eq!(b.mean.iter().filter(|v| v.is_some()).count(), 10);
+        assert_eq!(a.gaps.len(), 1);
+        assert!(a.mean[a.gaps[0]].is_none());
+        assert!(b.gaps.is_empty());
     }
 
     #[test]

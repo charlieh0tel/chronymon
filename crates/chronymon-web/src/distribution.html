@@ -1,0 +1,163 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chronymon: distribution</title>
+
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE"
+      crossorigin="anonymous">
+
+<link rel="stylesheet" href="/style.css">
+
+<div class="panel" id="status"><span class="muted">connecting...</span></div>
+
+<nav class="panel nav">
+  <a href="/">Live</a>
+  <a href="/sources">Sources</a>
+  <a href="/journal">Journal</a>
+  <a href="/distribution" aria-current="page">Distribution</a>
+</nav>
+
+<div class="panel">
+  <div class="controls">
+    <span id="pick"></span>
+    <span class="grow"></span>
+    <span id="ranges"></span>
+  </div>
+  <div id="figures"></div>
+</div>
+
+<footer id="colophon"></footer>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c"
+        crossorigin="anonymous"></script>
+<script src="/common.js"></script>
+<script src="/charts.js"></script>
+<script>
+"use strict";
+
+readRange(86400);
+
+// The measures offered, each a column of `tracking`: the clock's offset
+// and frequency first, which are what a distribution is asked of.
+const MEASURES = ["last_offset", "frequency", "rms_offset", "skew", "root_dispersion", "residual_frequency"];
+const DEFAULT_MEASURES = ["last_offset", "frequency"];
+let measures = (new URLSearchParams(location.search).get("columns") ?? DEFAULT_MEASURES.join(","))
+  .split(",")
+  .filter((c) => MEASURES.includes(c));
+
+// One panel per measure, kept across reads so a refresh draws in place.
+let panels = [];
+
+function pickers() {
+  $("pick").innerHTML = MEASURES.map((c) =>
+    `<label><input type="checkbox" data-col="${c}"${measures.includes(c) ? " checked" : ""}> ` +
+    `${esc(columnName(key("tracking", c)).split(",")[0])}</label>`).join(" ");
+  for (const box of $("pick").querySelectorAll("input[data-col]")) {
+    box.onchange = () => {
+      const wanted = new Set(measures);
+      if (box.checked) wanted.add(box.dataset.col);
+      else wanted.delete(box.dataset.col);
+      measures = MEASURES.filter((c) => wanted.has(c));
+      remember({ columns: measures.join(",") });
+      soon();
+    };
+  }
+}
+
+function distributionQuery(column, bounds) {
+  const q = new URLSearchParams({ table: "tracking", column });
+  if (bounds.from) q.set("from", Math.round(bounds.from));
+  if (bounds.to) q.set("to", Math.round(bounds.to));
+  return "/api/distribution?" + q;
+}
+
+// The figures of one distribution, in its column's units.
+function figuresTable(d, k) {
+  const f = factor(k);
+  const unit = columnName(k).split(", ")[1] ?? "";
+  const show = (v) => (v == null ? "--" : (v * f).toLocaleString(undefined, { maximumSignificantDigits: 5 }));
+  const p = (n) => d.percentiles.find((x) => x.p === n)?.value;
+  const spread = (lo, hi) => (p(lo) == null ? null : p(hi) - p(lo));
+  const rows = [
+    ["readings", d.count.toLocaleString() + (d.truncated ? " (the newest)" : "")],
+    ["mean", show(d.mean)],
+    ["standard deviation", show(d.standard_deviation)],
+    ...d.percentiles.map((x) => [`${x.p}%`, show(x.value)]),
+    ["95% − 5%", show(spread(5, 95))],
+    ["99% − 1%", show(spread(1, 99))],
+  ];
+  return `<table class="numbers"><tbody>${rows
+    .map(([name, v]) => `<tr><th>${esc(name)}</th><td>${esc(v)} ${esc(name === "readings" ? "" : unit)}</td></tr>`)
+    .join("")}</tbody></table>`;
+}
+
+// A histogram's bars: each bin's count at its center.
+function histogramData(d, k) {
+  const h = d.histogram;
+  const f = factor(k);
+  const centers = h.counts.map((_, i) => ((h.edges[i] + h.edges[i + 1]) / 2) * f);
+  return [centers, h.counts];
+}
+
+function histogram(host, d, k, width) {
+  const bars = uPlot.paths.bars({ size: [0.9, Infinity], align: 0 });
+  return new uPlot({
+    width,
+    height: 260,
+    title: `${columnName(k)}: ${d.histogram.below} below and ${d.histogram.above} above the 0.5% and 99.5% shown`,
+    scales: { x: { time: false } },
+    axes: [{ ...AXIS }, { ...AXIS, size: 60 }],
+    series: [
+      { label: columnName(k) },
+      { label: "readings", stroke: TRACE, fill: TRACE + "60", paths: bars, points: { show: false } },
+    ],
+    legend: { show: false },
+  }, histogramData(d, k), host);
+}
+
+async function load(signal) {
+  if (!measures.length) {
+    showHtml($("figures"), `<span class="muted">nothing selected</span>`);
+    return;
+  }
+  const bounds = rangeBounds();
+  const got = await Promise.all(measures.map((c) =>
+    ask(distributionQuery(c, bounds), signal, HISTORY_TIMEOUT)));
+  for (const p of panels) p.chart?.destroy();
+  panels = [];
+  const el = $("figures");
+  el.innerHTML = "";
+  got.forEach((d, n) => {
+    const k = key("tracking", measures[n]);
+    const panel = document.createElement("div");
+    // Named by its histogram's title, or in its place without one.  Not
+    // an h2: those are set in capitals, which would make µs read MS.
+    panel.innerHTML = `<div class="figure"></div><div class="numbers-wrap"></div>`;
+    el.appendChild(panel);
+    panel.querySelector(".numbers-wrap").innerHTML = d.count
+      ? figuresTable(d, k)
+      : `<span class="muted">no readings in this range</span>`;
+    const chart = haveUplot && d.histogram
+      ? histogram(panel.querySelector(".figure"), d, k, el.clientWidth || 800)
+      : null;
+    if (!chart) panel.querySelector(".figure").innerHTML = `<p>${esc(label(k))}</p>`;
+    panels.push({ chart });
+  });
+}
+
+pickers();
+rangeControl($("ranges"), soon);
+addEventListener("resize", soon);
+content({
+  floor: 30,
+  clear(why) {
+    for (const p of panels) p.chart?.destroy();
+    panels = [];
+    showHtml($("figures"), `<span class="muted">${esc(why)}</span>`);
+  },
+  load,
+});
+</script>
