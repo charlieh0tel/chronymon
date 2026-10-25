@@ -3,6 +3,7 @@
 //! SQLite in WAL mode: one writer, the daemon, and readers opening the
 //! same file while it writes.
 
+pub mod chrony_log;
 pub mod error;
 pub mod schema;
 mod text;

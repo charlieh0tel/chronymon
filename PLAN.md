@@ -68,8 +68,11 @@ The daemon reads two ways, through one ingest path:
    - `tracking`, `statistics` and `measurements` logs, to fill the
      history from before the daemon ran or while it was down.
 
-   Columns are found by name from each file's header line, never by
-   position.
+   chrony 4.3 to 4.9 write every one of these logs alike, header and
+   line.  The header's column names cannot be split apart (`Date (UTC)
+   Time`, `Peer del.`), so a log is known by its header matched whole,
+   and a file whose header is not one of these is refused, with an
+   `unsupported` event, rather than read by position and guesswork.
 
 ### Why our own client, and the logs beside it
 
@@ -220,7 +223,16 @@ Pages:
 3. **Web.**  Copy in smartclock's HTTP crate and web assets; Live,
    Sources, Journal; then Distribution.
 4. **Log ingest.**  Backfill, rotated and `.gz` files, header-based
-   columns; then the Refclocks and Temperature pages.
+   columns; then the Refclocks and Temperature pages.  Ingest done:
+   schema 2 adds a table per log (`log_tracking`, `log_measurement`,
+   `log_statistics`, `refclock_sample`, `tempcomp_sample`), kept apart
+   from the protocol's tables because the logs carry other columns
+   and times only to the second; the daemon reads every log file at
+   start, every 10 s after and once more on stop, each file followed
+   by inode from where it was last read, a compressed rotation read
+   whole once, a line read twice recognized by its contents (times to
+   the second repeat, so the keys include the values).  Checked on
+   real 4.8 logs.  The pages are left.
 5. **Packaging.**  One Debian package, `chronymon`, amd64 and arm64,
    released through deb-workflows (`rust-build-deb.yml`): both
    binaries, their systemd units and `/etc/default` files, and a

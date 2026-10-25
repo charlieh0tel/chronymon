@@ -19,6 +19,7 @@ use rusqlite::OptionalExtension as _;
 use rusqlite::Transaction;
 use rusqlite::params;
 
+use crate::chrony_log::Line;
 use crate::error::Error;
 use crate::error::Result;
 use crate::schema::META;
@@ -133,6 +134,15 @@ impl Log {
 #[derive(Debug)]
 pub struct Batch<'a> {
     transaction: &'a Transaction<'a>,
+}
+
+/// An inode or a file length, as SQLite's signed integers hold them.
+fn stored_u64(value: u64) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::Range(value))
+}
+
+fn loaded_u64(value: i64) -> Result<u64> {
+    u64::try_from(value).map_err(|_| Error::Negative(value))
 }
 
 /// How a source's address is stored: the IP address, or a refclock's
@@ -345,6 +355,136 @@ impl Batch<'_> {
         Ok(())
     }
 
+    /// A line of one of chronyd's logs.  Whether it was new: a line
+    /// already read, from a file read again, is not.
+    pub fn log_line(&self, line: &Line) -> Result<bool> {
+        let inserted = match line {
+            Line::Tracking(t) => self.transaction.execute(
+                "INSERT OR IGNORE INTO log_tracking (at, reference, stratum, frequency, skew,
+                     offset, leap, combined_sources, offset_sd, remaining_correction,
+                     root_delay, root_dispersion, max_error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    to_stored(t.at)?,
+                    t.reference,
+                    t.stratum,
+                    t.frequency,
+                    t.skew,
+                    t.offset,
+                    t.leap.to_string(),
+                    t.combined_sources,
+                    t.offset_sd,
+                    t.remaining_correction,
+                    t.root_delay,
+                    t.root_dispersion,
+                    t.max_error,
+                ],
+            )?,
+            Line::Measurement(m) => self.transaction.execute(
+                "INSERT OR IGNORE INTO log_measurement (at, source, leap, stratum, tests,
+                     local_poll, remote_poll, score, offset, peer_delay, peer_dispersion,
+                     root_delay, root_dispersion, reference_id, mode, interleaved,
+                     transmit_timestamp_source, receive_timestamp_source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18)",
+                params![
+                    to_stored(m.at)?,
+                    m.source,
+                    m.leap.to_string(),
+                    m.stratum,
+                    m.tests,
+                    m.local_poll,
+                    m.remote_poll,
+                    m.score,
+                    m.offset,
+                    m.peer_delay,
+                    m.peer_dispersion,
+                    m.root_delay,
+                    m.root_dispersion,
+                    m.reference_id,
+                    m.mode,
+                    m.interleaved,
+                    m.transmit_timestamp_source.to_string(),
+                    m.receive_timestamp_source.to_string(),
+                ],
+            )?,
+            Line::Statistics(s) => self.transaction.execute(
+                "INSERT OR IGNORE INTO log_statistics (at, source, standard_deviation,
+                     estimated_offset, offset_sd, residual_frequency, skew, stress, samples,
+                     best_start, runs, asymmetry)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    to_stored(s.at)?,
+                    s.source,
+                    s.standard_deviation,
+                    s.estimated_offset,
+                    s.offset_sd,
+                    s.residual_frequency,
+                    s.skew,
+                    s.stress,
+                    s.samples,
+                    s.best_start,
+                    s.runs,
+                    s.asymmetry,
+                ],
+            )?,
+            Line::Refclock(c) => self.transaction.execute(
+                "INSERT OR IGNORE INTO refclock_sample (at, reference, driver_polls, leap,
+                     pulse, raw_offset, cooked_offset, dispersion)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    to_stored(c.at)?,
+                    c.reference,
+                    c.driver_polls,
+                    c.leap.to_string(),
+                    c.pulse,
+                    c.raw_offset,
+                    c.cooked_offset,
+                    c.dispersion,
+                ],
+            )?,
+            Line::Tempcomp(t) => self.transaction.execute(
+                "INSERT OR IGNORE INTO tempcomp_sample (at, temperature, compensation)
+                 VALUES (?1, ?2, ?3)",
+                params![to_stored(t.at)?, t.temperature, t.compensation],
+            )?,
+        };
+        Ok(inserted > 0)
+    }
+
+    /// How far the log file with `inode` was read: its length then, and
+    /// the bytes read, up to the last whole line.
+    pub fn log_file(&self, inode: u64) -> Result<Option<(u64, u64)>> {
+        let found: Option<(i64, i64)> = self
+            .transaction
+            .query_row(
+                "SELECT length, read FROM log_file WHERE inode = ?1",
+                params![stored_u64(inode)?],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        found
+            .map(|(length, read)| Ok((loaded_u64(length)?, loaded_u64(read)?)))
+            .transpose()
+    }
+
+    /// Record how far the log file with `inode`, now at `path`, was
+    /// read.
+    pub fn set_log_file(&self, inode: u64, path: &str, length: u64, read: u64) -> Result<()> {
+        self.transaction.execute(
+            "INSERT INTO log_file (inode, path, length, read) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (inode) DO UPDATE SET path = excluded.path,
+                 length = excluded.length, read = excluded.read",
+            params![
+                stored_u64(inode)?,
+                path,
+                stored_u64(length)?,
+                stored_u64(read)?
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Something that happened.
     pub fn event(
         &self,
@@ -386,6 +526,40 @@ mod tests {
             schema_version(&Log::open(&path).expect("reopened")),
             VERSION
         );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn adds_the_log_tables_to_schema_1() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v1-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let log = Log::open(&path).expect("created");
+            // Back to schema 1: its tables only.
+            log.connection
+                .execute_batch(
+                    "DROP TABLE log_tracking; DROP TABLE log_measurement;
+                     DROP TABLE log_statistics; DROP TABLE refclock_sample;
+                     DROP TABLE tempcomp_sample; DROP TABLE log_file;
+                     UPDATE meta SET value = '1' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let mut log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        let at = Timestamp::new(1_800_000_000, 0).expect("in range");
+        let line = Line::Tempcomp(crate::chrony_log::TempcompLine {
+            at,
+            temperature: 41.5,
+            compensation: 0.1,
+        });
+        let (first, again) = log
+            .write(|batch| Ok((batch.log_line(&line)?, batch.log_line(&line)?)))
+            .expect("written");
+        assert!(first && !again);
         let _ = std::fs::remove_dir_all(&directory);
     }
 

@@ -9,7 +9,11 @@
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 1;
+pub const VERSION: i64 = 2;
+
+/// The first schema with chronyd's log files' tables.  A database of
+/// schema 1 gains them, empty, on open: no migration but `TABLES`.
+pub const LOG_TABLES: i64 = 2;
 
 /// Facts about the database itself, the schema version first.
 pub(crate) const META: &str = "CREATE TABLE IF NOT EXISTS meta (
@@ -157,4 +161,103 @@ pub(crate) const TABLES: &str = r"
         detail    TEXT
     ) STRICT;
     CREATE INDEX IF NOT EXISTS event_at ON event(at);
+
+    -- chronyd's own log files, read alongside the control protocol: the
+    -- full record of every sample (the protocol gives the last), the
+    -- only one of refclock and tempcomp samples, and the history from
+    -- before the daemon ran.  Times are to the second but for
+    -- refclocks, so the keys include the values: two packets from one
+    -- source in a second are two rows, and a line read twice is one.
+
+    -- tracking.log.
+    CREATE TABLE IF NOT EXISTS log_tracking (
+        at                   INTEGER NOT NULL,
+        reference            TEXT    NOT NULL,
+        stratum              INTEGER NOT NULL,
+        frequency            REAL    NOT NULL,
+        skew                 REAL    NOT NULL,
+        offset               REAL    NOT NULL,
+        -- 'N', '+', '-' or '?'.
+        leap                 TEXT    NOT NULL,
+        combined_sources     INTEGER NOT NULL,
+        offset_sd            REAL    NOT NULL,
+        remaining_correction REAL    NOT NULL,
+        root_delay           REAL    NOT NULL,
+        root_dispersion      REAL    NOT NULL,
+        max_error            REAL    NOT NULL,
+        UNIQUE (at, reference, offset, frequency)
+    ) STRICT;
+
+    -- measurements.log.
+    CREATE TABLE IF NOT EXISTS log_measurement (
+        at                        INTEGER NOT NULL,
+        source                    TEXT    NOT NULL,
+        leap                      TEXT    NOT NULL,
+        stratum                   INTEGER NOT NULL,
+        tests                     INTEGER NOT NULL,
+        local_poll                INTEGER NOT NULL,
+        remote_poll               INTEGER NOT NULL,
+        score                     REAL    NOT NULL,
+        offset                    REAL    NOT NULL,
+        peer_delay                REAL    NOT NULL,
+        peer_dispersion           REAL    NOT NULL,
+        root_delay                REAL    NOT NULL,
+        root_dispersion           REAL    NOT NULL,
+        reference_id              INTEGER NOT NULL,
+        mode                      INTEGER NOT NULL,
+        interleaved               INTEGER NOT NULL,
+        transmit_timestamp_source TEXT    NOT NULL,
+        receive_timestamp_source  TEXT    NOT NULL,
+        UNIQUE (at, source, offset, peer_delay)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS log_measurement_source ON log_measurement(source, at);
+
+    -- statistics.log.  Frequencies as fractions, as the log has them.
+    CREATE TABLE IF NOT EXISTS log_statistics (
+        at                 INTEGER NOT NULL,
+        source             TEXT    NOT NULL,
+        standard_deviation REAL    NOT NULL,
+        estimated_offset   REAL    NOT NULL,
+        offset_sd          REAL    NOT NULL,
+        residual_frequency REAL    NOT NULL,
+        skew               REAL    NOT NULL,
+        stress             REAL    NOT NULL,
+        samples            INTEGER NOT NULL,
+        best_start         INTEGER NOT NULL,
+        runs               INTEGER NOT NULL,
+        asymmetry          REAL    NOT NULL,
+        UNIQUE (at, source, samples, estimated_offset)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS log_statistics_source ON log_statistics(source, at);
+
+    -- refclocks.log.  The driver's fields are NULL in a filtered sample.
+    CREATE TABLE IF NOT EXISTS refclock_sample (
+        at            INTEGER NOT NULL,
+        reference     TEXT    NOT NULL,
+        driver_polls  INTEGER,
+        leap          TEXT    NOT NULL,
+        pulse         INTEGER,
+        raw_offset    REAL,
+        cooked_offset REAL    NOT NULL,
+        dispersion    REAL    NOT NULL,
+        UNIQUE (at, reference, cooked_offset)
+    ) STRICT;
+
+    -- tempcomp.log.
+    CREATE TABLE IF NOT EXISTS tempcomp_sample (
+        at           INTEGER NOT NULL,
+        temperature  REAL    NOT NULL,
+        compensation REAL    NOT NULL,
+        UNIQUE (at, temperature, compensation)
+    ) STRICT;
+
+    -- How far each log file has been read, by inode, which survives
+    -- logrotate's renames: a file grown since is read from here, one
+    -- of the same length is not read again.
+    CREATE TABLE IF NOT EXISTS log_file (
+        inode  INTEGER PRIMARY KEY,
+        path   TEXT    NOT NULL,
+        length INTEGER NOT NULL,
+        read   INTEGER NOT NULL
+    ) STRICT;
 ";

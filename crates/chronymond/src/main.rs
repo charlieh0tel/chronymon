@@ -30,6 +30,7 @@ use crate::lifecycle::Host;
 mod collect;
 mod config;
 mod host;
+mod ingest;
 mod lifecycle;
 
 /// Options, each also settable in the environment, which is how
@@ -60,6 +61,20 @@ struct Cli {
         default_value = "/etc/chrony/chrony.conf"
     )]
     chrony_config: PathBuf,
+
+    /// chronyd's log directory, read for what the control protocol does
+    /// not give: every sample, refclocks, tempcomp, and history from
+    /// before the daemon ran.
+    #[arg(
+        long,
+        env = "CHRONYMOND_CHRONY_LOGS",
+        default_value = "/var/log/chrony"
+    )]
+    chrony_logs: PathBuf,
+
+    /// Seconds between reads of chronyd's logs.
+    #[arg(long, env = "CHRONYMOND_LOG_INTERVAL", default_value_t = 10.0)]
+    log_interval: f64,
 
     /// chronyd's PID file, which tells a restart or a crash.
     #[arg(
@@ -99,11 +114,24 @@ fn refused(error: &ControlError) -> bool {
     }
 }
 
-fn run(cli: &Cli) -> Result<()> {
-    let interval = Duration::try_from_secs_f64(cli.interval)
+fn seconds(value: f64, option: &str) -> Result<Duration> {
+    Duration::try_from_secs_f64(value)
         .ok()
         .filter(|interval| !interval.is_zero())
-        .context("--interval must be a positive number of seconds")?;
+        .with_context(|| format!("{option} must be a positive number of seconds"))
+}
+
+fn bad_lines(count: usize) -> String {
+    if count == 0 {
+        String::new()
+    } else {
+        format!(", {count} lines of no known layout skipped")
+    }
+}
+
+fn run(cli: &Cli) -> Result<()> {
+    let interval = seconds(cli.interval, "--interval")?;
+    let log_interval = seconds(cli.log_interval, "--log-interval")?;
     let mut client = connect(cli).map_err(|e| {
         anyhow::anyhow!(
             "{e}: the daemon must run as chronyd's user (_chrony on Debian and Ubuntu) or root"
@@ -138,6 +166,17 @@ fn run(cli: &Cli) -> Result<()> {
     };
     log.write(|batch| lifecycle::start(batch, Timestamp::now(), &host))?;
 
+    // The backfill: everything in chronyd's logs not yet recorded.
+    let backfill = ingest::scan(&mut log, &cli.chrony_logs)?;
+    eprintln!(
+        "chronymond: {} lines from {} log files in {}{}",
+        backfill.lines,
+        backfill.files,
+        cli.chrony_logs.display(),
+        bad_lines(backfill.bad_lines)
+    );
+    let mut logs_read = Instant::now();
+
     let mut collector = Collector::new(step_threshold);
     let mut state = None;
     let mut next = Instant::now();
@@ -169,6 +208,13 @@ fn run(cli: &Cli) -> Result<()> {
         }
         let process = host::chronyd(&cli.pid_file);
         log.write(|batch| collector.record(batch, at, read, process))?;
+        if logs_read.elapsed() >= log_interval {
+            let scan = ingest::scan(&mut log, &cli.chrony_logs)?;
+            if scan.bad_lines > 0 {
+                eprintln!("chronymond: logs:{}", bad_lines(scan.bad_lines));
+            }
+            logs_read = Instant::now();
+        }
 
         next += interval;
         let now = Instant::now();
@@ -182,6 +228,8 @@ fn run(cli: &Cli) -> Result<()> {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+    // What chronyd logged since the last read.
+    ingest::scan(&mut log, &cli.chrony_logs)?;
     let system_stopping = host::system_stopping();
     log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
     eprintln!("chronymond: stopped");

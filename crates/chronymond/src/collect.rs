@@ -396,6 +396,11 @@ pub(crate) mod tests {
             }
         }
 
+        /// A directory for the test's own files beside the database.
+        pub(crate) fn directory(&self) -> &std::path::Path {
+            &self.directory
+        }
+
         pub(crate) fn count(&self, table: &str) -> i64 {
             self.reader
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
