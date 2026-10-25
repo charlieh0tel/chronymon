@@ -71,7 +71,9 @@ chronyd writes them only when told to, in `chrony.conf`:
     log tracking measurements statistics refclocks tempcomp
 
 chronymond reads every file there at start, rotated and compressed
-ones too, then every 10 s.
+ones too, then every 10 s.  One it cannot read, a damaged `.gz` say,
+is named once in its journal and tried again each time; the others,
+and the polling, go on.
 
 ## Events
 

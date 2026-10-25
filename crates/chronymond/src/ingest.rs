@@ -9,15 +9,18 @@
 //! new inode -- are recognized by their contents and not written
 //! again.
 
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::BufRead as _;
 use std::io::BufReader;
+use std::io::ErrorKind;
 use std::io::Seek as _;
 use std::io::SeekFrom;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
+use std::path::PathBuf;
 
 use chronymon::event::EventKind;
 use chronymon_log::chrony_log::LogKind;
@@ -36,32 +39,77 @@ pub(crate) struct Scan {
     pub(crate) lines: usize,
     /// Lines that fit no known layout, skipped.
     pub(crate) bad_lines: usize,
+    /// Files that could not be read, left to try again.
+    pub(crate) failed: usize,
 }
 
-/// Read what is new in every log file in `directory`.  A directory
-/// that cannot be read -- chronyd keeps no logs here -- is no error.
-pub(crate) fn scan(log: &mut Log, directory: &Path) -> anyhow::Result<Scan> {
-    let mut total = Scan::default();
-    let Ok(entries) = fs::read_dir(directory) else {
-        return Ok(total);
-    };
-    let mut files: Vec<_> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            LogKind::of_file(&name).map(|kind| (name, kind, entry.path()))
-        })
-        .collect();
-    // Oldest first, so a backfill writes history in order: chronyd's
-    // `.log` last, rotations by their number down.
-    files.sort_by_key(|(name, _, _)| std::cmp::Reverse(rotation(name)));
-    for (_, kind, path) in files {
-        let scanned = read_file(log, kind, &path)?;
-        total.files += usize::from(scanned.lines > 0 || scanned.bad_lines > 0);
-        total.lines += scanned.lines;
-        total.bad_lines += scanned.bad_lines;
+/// chronyd's log directory, and what is wrong with the files in it that
+/// could not be read.
+#[derive(Debug)]
+pub(crate) struct Ingest {
+    directory: PathBuf,
+    /// Each failing file's error, as last reported: one reported once,
+    /// until it changes or the file reads.
+    failing: HashMap<PathBuf, String>,
+}
+
+impl Ingest {
+    pub(crate) fn new(directory: PathBuf) -> Self {
+        Self {
+            directory,
+            failing: HashMap::new(),
+        }
     }
-    Ok(total)
+
+    /// Read what is new in every log file.  A directory that cannot be
+    /// read -- chronyd keeps no logs here -- is no error, and a file
+    /// that cannot be read is reported, not read past, and tried again
+    /// next scan: one damaged rotation stops nothing else.
+    pub(crate) fn scan(&mut self, log: &mut Log) -> Scan {
+        let mut total = Scan::default();
+        let Ok(entries) = fs::read_dir(&self.directory) else {
+            return total;
+        };
+        let mut files: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                LogKind::of_file(&name).map(|kind| (name, kind, entry.path()))
+            })
+            .collect();
+        // Oldest first, so a backfill writes history in order: chronyd's
+        // `.log` last, rotations by their number down.
+        files.sort_by_key(|(name, _, _)| std::cmp::Reverse(rotation(name)));
+        self.failing
+            .retain(|failed, _| files.iter().any(|(_, _, path)| path == failed));
+        for (_, kind, path) in files {
+            match read_file(log, kind, &path) {
+                Ok(scanned) => {
+                    self.failing.remove(&path);
+                    total.files += usize::from(scanned.lines > 0 || scanned.bad_lines > 0);
+                    total.lines += scanned.lines;
+                    total.bad_lines += scanned.bad_lines;
+                }
+                Err(e) => {
+                    total.failed += 1;
+                    let error = e.to_string();
+                    if self.report(&path, &error) {
+                        eprintln!("chronymond: {}: {error}", path.display());
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    /// Note `path` failing with `error`.  Whether that is news.
+    fn report(&mut self, path: &Path, error: &str) -> bool {
+        if self.failing.get(path).is_some_and(|known| known == error) {
+            return false;
+        }
+        self.failing.insert(path.to_owned(), error.to_owned());
+        true
+    }
 }
 
 /// How many rotations old a file is: 0 for the live `.log`.
@@ -72,8 +120,17 @@ fn rotation(name: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// Read what is new in one file.  An error leaves its checkpoint, and
+/// the database, as they were.
 fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> {
-    let metadata = fs::metadata(path)?;
+    // Opened first, then the open file examined: what is read is what
+    // was examined, whatever logrotate renames meanwhile.
+    let file = match File::open(path) {
+        // Gone since the directory was listed: rotated away.
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Scan::default()),
+        opened => opened?,
+    };
+    let metadata = file.metadata()?;
     let (inode, length) = (metadata.ino(), metadata.len());
     let compressed = path.extension().is_some_and(|extension| extension == "gz");
     let known = log.write(|batch| batch.log_file(inode))?;
@@ -85,7 +142,6 @@ fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> 
         // Truncated, or new.
         _ => 0,
     };
-    let file = File::open(path)?;
     let mut reader: Box<dyn io::BufRead> = if compressed {
         Box::new(BufReader::new(MultiGzDecoder::new(file)))
     } else {
@@ -163,6 +219,7 @@ mod tests {
         let mut db = Database::new("ingest");
         let logs = db.directory().join("logs");
         fs::create_dir_all(&logs).expect("a directory");
+        let mut ingest = Ingest::new(logs.clone());
         let tracking = fixture("tracking.log");
         let lines: Vec<&str> = tracking.lines().collect();
         let (first, rest) = lines.split_at(10);
@@ -170,7 +227,7 @@ mod tests {
 
         // Part of a file, the last line unfinished.
         fs::write(&live, format!("{}\n2026-10-25 05:39", first.join("\n"))).expect("written");
-        let partial = scan(&mut db.log, &logs).expect("scanned");
+        let partial = ingest.scan(&mut db.log);
         assert_eq!(partial.lines, 7, "{partial:?}");
         assert_eq!(db.count("log_tracking"), 7);
 
@@ -180,9 +237,9 @@ mod tests {
             format!("{}\n{}\n", first.join("\n"), rest.join("\n")),
         )
         .expect("written");
-        assert_eq!(scan(&mut db.log, &logs).expect("scanned").lines, 11);
+        assert_eq!(ingest.scan(&mut db.log).lines, 11);
         fs::rename(&live, logs.join("tracking.log.1")).expect("renamed");
-        assert_eq!(scan(&mut db.log, &logs).expect("scanned").lines, 0);
+        assert_eq!(ingest.scan(&mut db.log).lines, 0);
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
         gz.write_all(tracking.as_bytes()).expect("compressed");
         fs::write(
@@ -190,7 +247,7 @@ mod tests {
             gz.finish().expect("finished"),
         )
         .expect("written");
-        assert_eq!(scan(&mut db.log, &logs).expect("scanned").lines, 0);
+        assert_eq!(ingest.scan(&mut db.log).lines, 0);
         assert_eq!(db.count("log_tracking"), 18);
     }
 
@@ -199,15 +256,42 @@ mod tests {
         let mut db = Database::new("ingest-layout");
         let logs = db.directory().join("logs");
         fs::create_dir_all(&logs).expect("a directory");
+        let mut ingest = Ingest::new(logs.clone());
         fs::write(
             logs.join("tempcomp.log"),
             "   Date (UTC) Time        Temp.       Comp.   New\n2026-10-25 05:39:33  4.1e+01  4.1e+00  1\n",
         )
         .expect("written");
-        assert_eq!(scan(&mut db.log, &logs).expect("scanned").lines, 0);
+        assert_eq!(ingest.scan(&mut db.log).lines, 0);
         assert_eq!(db.events(), ["unsupported"]);
         // And it is not reported again.
-        scan(&mut db.log, &logs).expect("scanned");
+        ingest.scan(&mut db.log);
         assert_eq!(db.events(), ["unsupported"]);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_stops_nothing_else() {
+        let mut db = Database::new("ingest-damaged");
+        let logs = db.directory().join("logs");
+        fs::create_dir_all(&logs).expect("a directory");
+        let mut ingest = Ingest::new(logs.clone());
+        let tracking = fixture("tracking.log");
+        let damaged = logs.join("tracking.log.2.gz");
+        fs::write(&damaged, b"\x1f\x8b\x08\0not gzip").expect("written");
+        fs::write(logs.join("tracking.log"), &tracking).expect("written");
+        // Listed, but gone by the time it is opened.
+        std::os::unix::fs::symlink(logs.join("gone"), logs.join("tracking.log.1")).expect("linked");
+
+        let scanned = ingest.scan(&mut db.log);
+        assert_eq!((scanned.lines, scanned.failed), (18, 1), "{scanned:?}");
+        // Reported once, not every scan.
+        assert!(!ingest.report(&damaged, &ingest.failing[&damaged].clone()));
+
+        // Mended, it is read: its checkpoint was never advanced.
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(tracking.as_bytes()).expect("compressed");
+        fs::write(&damaged, gz.finish().expect("finished")).expect("written");
+        assert_eq!(ingest.scan(&mut db.log).failed, 0);
+        assert!(ingest.failing.is_empty());
     }
 }
