@@ -42,6 +42,8 @@ use rusqlite::types::Value;
 
 use crate::error::Error;
 use crate::error::Result;
+use crate::schema::REFCLOCK_LOCKS;
+use crate::schema::RefclockLock;
 use crate::text;
 
 /// Fewest buckets worth drawing, and the most a chart can show.
@@ -621,6 +623,25 @@ impl Reader {
                 },
             )
             .optional()?)
+    }
+
+    /// chronyd's refclocks locked to others, as the daemon last read its
+    /// configuration; none before a daemon did.  A line not understood
+    /// is left out.
+    pub fn refclock_locks(&self) -> Result<Vec<RefclockLock>> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![REFCLOCK_LOCKS],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored
+            .unwrap_or_default()
+            .lines()
+            .filter_map(RefclockLock::parse)
+            .collect())
     }
 
     /// chronyd's latest `tracking` report: its `tracking_report` row,
@@ -2143,6 +2164,25 @@ mod tests {
             events.iter().map(|e| e.at).collect::<Vec<_>>(),
             [2, 3, 4].map(|s| (START + s) * NS)
         );
+    }
+
+    #[test]
+    fn reads_the_refclock_locks_last_written() {
+        let mut db = Database::new("locks");
+        assert_eq!(db.reader().refclock_locks().expect("locks"), []);
+        let lock = RefclockLock {
+            refclock: ReferenceId(u32::from_be_bytes(*b"PPS\0")),
+            locked_to: ReferenceId(u32::from_be_bytes(*b"NMEA")),
+        };
+        db.log
+            .write(|batch| batch.refclock_locks(&[lock]))
+            .expect("written");
+        assert_eq!(db.reader().refclock_locks().expect("locks"), [lock]);
+        assert_eq!(lock.to_string(), "PPS locked to NMEA");
+        db.log
+            .write(|batch| batch.refclock_locks(&[]))
+            .expect("written");
+        assert_eq!(db.reader().refclock_locks().expect("locks"), []);
     }
 
     #[test]

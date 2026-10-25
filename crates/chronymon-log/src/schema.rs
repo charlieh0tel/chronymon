@@ -6,6 +6,10 @@
 //! when what it read had changed: chronyd is polled every second, its
 //! sources far less often.
 
+use std::fmt;
+
+use chronymon_control::report::ReferenceId;
+
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
@@ -79,6 +83,55 @@ pub(crate) const TRACKING_BACK: &str = "
     DROP INDEX IF EXISTS source_sample_source;
     DROP INDEX IF EXISTS source_sample_at;
 ";
+
+/// The `meta` key of chronyd's refclocks locked to others, as the
+/// daemon last read chronyd's configuration: a line per lock, its
+/// [`RefclockLock::stored`] text.  None before a daemon read it; empty
+/// when none is locked.
+pub(crate) const REFCLOCK_LOCKS: &str = "refclock_locks";
+
+/// A refclock locked to another, `refclock ... lock REFID` in chronyd's
+/// configuration: its PPS samples are paired with the other's
+/// (`chrony.conf` documentation, 4.3 to 4.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefclockLock {
+    /// The refclock with the `lock` option.
+    pub refclock: ReferenceId,
+    /// The refclock it names.
+    pub locked_to: ReferenceId,
+}
+
+impl RefclockLock {
+    /// As `meta` stores it: the two reference IDs in hex, as
+    /// `source.address` holds them, a space between.  `50505300
+    /// 4E4D4541` is PPS locked to NMEA.
+    pub(crate) fn stored(self) -> String {
+        format!("{} {}", self.refclock, self.locked_to)
+    }
+
+    /// One from its [`stored`](Self::stored) text.
+    pub(crate) fn parse(line: &str) -> Option<Self> {
+        let (refclock, locked_to) = line.split_once(' ')?;
+        let hex = |s: &str| u32::from_str_radix(s, 16).ok().map(ReferenceId);
+        Some(Self {
+            refclock: hex(refclock)?,
+            locked_to: hex(locked_to)?,
+        })
+    }
+}
+
+/// `PPS locked to NMEA`.
+impl fmt::Display for RefclockLock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = |id: ReferenceId| id.text().unwrap_or_else(|| id.to_string());
+        write!(
+            f,
+            "{} locked to {}",
+            name(self.refclock),
+            name(self.locked_to)
+        )
+    }
+}
 
 /// Facts about the database itself, the schema version first.
 pub(crate) const META: &str = "CREATE TABLE IF NOT EXISTS meta (

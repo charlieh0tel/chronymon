@@ -57,8 +57,8 @@ counted on by the display's own clock; it stops, dimmed and showing
 its age, once no answer has come for 3 s, and is dimmed while the feed
 is not live.  The sources and events lose their last rows rather than
 scroll, the sources with a row saying how many more.  The offset
-overlay draws the sources listed, each in its color there, but those
-with `noselect`, which chronyd only watches.  No nav, controls,
+overlay draws the sources listed, each in its color there, but a
+refclock another is locked to (see "Paired refclocks").  No nav, controls,
 colophon or pointer, and it never scrolls: full size from 1440x1080
 CSS pixels, scaled down to fit a smaller screen.  It never changes its
 address.  A reload paints the last status, sources and
@@ -70,6 +70,22 @@ before the first poll answers; without storage it starts empty.
 | `last` | range in seconds, default 86400 (`from`/`to` as on the other pages) |
 | `inset` | overscan margin: `N` percent (of width at the sides, of height top and bottom, at most 25), `Npx` pixels; one value for every edge or `X,Y` for sides, then top and bottom (`3`, `2,4`, `40px`); anything else is ignored |
 | `debug` | a foot line: how many times this browser has loaded the page with `debug`, whether this load was a navigation or a reload, its uptime, the Chrome version, the viewport, device pixel ratio and scale, and the last uncaught error |
+
+## Paired refclocks
+
+A refclock that another is locked to, `lock` in `chrony.conf`, is
+paired: an NMEA receiver whose time of day numbers a PPS's pulses.
+
+    refclock SHM 0 refid NMEA poll 6 offset 43e-3 delay 10e-3 noselect
+    refclock PHC /dev/ptp2:extpps:pin=0 refid PPS poll 2 lock NMEA
+
+Beside the PPS its offsets are noise, so the Sources page starts with
+its lines hidden, `?show=NMEA` or its name in a chart's title showing
+them, and the kiosk leaves it out.  An NMEA no refclock is locked to
+is a source like any other, `noselect` or not.  chronymond reads the
+pairing from `chrony.conf`, its `include` and `confdir` files too
+(`CHRONYMOND_CHRONY_CONFIG`), when it starts and whenever chronyd
+starts again, as chronyd reads it only then.
 
 ## chronyd's logs
 

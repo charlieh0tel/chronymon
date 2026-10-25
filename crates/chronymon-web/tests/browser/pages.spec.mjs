@@ -266,11 +266,11 @@ test("Sources: a row per source, overlays, and a link to each", async ({ page })
   await expect(charts(page).first()).toBeVisible();
 });
 
-// Each chart of the Sources page: whether it draws NMEA's line, and
-// shows it, its title's NMEA button, and its y axis's span.
-const nmeaCharts = (page) => page.evaluate(() => stack.charts.map((c) => {
-  const line = c.chronymonLines.find((l) => l.name === "NMEA");
-  const button = c.root.querySelector('.u-title button[data-line="NMEA"]');
+// Each chart of the Sources page: whether it draws `name`'s line, and
+// shows it, its title's button for it, and its y axis's span.
+const lineCharts = (page, name) => page.evaluate((name) => stack.charts.map((c) => {
+  const line = c.chronymonLines.find((l) => l.name === name);
+  const button = c.root.querySelector(`.u-title button[data-line="${CSS.escape(name)}"]`);
   return {
     title: c.root.querySelector(".u-title").textContent,
     drawn: Boolean(line),
@@ -278,47 +278,78 @@ const nmeaCharts = (page) => page.evaluate(() => stack.charts.map((c) => {
     pressed: button?.getAttribute("aria-pressed") ?? null,
     span: c.scales.y.max - c.scales.y.min,
   };
-}));
+}), name);
 
-test("Sources: a source's name in a title hides its line on every chart, kept in the address", async ({ page }) => {
-  // A fixed day, not the last one: a window that slides with the clock
-  // reads other buckets at its edges on each redraw, and an axis the
-  // test expects unchanged can refit.
+// A fixed day, not the last one: a window that slides with the clock
+// reads other buckets at its edges on each redraw, and an axis a test
+// expects unchanged can refit.
+const fixedDay = () => {
   const to = Math.floor(Date.now() / 1000) - 60;
-  await page.goto(`/sources?from=${to - 86400}&to=${to}`);
+  return `from=${to - 86400}&to=${to}`;
+};
+
+// The Sources page at `path`, drawn.
+const drawnSources = async (page, path) => {
+  await page.goto(path);
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
-  const before = await nmeaCharts(page);
+};
+
+test("API: a refclock a PPS is locked to says which", async ({ page }) => {
+  const sources = await (await page.request.get("/api/sources")).json();
+  const lockedBy = Object.fromEntries(sources.map((s) => [s.name, s.locked_by]));
+  expect(lockedBy.NMEA).toBe("PPS");
+  expect(lockedBy.PPS).toBeNull();
+  expect(lockedBy["ntp1.example.net"]).toBeNull();
+});
+
+test("Sources: a refclock a PPS is locked to starts hidden, shown by its name, kept in the address", async ({ page }) => {
+  await drawnSources(page, `/sources?${fixedDay()}`);
+  const before = await lineCharts(page, "NMEA");
   const withNmea = before.filter((c) => c.drawn);
-  // The regression's charts: NMEA's frequency, skew and deviation.
-  expect(withNmea.length).toBeGreaterThan(1);
-  for (const c of withNmea) expect([c.shown, c.pressed]).toEqual([true, "true"]);
+  // The offset, and the regression's frequency, skew and deviation.
+  expect(withNmea.length).toBeGreaterThan(3);
+  expect(withNmea[0].title).toMatch(/^Offset/);
+  for (const c of withNmea) expect([c.shown, c.pressed], c.title).toEqual([false, "false"]);
+  await expect(page.locator("#readout")).not.toContainText("NMEA");
   await page.locator('#charts .u-title button[data-line="NMEA"]').first().click();
-  await expect(page).toHaveURL(/[?&]hide=NMEA(&|$)/);
-  const hidden = async () => {
-    const after = await nmeaCharts(page);
-    for (const c of after.filter((c) => c.drawn)) expect([c.shown, c.pressed], c.title).toEqual([false, "false"]);
-    // Each axis NMEA's wander set is refitted to the rest, and the rest
-    // left as they were.
+  await expect(page).toHaveURL(/[?&]show=NMEA(&|$)/);
+  const shown = async () => {
+    const after = await lineCharts(page, "NMEA");
+    for (const c of after.filter((c) => c.drawn)) expect([c.shown, c.pressed], c.title).toEqual([true, "true"]);
+    // Each axis NMEA is on is widened by its wander, and the rest left
+    // as they were.
     after.forEach((c, n) => {
-      if (before[n].drawn) expect(c.span, c.title).toBeLessThan(before[n].span / 3);
+      if (before[n].drawn) expect(c.span, c.title).toBeGreaterThan(before[n].span);
       else expect(c.span, c.title).toBe(before[n].span);
     });
   };
-  await hidden();
-  await expect(page.locator("#readout")).not.toContainText("NMEA");
+  await shown();
   await page.reload();
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
-  await hidden();
+  await shown();
   // By keyboard, and the button keeps the focus.
   const button = page.locator('#charts .u-title button[data-line="NMEA"]').last();
   await button.focus();
   await page.keyboard.press("Enter");
-  await expect(page).not.toHaveURL(/hide=/);
+  await expect(page).not.toHaveURL(/show=/);
   expect(await page.evaluate(() => document.activeElement?.dataset.line)).toBe("NMEA");
-  const shown = await nmeaCharts(page);
-  shown.forEach((c, n) => expect(c, c.title).toEqual(before[n]));
+  const hidden = await lineCharts(page, "NMEA");
+  hidden.forEach((c, n) => expect(c, c.title).toEqual(before[n]));
+});
+
+test("Sources: any other source's name in a title hides its line on every chart", async ({ page }) => {
+  await drawnSources(page, `/sources?${fixedDay()}`);
+  const before = await lineCharts(page, "PPS");
+  expect(before.filter((c) => c.drawn).length).toBeGreaterThan(3);
+  for (const c of before.filter((c) => c.drawn)) expect([c.shown, c.pressed], c.title).toEqual([true, "true"]);
+  await page.locator('#charts .u-title button[data-line="PPS"]').first().click();
+  await expect(page).toHaveURL(/[?&]hide=PPS(&|$)/);
+  await drawnSources(page, page.url());
+  for (const c of (await lineCharts(page, "PPS")).filter((c) => c.drawn)) {
+    expect([c.shown, c.pressed], c.title).toEqual([false, "false"]);
+  }
 });
 
 test("Sources: a placeholder for a name not resolved yet is never shown", async ({ page }) => {
@@ -386,7 +417,7 @@ const KIOSK_VIEWPORT = { width: 1920, height: 1080 };
 // The synthetic sources chronyd has now, all the kiosk lists: not the
 // removed ntp3.
 const KIOSK_SOURCES = SOURCES.length - 1;
-// Those the offset overlay draws: not the noselect NMEA.
+// Those the offset overlay draws: not NMEA, which the PPS is locked to.
 const KIOSK_CHARTED = KIOSK_SOURCES - 1;
 
 // Whether the page fits its window, with nothing to scroll.
@@ -411,7 +442,7 @@ test("Kiosk: the clock's state, its sources, events and charts, on one screen", 
   await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
   await expect(page.locator("#kiosk-time")).toHaveText(/^\d\d:\d\d:\d\d$/);
   await expect(charts(page)).toHaveCount(4);
-  await expect(charts(page).last().locator(".u-title")).toContainText("noselect ones left out");
+  await expect(charts(page).last().locator(".u-title")).toContainText("NMEA left out, PPS locked to it");
   expect(await page.evaluate(() => stack.charts.at(-1).series.length - 1)).toBe(KIOSK_CHARTED);
   await expect(page.locator("nav")).toHaveCount(0);
   await expect(page.locator("#colophon")).toHaveCount(0);

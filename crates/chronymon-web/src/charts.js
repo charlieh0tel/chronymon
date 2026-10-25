@@ -86,6 +86,8 @@ const HINTS = {
     "The source's frequency relative to the local clock, from chronyd's regression (chronyc sourcestats, Freq).",
   "source_stats.skew": "The error bound on that frequency (chronyc sourcestats, Freq Skew).",
   "source_stats.estimated_offset": "The source's offset as the regression estimates it (chronyc sourcestats).",
+  "source_sample.latest_measurement":
+    "The offset of the source's sample, positive when the local clock is ahead (chronyc sources, Last sample).",
   "ntp_sample.offset": "The offset of the source's last valid packet (chronyc ntpdata).",
   "ntp_sample.peer_delay": "The round-trip delay of the source's last valid packet.",
   "ntp_sample.peer_dispersion": "The dispersion of the source's last valid packet.",
@@ -646,21 +648,37 @@ function groupTitle(drawing, toggles) {
 // A stack's lines, a source each, hidden by name on every chart of it,
 // where the stack allows: one source wandering milliseconds, as an NMEA
 // receiver does, otherwise sets the axes of every chart it is on and
-// flattens the rest.  The names hidden ride in the address, `hide=`.
+// flattens the rest.  Some names a page hides unless asked, as Sources
+// does a refclock a PPS is locked to.  The names hidden ride in the
+// address, `hide=`, and those hidden unless asked that are shown,
+// `show=`.
 
-// The address key, and the names hidden.
+// The address keys, and the names each lists.
 const HIDE_KEY = "hide";
-const hiddenNames = new Set((new URLSearchParams(location.search).get(HIDE_KEY) ?? "").split(",").filter(Boolean));
+const SHOW_KEY = "show";
+const namesIn = (k) => new Set((new URLSearchParams(location.search).get(k) ?? "").split(",").filter(Boolean));
+const hiddenNames = namesIn(HIDE_KEY);
+const shownNames = namesIn(SHOW_KEY);
+// The names hidden unless shown, as the page last said.
+let hiddenUnlessShown = new Set();
+
+// Hide `names` unless the address shows them.
+function hideUnlessShown(names) {
+  hiddenUnlessShown = new Set(names);
+}
+
+// Whether the line named `name` is hidden.
+const nameHidden = (name) => (hiddenUnlessShown.has(name) ? !shownNames.has(name) : hiddenNames.has(name));
 
 // Whether `line` is hidden, on a stack whose lines can be.
-const hiddenOn = (toggles) => (line) => Boolean(toggles && line.name && hiddenNames.has(line.name));
+const hiddenOn = (toggles) => (line) => Boolean(toggles && line.name && nameHidden(line.name));
 
 // The words a line's name button says it does.
 const toggleWords = (name, hidden) => `${hidden ? "show" : "hide"} ${name} on every chart`;
 
 // A line's name, in its color, as a button pressed while it is shown.
 const lineButton = (l) => {
-  const hidden = hiddenNames.has(l.name);
+  const hidden = nameHidden(l.name);
   return `<button type="button" class="line-name" data-line="${esc(l.name)}" style="color:${l.color}"` +
     ` aria-pressed="${!hidden}" title="${esc(toggleWords(l.name, hidden))}">${esc(l.name)}</button>`;
 };
@@ -673,9 +691,18 @@ function showLines(chart, hidden) {
   }
   for (const button of chart.root.querySelectorAll(".u-title button[data-line]")) {
     const name = button.dataset.line;
-    button.setAttribute("aria-pressed", String(!hiddenNames.has(name)));
-    button.title = toggleWords(name, hiddenNames.has(name));
+    button.setAttribute("aria-pressed", String(!nameHidden(name)));
+    button.title = toggleWords(name, nameHidden(name));
   }
+}
+
+// Hide the line named `name` if it is shown, else show it, and say so
+// in the address.
+function toggleName(name) {
+  const names = hiddenUnlessShown.has(name) ? shownNames : hiddenNames;
+  if (!names.delete(name)) names.add(name);
+  const listed = (set) => (set.size ? [...set].join(",") : null);
+  remember({ [HIDE_KEY]: listed(hiddenNames), [SHOW_KEY]: listed(shownNames) });
 }
 
 // Let the names in `view`'s titles hide and show their lines, once: the
@@ -688,8 +715,7 @@ function toggleLines(view) {
     const button = e.target.closest("button[data-line]");
     if (!button || !view.read) return;
     const name = button.dataset.line;
-    if (!hiddenNames.delete(name)) hiddenNames.add(name);
-    remember({ [HIDE_KEY]: hiddenNames.size ? [...hiddenNames].join(",") : null });
+    toggleName(name);
     const at = view.charts.findIndex((c) => c.root.contains(button));
     drawStack(view, view.read, view.why);
     view.charts[at]?.root.querySelector(`button[data-line="${CSS.escape(name)}"]`)?.focus();

@@ -1,11 +1,13 @@
 //! What chronymond needs from chronyd's configuration: its `makestep`,
-//! which decides when a correction is a step.
+//! which decides when a correction is a step, and which refclocks are
+//! locked to which (`refclock ... lock`), which the web view pairs.
 //!
 //! Read as chronyd reads it (`CNF_ReadFile`, `conf.c`, and the
 //! `chrony.conf` documentation, 4.3 to 4.9): the main file, the files
 //! its `include` patterns name, and the `.conf` files of its `confdir`
 //! directories.  `sourcedir` files can hold only NTP sources, so are
-//! not read.  The last `makestep` wins, as in chronyd.
+//! not read.  The last `makestep` wins, as in chronyd.  Read again on
+//! each restart of chronyd, which reads it only when it starts.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -14,6 +16,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use chronymon::units::Seconds;
+use chronymon_control::report::ReferenceId;
+use chronymon_log::schema::RefclockLock;
 
 /// The correction recorded as a large offset when chronyd's
 /// configuration has no `makestep` threshold to go by.
@@ -25,6 +29,14 @@ const MAX_DEPTH: usize = 8;
 /// The characters a comment line starts with (`CPS_NormalizeLine`,
 /// `cmdparse.c`): only as a line's first, not after a directive.
 const COMMENT: [char; 4] = ['!', ';', '#', '%'];
+
+/// The longest reference ID, in characters (`CPS_ParseRefid`,
+/// `cmdparse.c`).
+const REFERENCE_ID_LENGTH: usize = 4;
+
+/// How much of a refclock's driver name its default reference ID
+/// takes (`RCL_AddRefclock`, `refclock.c`).
+const DRIVER_PREFIX: usize = 3;
 
 /// A `confdir` file's suffix.
 const CONFDIR_SUFFIX: &str = ".conf";
@@ -59,6 +71,16 @@ impl fmt::Display for MakeStep {
 pub(crate) struct Config {
     /// The last `makestep`, if any.
     pub(crate) make_step: Option<MakeStep>,
+    /// Each `refclock`, in the order chronyd adds them.
+    pub(crate) refclocks: Vec<Refclock>,
+}
+
+/// A `refclock` directive: the refclock's reference ID and the one its
+/// `lock` option names.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Refclock {
+    pub(crate) reference_id: ReferenceId,
+    pub(crate) lock: Option<ReferenceId>,
 }
 
 impl Config {
@@ -85,6 +107,7 @@ impl Config {
             // Directives are case-insensitive (`CNF_ParseLine`).
             match directive.to_ascii_lowercase().as_str() {
                 "makestep" => self.make_step(&words),
+                "refclock" => self.refclock(&words),
                 "include" => {
                     for file in words.iter().flat_map(|w| glob(w)) {
                         self.read_file(&file, depth + 1);
@@ -111,15 +134,107 @@ impl Config {
             });
         }
     }
+
+    /// A `refclock DRIVER PARAMETER [OPTION]...` directive: its `refid`,
+    /// or the default made of its driver's name and its place among the
+    /// refclocks, and its `lock` (`parse_refclock`, `conf.c`;
+    /// `RCL_AddRefclock`, `refclock.c`).  Options are case-insensitive,
+    /// and the last of each wins.  Every other option's value is a
+    /// number, so is never taken for `refid` or `lock`.  One chronyd
+    /// would refuse to start on is left out.
+    fn refclock(&mut self, words: &[&str]) {
+        let [driver, _parameter, options @ ..] = words else {
+            return;
+        };
+        let (mut reference_id, mut lock, mut local) = (None, None, false);
+        let mut options = options.iter();
+        while let Some(option) = options.next() {
+            match option.to_ascii_lowercase().as_str() {
+                "refid" => match options.next().and_then(|w| parse_reference_id(w)) {
+                    Some(id) => reference_id = Some(id),
+                    None => return,
+                },
+                "lock" => match options.next().and_then(|w| parse_reference_id(w)) {
+                    Some(id) => lock = Some(id),
+                    None => return,
+                },
+                "local" => local = true,
+                _ => {}
+            }
+        }
+        let reference_id =
+            reference_id.unwrap_or_else(|| default_reference_id(driver, self.refclocks.len()));
+        self.refclocks.push(Refclock {
+            reference_id,
+            // `local` locks a refclock to itself, in place of `lock`.
+            lock: lock.filter(|_| !local),
+        });
+    }
+
+    /// Each refclock locked to another, as chronyd resolves `lock`
+    /// (`RCL_StartRefclocks`, `refclock.c`): to the first refclock of
+    /// that ID, and none if that is itself or there is none.
+    pub(crate) fn locks(&self) -> Vec<RefclockLock> {
+        self.refclocks
+            .iter()
+            .enumerate()
+            .filter_map(|(n, refclock)| {
+                let locked_to = refclock.lock?;
+                let at = self
+                    .refclocks
+                    .iter()
+                    .position(|other| other.reference_id == locked_to)?;
+                (at != n).then_some(RefclockLock {
+                    refclock: refclock.reference_id,
+                    locked_to,
+                })
+            })
+            .collect()
+    }
 }
 
 impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.make_step {
-            Some(make_step) => write!(f, "{make_step}"),
-            None => write!(f, "no makestep"),
+            Some(make_step) => write!(f, "{make_step}")?,
+            None => write!(f, "no makestep")?,
         }
+        for lock in self.locks() {
+            write!(f, ", {lock}")?;
+        }
+        Ok(())
     }
+}
+
+/// A reference ID as chrony's configuration gives one: up to four
+/// characters, packed from the most significant byte (`CPS_ParseRefid`,
+/// `cmdparse.c`).
+fn parse_reference_id(word: &str) -> Option<ReferenceId> {
+    let bytes = word.as_bytes();
+    if bytes.is_empty() || bytes.len() > REFERENCE_ID_LENGTH {
+        return None;
+    }
+    let mut id = [0; REFERENCE_ID_LENGTH];
+    id[..bytes.len()].copy_from_slice(bytes);
+    Some(ReferenceId(u32::from_be_bytes(id)))
+}
+
+/// The reference ID chronyd gives the `index`th refclock, from 0, of
+/// driver `driver` when its directive has no `refid`: the driver's
+/// name to three characters, right-aligned (`%3.3s`), its last replaced
+/// by the index's units digit, and the one before by its tens digit
+/// from 10 on (`RCL_AddRefclock`, `refclock.c`, 4.3 to 4.9): `SHM0`,
+/// `PPS1`, `SH10`.
+fn default_reference_id(driver: &str, index: usize) -> ReferenceId {
+    let name = &driver.as_bytes()[..driver.len().min(DRIVER_PREFIX)];
+    let mut id = [b' '; REFERENCE_ID_LENGTH];
+    id[DRIVER_PREFIX - name.len()..DRIVER_PREFIX].copy_from_slice(name);
+    let digit = |n: usize| b'0' + (n % 10) as u8;
+    id[DRIVER_PREFIX] = digit(index);
+    if index >= 10 {
+        id[DRIVER_PREFIX - 1] = digit(index / 10);
+    }
+    ReferenceId(u32::from_be_bytes(id))
 }
 
 /// The files a `confdir` directive includes: each `.conf` file of its
@@ -217,6 +332,79 @@ mod tests {
             None
         );
         fs::remove_dir_all(&directory).expect("removed");
+    }
+
+    /// A reference ID from its text.
+    fn id(text: &str) -> ReferenceId {
+        parse_reference_id(text).expect("a reference ID")
+    }
+
+    #[test]
+    fn pairs_refclocks_by_lock_through_include() {
+        let directory = directory("refclock");
+        let main = directory.join("chrony.conf");
+        let included = directory.join("refclocks.conf");
+        fs::write(
+            &main,
+            format!(
+                "refclock SHM 0 refid NMEA poll 6 offset 43e-3 delay 10e-3 noselect\n\
+                 include {}\n\
+                 refclock SOCK /run/chrony.sock\n",
+                included.display()
+            ),
+        )
+        .expect("written");
+        fs::write(
+            &included,
+            "REFCLOCK PHC /dev/ptp2:extpps:pin=0 refid PPS width 500e-3 precision 1e-9 poll 2 LOCK NMEA\n\
+             ; refclock SHM 1 lock NMEA\n\
+             refclock PPS /dev/pps1 lock GPS\n\
+             refclock PPS /dev/pps2 lock PPS3\n\
+             refclock PPS /dev/pps3 refid LOCL lock NMEA local\n",
+        )
+        .expect("written");
+        let config = Config::read(&main);
+        let ids: Vec<ReferenceId> = config.refclocks.iter().map(|r| r.reference_id).collect();
+        // Without `refid`, the driver's name and the refclock's place.
+        assert_eq!(
+            ids,
+            [
+                id("NMEA"),
+                id("PPS"),
+                id("PPS2"),
+                id("PPS3"),
+                id("LOCL"),
+                id("SOC5")
+            ]
+        );
+        // Not to an ID no refclock has, nor to itself, nor with `local`.
+        assert_eq!(
+            config.locks(),
+            [RefclockLock {
+                refclock: id("PPS"),
+                locked_to: id("NMEA"),
+            }]
+        );
+        assert_eq!(config.to_string(), "no makestep, PPS locked to NMEA");
+        fs::remove_dir_all(&directory).expect("removed");
+    }
+
+    #[test]
+    fn refuses_a_refclock_chronyd_would() {
+        let mut config = Config::default();
+        config.refclock(&["SHM"]);
+        config.refclock(&["SHM", "0", "refid", "TOOLONG"]);
+        config.refclock(&["SHM", "0", "lock"]);
+        assert!(config.refclocks.is_empty());
+    }
+
+    #[test]
+    fn makes_default_reference_ids_as_chronyd() {
+        assert_eq!(default_reference_id("SHM", 0), id("SHM0"));
+        assert_eq!(default_reference_id("SOCK", 9), id("SOC9"));
+        assert_eq!(default_reference_id("SHM", 10), id("SH10"));
+        assert_eq!(default_reference_id("SHM", 123), id("SH23"));
+        assert_eq!(default_reference_id("RT", 1), id(" RT1"));
     }
 
     #[test]

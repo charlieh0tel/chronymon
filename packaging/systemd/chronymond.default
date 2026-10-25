@@ -12,7 +12,9 @@
 #CHRONYMOND_INTERVAL=1
 
 # chronyd's configuration, read for its makestep, which decides when a
-# correction is recorded as a step rather than a large offset.
+# correction is recorded as a step rather than a large offset, and its
+# refclocks' locks, which pair an NMEA with its PPS.  Read again
+# whenever chronyd restarts.
 #CHRONYMOND_CHRONY_CONFIG=/etc/chrony/chrony.conf
 
 # chronyd's log directory, and seconds between reads of it.  chronyd
