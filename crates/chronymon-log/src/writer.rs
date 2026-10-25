@@ -57,6 +57,10 @@ const TRACKING_COLUMNS: &str = "at, reference_time, reference_id, reference_addr
 const TRACKING_PARAMETERS: &str =
     "?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15";
 
+/// The last `tracking` row written.
+const LAST_TRACKING: &str = "SELECT reference_time, reference_id, last_offset, rms_offset
+    FROM tracking ORDER BY rowid DESC LIMIT 1";
+
 /// A `tracking` report read at `at`, as [`TRACKING_COLUMNS`].
 fn tracking_values(at: Timestamp, t: &Tracking) -> Result<[Value; 15]> {
     Ok([
@@ -326,16 +330,31 @@ impl Batch<'_> {
         )?)
     }
 
-    /// A clock update.  One of the same reference time as the last
-    /// recorded, a restart's first read of it, is ignored.
+    /// A clock update, or the daemon's first read.  A restart's first
+    /// read of what the last row recorded is ignored: of its reference
+    /// time, or of its update, the same last offset, RMS offset and
+    /// reference, which only an update changes (`updated`, chronymond's
+    /// `collect.rs`), its reference time moved by slews since
+    /// (`handle_slew`, chrony 4.8 `reference.c:175`).  A read of
+    /// chronyd unsynchronized is no update, nor is one of it on its
+    /// local reference, which is never ignored: each run's marks when
+    /// chronyd was on it.
     pub fn tracking(&self, at: Timestamp, t: &Tracking) -> Result<()> {
+        let local = t.reference_id == ReferenceId::LOCAL;
+        let update = t.reference_time != Timestamp::UNIX_EPOCH && !local;
+        let values = tracking_values(at, t)?
+            .into_iter()
+            .chain([update, local].map(|b| Value::Integer(i64::from(b))));
         self.transaction.execute(
             &format!(
                 "INSERT INTO tracking ({TRACKING_COLUMNS})
                  SELECT {TRACKING_PARAMETERS}
-                 WHERE ?2 IS NOT (SELECT reference_time FROM tracking ORDER BY rowid DESC LIMIT 1)"
+                 WHERE ?17 OR NOT EXISTS (SELECT 1 FROM ({LAST_TRACKING}) AS last
+                     WHERE last.reference_time = ?2
+                         OR (?16 AND last.reference_id = ?3 AND last.last_offset = ?8
+                             AND last.rms_offset = ?9))"
             ),
-            params_from_iter(tracking_values(at, t)?),
+            params_from_iter(values),
         )?;
         Ok(())
     }

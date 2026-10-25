@@ -32,7 +32,7 @@ beside it, as chronyc does.  No access, no start.
 
    | Report | New row when |
    | - | - |
-   | `tracking` | chronyd updates the clock: its last offset or their RMS changes, not the reference time alone, which it moves on every slew (`handle_slew`, 4.8 `reference.c:175`); and the first read.  `tracking_report`, one row, replaced when anything changes |
+   | `tracking` | chronyd updates the clock: its last offset or their RMS changes, not the reference time alone, which it moves on every slew (`handle_slew`, 4.8 `reference.c:175`); and the first read, unless of the last row's update, as a restart's is.  `tracking_report`, one row, replaced when anything changes |
    | `sources` | its last-sample age resets; `source_report`, one row per source, replaced when anything else changes |
    | `sourcestats` | its regression changes: not the estimated offset and its error alone, which chronyd extrapolates to the report's time (`SST_DoSourcestatsReport`, 4.8 `sourcestats.c:1019`), so they change every poll |
    | `ntpdata` | its valid-sample counter increments |

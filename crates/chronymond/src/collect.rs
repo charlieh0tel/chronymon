@@ -318,8 +318,8 @@ impl Collector {
             self.record_correction(batch, at, tracking)?;
         }
         // History of updates, and of the first read: chronyd's last
-        // update, or that it is unsynchronized, which a repeat of the
-        // last row's reference time is not written again for.
+        // update, which the writer leaves out when the last row's, or
+        // that it is unsynchronized or on its local reference.
         let Some(before) = before else {
             return batch.tracking(at, tracking);
         };
@@ -1176,6 +1176,56 @@ pub(crate) mod tests {
             stratum: 0,
             ..tracking(0, last_offset)
         }
+    }
+
+    #[test]
+    fn a_restart_does_not_repeat_the_last_update() {
+        let mut db = Database::new("restart-repeat");
+        let stored = |second| to_stored(at(second)).expect("in range");
+        let local = Tracking {
+            reference_id: ReferenceId::LOCAL,
+            address: Address::Unspecified,
+            stratum: 10,
+            ..tracking(9, 2e-6)
+        };
+        // Each run of the daemon: a collector of its own, and its polls.
+        let runs = [
+            vec![(0, tracking(0, 1e-6)), (1, tracking(1, 2e-6))],
+            // Its first read the last update, its reference time moved by
+            // slews since (`handle_slew`, chrony 4.8 `reference.c:175`);
+            // then an update.
+            vec![(3, tracking(2, 2e-6)), (4, tracking(4, 3e-6))],
+            // The last update again, unsynchronized, then on the local
+            // reference: each kept, marking when chronyd was.
+            vec![(5, unsynchronized(3e-6))],
+            vec![(10, local)],
+            vec![(11, local)],
+        ];
+        for polls in runs {
+            let mut collector = collector(&db, MAKE_STEP);
+            for (second, read) in polls {
+                db.log
+                    .write(|batch| {
+                        collector.record(
+                            batch,
+                            at(second),
+                            snapshot(read, vec![]),
+                            Process::Running(100),
+                        )
+                    })
+                    .expect("recorded");
+            }
+        }
+        let mut statement = db
+            .reader
+            .prepare("SELECT at FROM tracking ORDER BY rowid")
+            .expect("a query");
+        let rows: Vec<i64> = statement
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .map(|row| row.expect("a row"))
+            .collect();
+        assert_eq!(rows, [0, 1, 4, 5, 10, 11].map(stored));
     }
 
     #[test]
