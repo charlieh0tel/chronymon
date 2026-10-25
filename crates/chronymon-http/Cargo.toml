@@ -1,0 +1,15 @@
+[package]
+name = "chronymon-http"
+description = "The little HTTP server the web view uses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2.0.21"

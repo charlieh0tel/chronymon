@@ -134,6 +134,7 @@ The smartclock layout, so the two read the same:
 | - | - | - |
 | `chronymon` | lib | the data model: units, event kinds |
 | `chronymon-control` | lib | the control protocol client: request and reply encoding, the Unix socket transport, typed errors; synchronous |
+| `chronymon-http` | lib | the small synchronous HTTP server, copied from smartclock's |
 | `chronymon-log` | lib | the SQLite schema, `migrate()`, writer and readers; the chrony log parser |
 | `chronymond` | bin | the poll, change detection, event detection, the one writer |
 | `chronymon-web` | bin | the browser view: reads the database directly (WAL), live state from its `status` row |

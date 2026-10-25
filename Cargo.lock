@@ -94,6 +94,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "chronymon-http"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "chronymon-log"
 version = "0.1.0"
 dependencies = [

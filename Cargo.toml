@@ -4,6 +4,7 @@
 members = [
     "crates/chronymon",
     "crates/chronymon-control",
+    "crates/chronymon-http",
     "crates/chronymon-log",
     "crates/chronymond",
 ]
