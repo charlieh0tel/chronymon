@@ -1,11 +1,13 @@
 //! What chronymond needs from chronyd's configuration: its `makestep`,
 //! which decides when a correction is a step.
 //!
-//! Read from the main file and the directories its `confdir` and
-//! `sourcedir` directives name, as chronyd reads them (`chrony.conf`
-//! documentation, 4.3 to 4.9); `include` is followed too.  The last
-//! `makestep` wins, as in chronyd.
+//! Read as chronyd reads it (`CNF_ReadFile`, `conf.c`, and the
+//! `chrony.conf` documentation, 4.3 to 4.9): the main file, the files
+//! its `include` patterns name, and the `.conf` files of its `confdir`
+//! directories.  `sourcedir` files can hold only NTP sources, so are
+//! not read.  The last `makestep` wins, as in chronyd.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -19,6 +21,13 @@ pub(crate) const DEFAULT_LARGE_OFFSET: Seconds = Seconds::new(1.0);
 
 /// How deep `include`s are followed, against a loop.
 const MAX_DEPTH: usize = 8;
+
+/// The characters a comment line starts with (`CPS_NormalizeLine`,
+/// `cmdparse.c`): only as a line's first, not after a directive.
+const COMMENT: [char; 4] = ['!', ';', '#', '%'];
+
+/// A `confdir` file's suffix.
+const CONFDIR_SUFFIX: &str = ".conf";
 
 /// A `makestep` directive: chronyd steps the clock when an update's
 /// correction is past `threshold`, in its first `limit` updates, or in
@@ -45,53 +54,89 @@ impl fmt::Display for MakeStep {
     }
 }
 
-/// The `makestep` in the configuration at `path`, if any.
-pub(crate) fn make_step(path: &Path) -> Option<MakeStep> {
-    let mut make_step = None;
-    read(path, 0, &mut make_step);
-    make_step
+/// What chronymond reads of chronyd's configuration.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Config {
+    /// The last `makestep`, if any.
+    pub(crate) make_step: Option<MakeStep>,
 }
 
-fn read(path: &Path, depth: usize, make_step: &mut Option<MakeStep>) {
-    if depth > MAX_DEPTH {
-        return;
+impl Config {
+    /// The configuration at `path`; empty where it cannot be read.
+    pub(crate) fn read(path: &Path) -> Self {
+        let mut config = Self::default();
+        config.read_file(path, 0);
+        config
     }
-    let Ok(text) = fs::read_to_string(path) else {
-        return;
-    };
-    for line in text.lines() {
-        let line = line.split(['#', ';', '!', '%']).next().unwrap_or("");
-        let mut words = line.split_whitespace();
-        match words.next() {
-            // chronyd refuses to start on any other form
-            // (`parse_makestep`, `conf.c`).
-            Some("makestep") => {
-                if let (Some(Ok(threshold)), Some(Ok(limit)), None) = (
-                    words.next().map(str::parse::<f64>),
-                    words.next().map(str::parse::<i32>),
-                    words.next(),
-                ) {
-                    *make_step = Some(MakeStep {
-                        threshold: Seconds::new(threshold),
-                        limit,
-                    });
-                }
-            }
-            Some("include") => {
-                for file in words.flat_map(glob) {
-                    read(&file, depth + 1, make_step);
-                }
-            }
-            Some("confdir" | "sourcedir") => {
-                for directory in words {
-                    for file in glob(&format!("{directory}/*.conf")) {
-                        read(&file, depth + 1, make_step);
+
+    fn read_file(&mut self, path: &Path, depth: usize) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        let Ok(text) = fs::read_to_string(path) else {
+            return;
+        };
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            let Some(directive) = words.next().filter(|w| !w.starts_with(COMMENT)) else {
+                continue;
+            };
+            let words: Vec<&str> = words.collect();
+            // Directives are case-insensitive (`CNF_ParseLine`).
+            match directive.to_ascii_lowercase().as_str() {
+                "makestep" => self.make_step(&words),
+                "include" => {
+                    for file in words.iter().flat_map(|w| glob(w)) {
+                        self.read_file(&file, depth + 1);
                     }
                 }
+                "confdir" => {
+                    for file in confdir(&words) {
+                        self.read_file(&file, depth + 1);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
+
+    /// chronyd refuses to start on any other form (`parse_makestep`).
+    fn make_step(&mut self, words: &[&str]) {
+        if let [threshold, limit] = words
+            && let (Ok(threshold), Ok(limit)) = (threshold.parse::<f64>(), limit.parse::<i32>())
+        {
+            self.make_step = Some(MakeStep {
+                threshold: Seconds::new(threshold),
+                limit,
+            });
+        }
+    }
+}
+
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.make_step {
+            Some(make_step) => write!(f, "{make_step}"),
+            None => write!(f, "no makestep"),
+        }
+    }
+}
+
+/// The files a `confdir` directive includes: each `.conf` file of its
+/// directories, in the order of their names, and of a name in more than
+/// one only the first directory's (`search_dirs`, `conf.c`).
+fn confdir(directories: &[&str]) -> Vec<PathBuf> {
+    let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for directory in directories {
+        for file in glob(&format!("{directory}/*{CONFDIR_SUFFIX}")) {
+            if let Some(name) = file.file_name() {
+                files
+                    .entry(name.to_string_lossy().into_owned())
+                    .or_insert(file);
+            }
+        }
+    }
+    files.into_values().collect()
 }
 
 /// The files a pattern names: a literal path, or `*` in its last
@@ -130,29 +175,47 @@ mod tests {
         limit: 3,
     };
 
+    /// A fresh directory for a test's files.
+    fn directory(name: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("chronymond-config-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("a directory");
+        directory
+    }
+
     #[test]
     fn finds_makestep_through_confdir() {
-        let directory =
-            std::env::temp_dir().join(format!("chronymond-config-{}", std::process::id()));
+        let directory = directory("confdir");
         let conf_d = directory.join("conf.d");
+        let override_d = directory.join("override.d");
         fs::create_dir_all(&conf_d).expect("directories");
+        fs::create_dir_all(&override_d).expect("directories");
         let main = directory.join("chrony.conf");
         fs::write(
             &main,
             format!(
-                "pool 2.debian.pool.ntp.org iburst\nmakestep 1 3 # comment\nconfdir {}\n",
+                "pool 2.debian.pool.ntp.org iburst\n# makestep 9 9\nMakeStep 1 3\nconfdir {} {}\n",
+                override_d.display(),
                 conf_d.display()
             ),
         )
         .expect("written");
-        assert_eq!(make_step(&main), Some(FIRST_THREE));
+        assert_eq!(Config::read(&main).make_step, Some(FIRST_THREE));
         fs::write(conf_d.join("local.conf"), "makestep 0.1 -1\n").expect("written");
         let unlimited = MakeStep {
             threshold: Seconds::new(0.1),
             limit: -1,
         };
-        assert_eq!(make_step(&main), Some(unlimited));
-        assert_eq!(make_step(&directory.join("missing.conf")), None);
+        assert_eq!(Config::read(&main).make_step, Some(unlimited));
+        // A file of the same name in the directory listed first is read
+        // in its place.
+        fs::write(override_d.join("local.conf"), "\n").expect("written");
+        assert_eq!(Config::read(&main).make_step, Some(FIRST_THREE));
+        assert_eq!(
+            Config::read(&directory.join("missing.conf")).make_step,
+            None
+        );
         fs::remove_dir_all(&directory).expect("removed");
     }
 

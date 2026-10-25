@@ -25,6 +25,7 @@ use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
 use crate::collect::Collector;
+use crate::config::Config;
 use crate::ingest::Ingest;
 use crate::lifecycle::Host;
 
@@ -148,12 +149,12 @@ fn run(cli: &Cli) -> Result<()> {
     };
     let mut log =
         Log::open(&cli.database).with_context(|| format!("opening {}", cli.database.display()))?;
-    let make_step = config::make_step(&cli.chrony_config);
+    let config = Config::read(&cli.chrony_config);
     eprintln!(
         "chronymond: version {}, {} every {interval:?}, {}",
         env!("CARGO_PKG_VERSION"),
         cli.socket.display(),
-        make_step.map_or_else(|| "no makestep".to_owned(), |m| m.to_string())
+        config
     );
 
     let (stop, stopped) = mpsc::channel();
@@ -188,7 +189,7 @@ fn run(cli: &Cli) -> Result<()> {
     );
     let mut logs_read = Instant::now();
 
-    let mut collector = Collector::new(make_step);
+    let mut collector = Collector::new(config);
     let mut state = None;
     let mut next = Instant::now();
     // Why the loop stopped, if not for a signal.
