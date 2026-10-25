@@ -69,31 +69,19 @@ const stack = {
   marks: [],
 };
 
-// A source's state as chronyc's `sources` marks it, and the class
-// that colors it.
-const STATES = {
-  selected: ["*", "state-selected"],
-  combined: ["+", ""],
-  not_combined: ["-", ""],
-  nonselectable: ["?", "state-warn"],
-  falseticker: ["x", "state-bad"],
-  jittery: ["~", "state-warn"],
-};
-
 // The polling interval, a power of two seconds, as chronyc shows it.
 const poll = (p) => (p == null ? "--" : `${p} (${age(2 ** p)})`);
 
 function sourcesTable(sources, now) {
   if (!sources.length) return `<span class="muted">no sources recorded</span>`;
   const rows = sources.map((s) => {
-    const [mark, cls] = STATES[s.state] ?? ["", ""];
+    const [mark, cls] = SOURCE_STATES[s.state] ?? ["", ""];
     const sample = s.sample ?? {};
     const stats = s.stats ?? {};
     const since = s.last_seen ? `${age(now - s.last_seen)} ago` : "--";
-    const name = s.name && s.name !== s.address ? s.name : s.address;
     return `<tr>` +
       `<td><span class="${cls}" title="${esc(s.state ?? "")}">${esc(mark)}</span></td>` +
-      `<td><a href="/source?source=${s.id}" style="color:${sourceColor(s.id)}">${esc(name)}</a></td>` +
+      `<td><a href="/source?source=${s.id}" style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</a></td>` +
       `<td class="muted">${esc(s.address)}</td>` +
       `<td>${esc(s.mode)}</td>` +
       `<td>${sample.stratum ?? "--"}</td>` +
