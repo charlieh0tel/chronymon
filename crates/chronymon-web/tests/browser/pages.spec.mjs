@@ -281,7 +281,11 @@ const nmeaCharts = (page) => page.evaluate(() => stack.charts.map((c) => {
 }));
 
 test("Sources: a source's name in a title hides its line on every chart, kept in the address", async ({ page }) => {
-  await page.goto("/sources?last=86400");
+  // A fixed day, not the last one: a window that slides with the clock
+  // reads other buckets at its edges on each redraw, and an axis the
+  // test expects unchanged can refit.
+  const to = Math.floor(Date.now() / 1000) - 60;
+  await page.goto(`/sources?from=${to - 86400}&to=${to}`);
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
   const before = await nmeaCharts(page);
