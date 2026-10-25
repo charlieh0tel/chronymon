@@ -34,6 +34,7 @@ use std::path::PathBuf;
 
 use chronymon::event::EventKind;
 use chronymon_control::report::Leap;
+use chronymon_control::report::ReferenceId;
 use chronymon_control::report::SourceMode;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
@@ -435,6 +436,13 @@ pub struct Tracking {
     pub leap: String,
     /// The other columns, by name, in [`Table::Tracking`]'s order.
     pub values: Values,
+}
+
+impl Tracking {
+    /// Whether chronyd is serving its local reference.
+    pub fn local(&self) -> bool {
+        self.reference_id == i64::from(ReferenceId::LOCAL.0)
+    }
 }
 
 /// One source, with the latest of each report about it.
@@ -1005,51 +1013,95 @@ impl Reader {
         }
     }
 
-    /// Where `recording` ended, and for `tracking` where chronyd lost
-    /// sync over `window`: its rows are placed by reference time, and
-    /// while unsynchronized it has none there, its values stale.
+    /// Where `recording` ended, and for `tracking` where chronyd stopped
+    /// being synchronized to a source over `window`: its rows are
+    /// placed by reference time, and while unsynchronized or on its
+    /// local reference it has none there, its values stale.
     fn clock_stops(&self, table: Table, recording: &Recording, window: Window) -> Result<Vec<i64>> {
         let mut stops = recording.ends();
         if table == Table::Tracking {
+            let spans = self.not_synchronized_spans(recording, window)?;
             stops.extend(
-                self.unsynchronized_spans(recording, window)?
-                    .into_iter()
-                    .map(|(start, _)| start),
+                spans
+                    .unsynchronized
+                    .iter()
+                    .chain(&spans.local)
+                    .map(|(start, _)| *start),
             );
             stops.sort_unstable();
         }
         Ok(stops)
     }
 
-    /// When chronyd was unsynchronized over `window`, unix seconds,
-    /// oldest first, clipped to it: where [`Self::series`] and
-    /// [`Self::filled`] of `tracking` break.
-    pub fn unsynchronized(&self, window: Window) -> Result<Vec<(f64, f64)>> {
-        let spans = self.unsynchronized_spans(&self.recording()?, window)?;
-        Ok(spans
-            .into_iter()
-            .map(|(start, end)| (seconds(start), seconds(end)))
-            .collect())
+    /// When chronyd was not synchronized to a source over `window`,
+    /// unix seconds: where [`Self::series`] and [`Self::filled`] of
+    /// `tracking` break.
+    pub fn not_synchronized(&self, window: Window) -> Result<NotSynchronized<f64>> {
+        let spans = self.not_synchronized_spans(&self.recording()?, window)?;
+        let in_seconds = |spans: Vec<(i64, i64)>| -> Vec<(f64, f64)> {
+            spans
+                .into_iter()
+                .map(|(start, end)| (seconds(start), seconds(end)))
+                .collect()
+        };
+        Ok(NotSynchronized {
+            unsynchronized: in_seconds(spans.unsynchronized),
+            local: in_seconds(spans.local),
+        })
     }
 
-    /// When chronyd was unsynchronized over `window`, as the daemon
-    /// recorded it: spans of unix nanoseconds, oldest first, clipped to
-    /// it.  From a `tracking` row at reference time 0, which chronyd
-    /// reports while unsynchronized (`REF_GetReferenceParams`, chrony
-    /// 4.8 `reference.c:1216`), until the next update's reference time;
-    /// from a leap change to unsynchronized until one from it; either
-    /// at the latest until `recording` ended; none shorter than
-    /// [`SHORTEST_UNSYNCHRONIZED`].  A daemon writes a row
-    /// at reference time 0 only on its first read, an older one on each
-    /// loss of sync; both write the leap change.
-    fn unsynchronized_spans(
+    /// When chronyd was not synchronized to a source over `window`, as
+    /// the daemon recorded it, unix nanoseconds.
+    ///
+    /// Unsynchronized: from a `tracking` row at reference time 0, which
+    /// chronyd reports while unsynchronized (`REF_GetReferenceParams`,
+    /// chrony 4.8 `reference.c:1216`), until the next update's
+    /// reference time; from a leap change to unsynchronized until one
+    /// from it; none shorter than [`SHORTEST_UNSYNCHRONIZED`].  A
+    /// daemon writes a row at reference time 0 only on its first read,
+    /// an older one on each loss of sync; both write the leap change.
+    ///
+    /// On its local reference: from a reference change to it until one
+    /// from it, and from the daemon's first read when that is of it
+    /// ([`ReferenceId::LOCAL`]).  A time unsynchronized ends where one
+    /// on the local reference starts, as chronyd's does.
+    ///
+    /// Either at the latest until `recording` ended.
+    fn not_synchronized_spans(
         &self,
         recording: &Recording,
         window: Window,
-    ) -> Result<Vec<(i64, i64)>> {
-        let (_, to, _) = window.stored();
+    ) -> Result<NotSynchronized<i64>> {
+        let (from, to, _) = window.stored();
+        let stopped = recording.ends();
+        let mut local_starts = Vec::new();
+        let mut local_ends = Vec::new();
+        let mut first = self.connection.prepare(FIRST_TRACKING_FROM)?;
+        for (start, end) in recording
+            .spans
+            .iter()
+            .filter(|(start, end)| *start <= to && *end > from)
+        {
+            if let Some((at, reference_id)) = first
+                .query_row(params![start], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .optional()?
+                && at <= *end
+                && reference_id == i64::from(ReferenceId::LOCAL.0)
+            {
+                local_starts.push(at);
+            }
+        }
+        for (at, detail) in self.events_of_kind(EventKind::ReferenceChange, window)? {
+            match text::reference_change_references(&detail) {
+                Some((_, now)) if now == text::LOCAL_REFERENCE => local_starts.push(at),
+                Some((before, _)) if before == text::LOCAL_REFERENCE => local_ends.push(at),
+                _ => {}
+            }
+        }
         let mut starts = Vec::new();
-        let mut ends = Vec::new();
+        let mut ends = local_starts.clone();
         let mut statement = self.connection.prepare(UNSYNCHRONIZED_ROWS)?;
         let zeros = statement
             .query_map(params![to], |row| row.get::<_, i64>(0))?
@@ -1079,10 +1131,13 @@ impl Reader {
                 ends.push(at);
             }
         }
-        let spans = spans_between(starts, ends, &recording.ends())
+        let unsynchronized = spans_between(starts, ends, &stopped)
             .into_iter()
             .filter(|(start, end)| (end - start) as f64 >= SHORTEST_UNSYNCHRONIZED * NANOSECONDS);
-        Ok(clipped(spans, window))
+        Ok(NotSynchronized {
+            unsynchronized: clipped(unsynchronized, window),
+            local: clipped(spans_between(local_starts, local_ends, &stopped), window),
+        })
     }
 
     /// The events of `kind` over `window`, and the last before it:
@@ -1328,6 +1383,17 @@ impl Bucket {
     }
 }
 
+/// When chronyd was not synchronized to a source over a window, as
+/// [`Reader::not_synchronized`] finds it: spans of unix time, oldest
+/// first, clipped to the window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotSynchronized<T> {
+    /// Unsynchronized.
+    pub unsynchronized: Vec<(T, T)>,
+    /// Serving its local reference (`local` in `chrony.conf`).
+    pub local: Vec<(T, T)>,
+}
+
 /// When the daemon was recording, as [`Reader::recording`] finds it:
 /// spans of unix nanoseconds, inclusive, oldest first.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1554,6 +1620,11 @@ const SYNCHRONIZED: [Leap; 3] = [Leap::Normal, Leap::Insert, Leap::Delete];
 
 /// When a `tracking` row at reference time 0 was written, until `?1`.
 const UNSYNCHRONIZED_ROWS: &str = "SELECT at FROM tracking WHERE reference_time = 0 AND at <= ?1";
+
+/// The first `tracking` row from `?1`, and its reference ID: the
+/// daemon's first read after it started.
+const FIRST_TRACKING_FROM: &str = "SELECT at, reference_id FROM tracking WHERE at >= ?1
+     ORDER BY at LIMIT 1";
 
 /// The first reference time after `?1`: the update that ended a time
 /// unsynchronized found then.
@@ -2626,16 +2697,25 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            reader.unsynchronized(window(0, 999, 100)).expect("spans"),
+            reader
+                .not_synchronized(window(0, 999, 100))
+                .expect("spans")
+                .unsynchronized,
             seconds(&[(105, 200), (400, 500), (700, 750)])
         );
         // Clipped to the window, and one that began before it found.
         assert_eq!(
-            reader.unsynchronized(window(150, 450, 100)).expect("spans"),
+            reader
+                .not_synchronized(window(150, 450, 100))
+                .expect("spans")
+                .unsynchronized,
             seconds(&[(150, 200), (400, 450)])
         );
         assert_eq!(
-            reader.unsynchronized(window(720, 999, 100)).expect("spans"),
+            reader
+                .not_synchronized(window(720, 999, 100))
+                .expect("spans")
+                .unsynchronized,
             seconds(&[(720, 750)])
         );
         // Each line breaks across the two between updates, though no
@@ -2668,6 +2748,86 @@ mod tests {
     }
 
     #[test]
+    fn the_local_reference_is_a_span_and_a_break() {
+        let mut db = Database::new("local");
+        // chronyd's tracking on its local reference
+        // (`REF_GetReferenceParams`, chrony 4.8 `reference.c:1184`).
+        let local = |second: i64| chronymon_control::report::Tracking {
+            reference_id: ReferenceId::LOCAL,
+            address: Address::Unspecified,
+            stratum: 10,
+            ..tracking(second - 1, 1.0)
+        };
+        let unsynchronized = reported(None);
+        db.log
+            .write(|batch| {
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                for second in (0..100).chain(300..400).chain(700..800).step_by(10) {
+                    batch.tracking(at(second), &tracking(second, 1.0))?;
+                }
+                // Sources lost: unsynchronized, then the local reference,
+                // until a source is selected again.
+                let synchronized = tracking(90, 1.0);
+                batch.leap_change(at(100), Leap::Normal, Leap::Unsynchronized)?;
+                batch.reference_change(at(100), &synchronized, &unsynchronized)?;
+                batch.leap_change(at(150), Leap::Unsynchronized, Leap::Normal)?;
+                batch.reference_change(at(150), &unsynchronized, &local(150))?;
+                batch.reference_change(at(300), &local(300), &synchronized)?;
+                // Past its `distance`: on the local reference straight from
+                // a source, until the daemon stopped.
+                batch.reference_change(at(400), &synchronized, &local(400))?;
+                batch.event(at(500), EventKind::DaemonStop, None, None)?;
+                // Started again, its first read of the local reference.
+                batch.event(at(600), EventKind::DaemonStart, None, None)?;
+                batch.tracking(at(601), &local(601))?;
+                batch.reference_change(at(700), &local(700), &synchronized)?;
+                batch.event(at(900), EventKind::DaemonStop, None, None)?;
+                Ok(())
+            })
+            .expect("written");
+        let reader = db.reader();
+        let seconds = |spans: &[(i64, i64)]| -> Vec<(f64, f64)> {
+            spans
+                .iter()
+                .map(|(a, b)| ((START + a) as f64, (START + b) as f64))
+                .collect()
+        };
+        assert_eq!(
+            reader.not_synchronized(window(0, 999, 100)).expect("spans"),
+            NotSynchronized {
+                unsynchronized: seconds(&[(100, 150)]),
+                local: seconds(&[(150, 300), (400, 500), (601, 700)]),
+            }
+        );
+        // One that began before the window, found.
+        assert_eq!(
+            reader
+                .not_synchronized(window(200, 250, 100))
+                .expect("spans")
+                .local,
+            seconds(&[(200, 250)])
+        );
+        let series = reader
+            .series(
+                Table::Tracking,
+                None,
+                &[column(Table::Tracking, "frequency")],
+                window(0, 999, 1000),
+            )
+            .expect("a series");
+        let gaps: Vec<f64> = series.plots[0]
+            .gaps
+            .iter()
+            .map(|gap| series.at[*gap] - START as f64)
+            .collect();
+        // Across each, though the daemon recorded throughout the first.
+        assert_eq!(gaps.len(), 3, "{gaps:?}");
+        assert!((90.0..300.0).contains(&gaps[0]), "{gaps:?}");
+        assert!((390.0..600.0).contains(&gaps[1]), "{gaps:?}");
+        assert!((600.0..700.0).contains(&gaps[2]), "{gaps:?}");
+    }
+
+    #[test]
     fn a_leap_second_is_not_unsynchronized() {
         let mut db = Database::new("leap-second");
         db.log
@@ -2686,8 +2846,9 @@ mod tests {
         let reader = db.reader();
         assert!(
             reader
-                .unsynchronized(window(0, 199, 100))
+                .not_synchronized(window(0, 199, 100))
                 .expect("spans")
+                .unsynchronized
                 .is_empty()
         );
         let series = reader
@@ -2774,6 +2935,7 @@ mod tests {
         for (sql, table) in [
             (UNSYNCHRONIZED_ROWS, "tracking"),
             (SYNCHRONIZED_AFTER, "tracking"),
+            (FIRST_TRACKING_FROM, "tracking"),
             (EVENTS_OF_KIND, "event"),
             (EVENT_OF_KIND_BEFORE, "event"),
         ] {

@@ -123,3 +123,5 @@ changes, sources added and removed):
 Between a leap change to unsynchronized and one from it, the clock's
 charts on Live and the kiosk break their lines and shade the span:
 not under 2 s, as chronyd reports a leap second as unsynchronized.
+So do they while chronyd serves its local reference (`local` in
+`chrony.conf`), named so; a reference change to it says `local`.

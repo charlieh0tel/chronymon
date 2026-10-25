@@ -25,6 +25,10 @@ use jiff::Timestamp;
 use serde_json::Value;
 use serde_json::json;
 
+/// The strip's name for chronyd's reference while it serves its local
+/// reference, whose address is unspecified.
+const LOCAL_REFERENCE: &str = "local reference";
+
 /// The window shown when a request names none, in seconds: the last
 /// hour of what the table holds.
 const DEFAULT_WINDOW: f64 = 3600.0;
@@ -298,6 +302,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
         // A refclock's address is its reference ID among the sources, but
         // tracking leaves it unspecified (chrony 4.6.1 `reference.c:959`).
         let reference_name = match &tracking {
+            Some(t) if t.local() => Some(LOCAL_REFERENCE.to_owned()),
             Some(t) => {
                 let reference_id = format!("{:08X}", t.reference_id);
                 reader
@@ -359,8 +364,9 @@ pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
 /// `/api/history?table=&columns=a,b&from=&to=&points=&source=`: one
 /// table's columns, bucketed on one grid, each with the indexes its
 /// line breaks at; with `fill=&fill_columns=`, a log's where the daemon
-/// was not recording.  `unsynchronized`: `[from, to]` pairs, for
-/// `tracking` when chronyd was, else none.
+/// was not recording.  `unsynchronized` and `local`: `[from, to]`
+/// pairs, for `tracking` when chronyd was unsynchronized and on its
+/// local reference, else none.
 pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
     let table = table(query)?;
     let columns = columns(query, "columns", table)?;
@@ -400,15 +406,23 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
                 })
             })
             .collect();
-        // Where the clock's lines break for chronyd unsynchronized, for
-        // the charts to mark.
-        let unsynchronized = if table == Table::Tracking {
-            reader.unsynchronized(window)?
+        // Where the clock's lines break for chronyd not synchronized to
+        // a source, for the charts to mark.
+        let not_synchronized = if table == Table::Tracking {
+            Some(reader.not_synchronized(window)?)
         } else {
-            Vec::new()
+            None
         };
+        let (unsynchronized, local) = not_synchronized
+            .map(|n| (n.unsynchronized, n.local))
+            .unwrap_or_default();
         Ok(with(
-            json!({ "at": series.at, "plots": plots, "unsynchronized": unsynchronized }),
+            json!({
+                "at": series.at,
+                "plots": plots,
+                "unsynchronized": unsynchronized,
+                "local": local,
+            }),
             bounds,
         ))
     })

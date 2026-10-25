@@ -147,7 +147,7 @@ async function load(signal) {
     x: got.at,
     span: spanOf([got]),
     drawn: filledCharts(TABLE, got, FILLS),
-    bands: unsynchronizedBands(got),
+    bands: notSynchronizedBands(got),
   }, "no clock updates in this range");
 }
 
