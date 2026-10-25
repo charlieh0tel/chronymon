@@ -12,6 +12,7 @@ set -euo pipefail
 
 # The image's Playwright must match package.json's.
 PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.63.0-noble
+DEJAVU=/usr/share/fonts/truetype/dejavu
 # Hours of synthetic readings, longer than the 24 h windows tested.
 HOURS=48
 
@@ -61,8 +62,13 @@ if command -v npx >/dev/null && compgen -G "$tests/node_modules/playwright-core/
 else
     # The host's network, to reach the servers; the caller's uid, so
     # node_modules and what is written are the caller's.
+    # The image's `monospace` is WenQuanYi Zen Hei Mono, narrower than
+    # what a desktop or CI's runner draws (DejaVu Sans Mono), so the
+    # host's DejaVu is lent to it where there is one.
+    fonts=()
+    [ -d "$DEJAVU" ] && fonts=(-v "$DEJAVU:$DEJAVU:ro")
     docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
-        -e CHRONYMON_WEB_FULL -e CHRONYMON_WEB_MISSING \
+        -e CHRONYMON_WEB_FULL -e CHRONYMON_WEB_MISSING "${fonts[@]}" \
         -v "$repo:$repo" -w "$tests" "$PLAYWRIGHT_IMAGE" \
         sh -c 'npm ci --no-fund --no-audit --loglevel=error && exec "$@"' sh "$@"
 fi
