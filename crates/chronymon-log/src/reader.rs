@@ -981,18 +981,14 @@ impl Reader {
         Ok(Recording { spans })
     }
 
-    /// The latest time the daemon wrote a row of `tracking` or an event
-    /// from `from` until before `to`, unix nanoseconds; `from` if none.
+    /// The latest time the daemon wrote a row or an event from `from`
+    /// until before `to`, unix nanoseconds; `from` if none.  Of every
+    /// table it writes by `at`: `tracking` has a row only per update,
+    /// none for as long as chronyd is unsynchronized.
     fn last_written(&self, from: i64, to: i64) -> Result<i64> {
-        let latest: Option<i64> = self.connection.query_row(
-            "SELECT MAX(at) FROM (
-                 SELECT MAX(at) AS at FROM tracking WHERE at >= ?1 AND at < ?2
-                 UNION ALL
-                 SELECT MAX(at) FROM event WHERE at >= ?1 AND at < ?2
-             )",
-            params![from, to],
-            |row| row.get(0),
-        )?;
+        let latest: Option<i64> =
+            self.connection
+                .query_row(&last_written_sql(), params![from, to], |row| row.get(0))?;
         Ok(latest.unwrap_or(from))
     }
 
@@ -1408,6 +1404,25 @@ fn latest_sql(table: Table, label: &str) -> String {
     )
 }
 
+/// The tables the daemon writes a row to by `at`, indexed by it, which
+/// [`last_written_sql`] finds the latest of.
+const WRITTEN: [&str; 5] = [
+    "tracking",
+    "source_stats",
+    "ntp_sample",
+    "selection",
+    "event",
+];
+
+/// The latest `at` of [`WRITTEN`] from `?1` until before `?2`.
+fn last_written_sql() -> String {
+    let each: Vec<String> = WRITTEN
+        .iter()
+        .map(|table| format!("SELECT MAX(at) AS at FROM {table} WHERE at >= ?1 AND at < ?2"))
+        .collect();
+    format!("SELECT MAX(at) FROM ({})", each.join(" UNION ALL "))
+}
+
 /// Every source but placeholders, and whether removed, by the event
 /// kinds `?1`, added, and `?2`, removed.
 fn sources_sql() -> String {
@@ -1542,6 +1557,7 @@ mod tests {
     use chronymon_control::report::SourceData;
     use chronymon_control::report::SourceMode;
     use chronymon_control::report::SourceState;
+    use chronymon_control::report::SourceStats;
     use jiff::Timestamp;
 
     use super::*;
@@ -1621,6 +1637,22 @@ mod tests {
             original_latest_measurement: Seconds::new(offset),
             latest_measurement: Seconds::new(offset),
             latest_measurement_error: Seconds::new(1e-5),
+        }
+    }
+
+    /// A source's regression.
+    fn stats() -> SourceStats {
+        SourceStats {
+            reference_id: ReferenceId(1),
+            address: Address::Ip(IpAddr::from(SERVER)),
+            samples: 8,
+            runs: 3,
+            span: Duration::from_secs(512),
+            standard_deviation: Seconds::new(1e-6),
+            residual_frequency: Ppm::new(0.0),
+            skew: Ppm::new(0.01),
+            estimated_offset: Seconds::new(0.0),
+            estimated_offset_error: Seconds::new(1e-6),
         }
     }
 
@@ -1849,7 +1881,16 @@ mod tests {
                 batch.event(at(100), EventKind::ChronydDown, None, None)?;
                 batch.event(at(200), EventKind::ChronydUp, None, None)?;
                 batch.tracking(at(250), &tracking(249, 1.0))?;
-                // Killed after 250 s, started again at 400 s.
+                // A regression after the last update.
+                let id = batch.source(
+                    at(0),
+                    sample(SERVER, 0.0).address,
+                    ReferenceId(1),
+                    SourceMode::Client,
+                    None,
+                )?;
+                batch.source_stats(at(300), id, &stats())?;
+                // Killed after 300 s, started again at 400 s.
                 batch.event(at(400), EventKind::DaemonCrash, None, None)?;
                 batch.event(at(400), EventKind::DaemonStart, None, None)?;
                 // A log it could not read is not chronyd down.
@@ -1863,7 +1904,7 @@ mod tests {
                 Ok(())
             })
             .expect("written");
-        let spans = [(0, 100), (200, 250), (400, 500), (650, 700)]
+        let spans = [(0, 100), (200, 300), (400, 500), (650, 700)]
             .map(|(start, end)| ((START + start) * NS, (START + end) * NS));
         assert_eq!(db.reader().recording().expect("spans").spans, spans);
         // With no daemon ever, never.
@@ -2448,7 +2489,11 @@ mod tests {
                 );
             }
         }
-        let plan = plan(&reader, &sources_sql());
-        assert!(!scans(&plan, "event"), "{plan:?}");
+        let sources = plan(&reader, &sources_sql());
+        assert!(!scans(&sources, "event"), "{sources:?}");
+        let written = plan(&reader, &last_written_sql());
+        for table in WRITTEN {
+            assert!(!scans(&written, table), "{written:?}");
+        }
     }
 }
