@@ -3,7 +3,19 @@
 A daemon that records what chronyd knows about its clock and its
 sources into SQLite, and a browser view that charts it live.
 
-Early days: see `PLAN.md` for the design and the phases.
+Early days: see `PLAN.md` for the design and the phases, and
+`RELEASING.md` for how a release is made.
+
+![The live page: a day of the clock's offset, frequency and skew, and the step the synthetic clock takes](docs/images/web-live.png)
+
+| Sources | Refclocks |
+| - | - |
+| ![The sources page: each source as last reported, and every source's offset, delay and frequency over a day](docs/images/web-sources.png) | ![The refclocks page: a day of each refclock's offsets from refclocks.log](docs/images/web-refclocks.png) |
+| **Temperature** | **Distribution** |
+| ![The temperature page: tempcomp's temperature and compensation over a day, and the clock's frequency](docs/images/web-temperature.png) | ![The distribution page: a histogram and percentiles of a day's offsets](docs/images/web-distribution.png) |
+
+Shown from the synthetic database below; `make screenshots` takes
+them again.
 
 ## Running
 
@@ -38,12 +50,13 @@ readings and serve that:
 
 ## Building
 
-    make hooks     # once per clone
-    make ci        # fmt, clippy, tests
-    make test-web  # every page in Chromium, against a synthetic database
+    make hooks        # once per clone
+    make ci           # fmt, clippy, tests
+    make test-web     # every page in Chromium, against a synthetic database
+    make screenshots  # the pictures above, into docs/images
 
-`make test-web` runs Playwright natively after `make web-deps`, or
-with no Node installed, in Playwright's container (Docker).
+Both run Playwright natively after `make web-deps`, or with no Node
+installed, in Playwright's container (Docker).
 
 ## License
 
