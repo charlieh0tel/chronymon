@@ -1047,7 +1047,7 @@ impl Reader {
         recording: &Recording,
         window: Window,
     ) -> Result<Vec<(i64, i64)>> {
-        let (from, to, _) = window.stored();
+        let (_, to, _) = window.stored();
         let mut starts = Vec::new();
         let mut ends = Vec::new();
         let mut statement = self.connection.prepare(UNSYNCHRONIZED_ROWS)?;
@@ -1072,52 +1072,42 @@ impl Reader {
             .iter()
             .map(|leap| text::leap_change(Leap::Unsynchronized, *leap))
             .collect();
-        let kind = EventKind::LeapChange.name();
-        let mut changes = Vec::new();
-        for (sql, parameters) in [
-            (LEAP_CHANGE_BEFORE, params![from, kind]),
-            (LEAP_CHANGES, params![from, to, kind]),
-        ] {
-            let mut statement = self.connection.prepare(sql)?;
-            changes.extend(
-                statement
-                    .query_map(parameters, |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            );
-        }
-        for (at, detail) in changes {
-            let detail = detail.unwrap_or_default();
+        for (at, detail) in self.events_of_kind(EventKind::LeapChange, window)? {
             if lost.contains(&detail) {
                 starts.push(at);
             } else if regained.contains(&detail) {
                 ends.push(at);
             }
         }
-        starts.sort_unstable();
-        ends.sort_unstable();
-        let stopped = recording.ends();
-        let mut spans: Vec<(i64, i64)> = Vec::new();
-        for start in starts {
-            if spans.last().is_some_and(|(_, end)| start <= *end) {
-                continue;
-            }
-            let regained = ends.get(ends.partition_point(|end| *end <= start));
-            let stop = stopped.get(stopped.partition_point(|end| *end < start));
-            if let Some(end) = [regained, stop].into_iter().flatten().min() {
-                spans.push((start, *end));
-            }
-        }
-        Ok(spans
+        let spans = spans_between(starts, ends, &recording.ends())
             .into_iter()
-            .filter(|(start, end)| {
-                (end - start) as f64 >= SHORTEST_UNSYNCHRONIZED * NANOSECONDS
-                    && *end > from
-                    && *start < to
-            })
-            .map(|(start, end)| (start.max(from), end.min(to)))
-            .collect())
+            .filter(|(start, end)| (end - start) as f64 >= SHORTEST_UNSYNCHRONIZED * NANOSECONDS);
+        Ok(clipped(spans, window))
+    }
+
+    /// The events of `kind` over `window`, and the last before it:
+    /// `(at, detail)`, unix nanoseconds, the detail empty if none.
+    fn events_of_kind(&self, kind: EventKind, window: Window) -> Result<Vec<(i64, String)>> {
+        let (from, to, _) = window.stored();
+        let kind = kind.name();
+        let mut events = Vec::new();
+        for (sql, parameters) in [
+            (EVENT_OF_KIND_BEFORE, params![from, kind]),
+            (EVENTS_OF_KIND, params![from, to, kind]),
+        ] {
+            let mut statement = self.connection.prepare(sql)?;
+            events.extend(
+                statement
+                    .query_map(parameters, |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
+        Ok(events)
     }
 
     /// `stops`, sorted, and when `source_id` was reported removed.
@@ -1521,6 +1511,38 @@ fn latest_sql(table: Table, label: &str) -> String {
     )
 }
 
+/// Spans of unix nanoseconds, oldest first, overlapping none: from
+/// each of `starts` not within one already until the first of `ends`
+/// after it or of `stopped`, sorted, at or after it, whichever is
+/// first; none from a start with neither after it.
+fn spans_between(mut starts: Vec<i64>, mut ends: Vec<i64>, stopped: &[i64]) -> Vec<(i64, i64)> {
+    starts.sort_unstable();
+    ends.sort_unstable();
+    let mut spans: Vec<(i64, i64)> = Vec::new();
+    for start in starts {
+        if spans.last().is_some_and(|(_, end)| start <= *end) {
+            continue;
+        }
+        let ended = ends.get(ends.partition_point(|end| *end <= start));
+        let stop = stopped.get(stopped.partition_point(|end| *end < start));
+        if let Some(end) = [ended, stop].into_iter().flatten().min() {
+            spans.push((start, *end));
+        }
+    }
+    spans
+}
+
+/// `spans`, unix nanoseconds, clipped to `window`: none empty or
+/// outside it.
+fn clipped(spans: impl IntoIterator<Item = (i64, i64)>, window: Window) -> Vec<(i64, i64)> {
+    let (from, to, _) = window.stored();
+    spans
+        .into_iter()
+        .filter(|(start, end)| end > start && *end > from && *start < to)
+        .map(|(start, end)| (start.max(from), end.min(to)))
+        .collect()
+}
+
 /// The shortest time unsynchronized that is one, in seconds:
 /// chronyd reports a leap second in progress as unsynchronized
 /// (`leap_in_progress`, chrony 4.8 `reference.c:1178`), a second at
@@ -1540,9 +1562,10 @@ const SYNCHRONIZED_AFTER: &str = "SELECT reference_time FROM tracking WHERE refe
 
 /// The events of kind `?3` from `?1` to `?2`, and the last of kind `?2`
 /// before `?1`.
-const LEAP_CHANGES: &str = "SELECT at, detail FROM event WHERE at >= ?1 AND at <= ?2 AND kind = ?3
+const EVENTS_OF_KIND: &str =
+    "SELECT at, detail FROM event WHERE at >= ?1 AND at <= ?2 AND kind = ?3
      ORDER BY at, rowid";
-const LEAP_CHANGE_BEFORE: &str = "SELECT at, detail FROM event WHERE at < ?1 AND kind = ?2
+const EVENT_OF_KIND_BEFORE: &str = "SELECT at, detail FROM event WHERE at < ?1 AND kind = ?2
      ORDER BY at DESC, rowid DESC LIMIT 1";
 
 /// The tables the daemon writes a row to by `at`, indexed by it, which
@@ -2751,8 +2774,8 @@ mod tests {
         for (sql, table) in [
             (UNSYNCHRONIZED_ROWS, "tracking"),
             (SYNCHRONIZED_AFTER, "tracking"),
-            (LEAP_CHANGES, "event"),
-            (LEAP_CHANGE_BEFORE, "event"),
+            (EVENTS_OF_KIND, "event"),
+            (EVENT_OF_KIND_BEFORE, "event"),
         ] {
             let plan = plan(&reader, sql);
             assert!(!scans(&plan, table), "{sql}: {plan:?}");
