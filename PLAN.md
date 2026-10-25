@@ -175,6 +175,14 @@ Grafana's Auto timer (never oftener than 5 s) and redraw in place.
 One bucketed query, live or zoomed, is one path to get right; nothing
 arrives faster than chronyd updates, so no push channel.
 
+A request is checked before the database is opened, and refused with
+a 400 saying why: a name not served, a number that does not parse,
+a column listed twice, more than 5000 points, 5000 events, or 80,000
+buckets of columns (Live's every column and its log's at 5000 points,
+with room).  A column repeated 600 times in a 3 KB request once cost
+hundreds of megabytes.  The database's own failures stay a 200 with
+the error, said where the chart would be.
+
 Offset axes are `asinh` (linear near zero, logarithmic beyond), used
 only when the data reaches past ten times the linear threshold, with
 ticks at zero, the threshold and its decades.

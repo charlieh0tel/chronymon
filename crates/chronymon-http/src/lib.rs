@@ -88,6 +88,15 @@ impl Response {
         }
     }
 
+    /// A request refused as malformed or too large, `body` saying why.
+    pub fn bad_request(kind: &'static str, body: String) -> Self {
+        Self {
+            status: "400 Bad Request",
+            kind,
+            body,
+        }
+    }
+
     /// Nothing is served at that path.
     pub fn not_found() -> Self {
         Self {

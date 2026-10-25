@@ -2,17 +2,21 @@
 //!
 //! Times are unix seconds, as numbers, which is what a chart's time axis
 //! takes.  Requests name tables and columns by the reader's own names
-//! and are checked against its lists before reaching it.
+//! and are checked against its lists, and against what one answer may
+//! cost, before the database is opened: a request that fails either is
+//! [`Refused`].
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 
 use anyhow::Context as _;
 use anyhow::Result;
-use anyhow::anyhow;
 use anyhow::bail;
 use chronymon_log::reader::Column;
 use chronymon_log::reader::Key;
+use chronymon_log::reader::MAX_POINTS;
+use chronymon_log::reader::MIN_POINTS;
 use chronymon_log::reader::Reader;
 use chronymon_log::reader::Table;
 use chronymon_log::reader::Values;
@@ -26,8 +30,13 @@ use serde_json::json;
 const DEFAULT_WINDOW: f64 = 3600.0;
 /// Buckets when a request names no number.
 const DEFAULT_POINTS: usize = 1500;
-/// The most events one request is given, and the most when it names no
-/// number.
+/// The most buckets of all its columns together one history answers:
+/// the Live page's every column and its log's, at the most points, with
+/// room to spare.  Each is three numbers, so a request for a column many
+/// times over could otherwise cost hundreds of megabytes.
+const MAX_CELLS: usize = 16 * MAX_POINTS;
+/// The most events one request may ask for, and how many when it names
+/// no number.
 const MAX_EVENTS: usize = 5000;
 const DEFAULT_EVENTS: usize = 500;
 /// The most readings a distribution is drawn from: some weeks of a
@@ -44,6 +53,25 @@ const HISTOGRAM_TO: f64 = 99.5;
 
 /// Nanoseconds in a second.
 const NANOSECONDS: f64 = 1e9;
+
+/// A request this does not answer: a name it does not serve, a value
+/// that does not parse, or more than one answer may cost.  Answered 400,
+/// where a database that cannot answer is the server's failure.
+#[derive(Debug)]
+pub(crate) struct Refused(String);
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// A request refused, for `why`.
+fn refused(why: String) -> anyhow::Error {
+    Refused(why).into()
+}
 
 /// `f` of the database at `path`, open to read (`Reader::read`), or
 /// why not: a database that is not there yet is the daemon not having
@@ -83,26 +111,83 @@ fn value(query: &str, key: &str) -> Option<String> {
     chronymon_http::value(query, key)
 }
 
-fn number(query: &str, key: &str) -> Option<f64> {
+/// A number a request gives, if it gives one.
+fn number(query: &str, key: &str) -> Result<Option<f64>> {
     value(query, key)
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|v| v.is_finite())
+        .map(|v| {
+            v.parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| refused(format!("{key}={v} is not a number")))
+        })
+        .transpose()
+}
+
+/// A count a request gives, if it gives one, at most `most`.
+fn count(query: &str, key: &str, most: usize) -> Result<Option<usize>> {
+    value(query, key)
+        .map(|v| match v.parse::<usize>() {
+            Ok(n) if n <= most => Ok(n),
+            Ok(_) => Err(refused(format!("{key}={v} is more than {most}"))),
+            Err(_) => Err(refused(format!("{key}={v} is not a count"))),
+        })
+        .transpose()
+}
+
+/// The table named `name`.
+fn named(name: &str) -> Result<Table> {
+    Table::from_name(name).ok_or_else(|| refused(format!("{name} is not a table this serves")))
 }
 
 /// The table a request names, `tracking` by default.
 fn table(query: &str) -> Result<Table> {
-    let name = value(query, "table").unwrap_or_else(|| Table::Tracking.name().to_owned());
-    Table::from_name(&name).ok_or_else(|| anyhow!("{name} is not a table this serves"))
+    value(query, "table").map_or(Ok(Table::Tracking), |name| named(&name))
 }
 
 fn column(table: Table, name: &str) -> Result<Column> {
     table.column(name).ok_or_else(|| {
-        anyhow!(
+        refused(format!(
             "{name} is not a column of {} this serves; it has {}",
             table.name(),
             table.columns().join(", ")
-        )
+        ))
     })
+}
+
+/// The one column of `table` a request names, `column=`.
+fn one_column(query: &str, table: Table) -> Result<Column> {
+    let name =
+        value(query, "column").ok_or_else(|| refused("which column? no column=".to_owned()))?;
+    column(table, &name)
+}
+
+/// The columns of `table` a request lists in `key`, each once.
+fn columns(query: &str, key: &str, table: Table) -> Result<Vec<Column>> {
+    let listed = value(query, key).ok_or_else(|| refused(format!("which columns? no {key}=")))?;
+    let columns = listed
+        .split(',')
+        .filter(|c| !c.is_empty())
+        .map(|c| column(table, c))
+        .collect::<Result<Vec<_>>>()?;
+    if columns.is_empty() {
+        return Err(refused(format!("no columns in {key}=")));
+    }
+    if let Some(twice) = columns
+        .iter()
+        .enumerate()
+        .find_map(|(n, c)| columns[..n].contains(c).then_some(c))
+    {
+        return Err(refused(format!("{} is in {key}= twice", twice.name())));
+    }
+    Ok(columns)
+}
+
+/// The buckets a request asks for, `points=`, as the reader will give
+/// them.
+fn points(query: &str) -> Result<usize> {
+    Ok(count(query, "points", MAX_POINTS)?
+        .unwrap_or(DEFAULT_POINTS)
+        .max(MIN_POINTS))
 }
 
 /// The source a request names: the daemon's ID for a table keyed by
@@ -119,11 +204,12 @@ fn source(query: &str, table: Table) -> Result<Option<Key>> {
             }
         })
         .transpose()
+        .map_err(|e| refused(format!("{e:#}")))
 }
 
 /// The window a request names, or the last hour `table` holds, and the
 /// table's extent, which the page needs for `all`.
-fn window(reader: &Reader, tables: &[Table], query: &str) -> Result<(Window, Value)> {
+fn window(reader: &Reader, tables: &[Table], asked: Asked) -> Result<(Window, Value)> {
     // The tables' extents together: a filled series spans both.
     let extent = tables
         .iter()
@@ -133,20 +219,49 @@ fn window(reader: &Reader, tables: &[Table], query: &str) -> Result<(Window, Val
                 (one, other) => one.or(other),
             })
         })?;
-    let to = number(query, "to").unwrap_or_else(|| extent.map_or_else(now, |(_, last)| last));
-    let from = number(query, "from").unwrap_or(to - DEFAULT_WINDOW);
+    let to = asked
+        .to
+        .unwrap_or_else(|| extent.map_or_else(now, |(_, last)| last));
+    let from = asked.from.unwrap_or(to - DEFAULT_WINDOW);
     if from > to {
-        bail!("the range ends before it starts");
+        return Err(refused(BACKWARD.to_owned()));
     }
-    let points = value(query, "points")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_POINTS);
     let (first, last) = extent.map_or((None, None), |(first, last)| (Some(first), Some(last)));
     Ok((
-        Window { from, to, points },
+        Window {
+            from,
+            to,
+            points: asked.points,
+        },
         json!({ "from": from, "to": to, "first": first, "last": last }),
     ))
 }
+
+/// The range and buckets a request asks for, checked before the
+/// database is opened; an end it leaves open is the window's to fill.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    /// `from=`, unix seconds.
+    from: Option<f64>,
+    /// `to=`, unix seconds.
+    to: Option<f64>,
+    /// `points=`, as [`points`] gives it.
+    points: usize,
+}
+
+/// What `query` asks for, bucketed into `points`.
+fn asked(query: &str, points: usize) -> Result<Asked> {
+    let (from, to) = (number(query, "from")?, number(query, "to")?);
+    if let (Some(from), Some(to)) = (from, to)
+        && from > to
+    {
+        return Err(refused(BACKWARD.to_owned()));
+    }
+    Ok(Asked { from, to, points })
+}
+
+/// Why a range is refused whose end is before its start.
+const BACKWARD: &str = "the range ends before it starts";
 
 /// Add `bounds`' fields to `value`, an object.
 fn with(mut value: Value, bounds: Value) -> Value {
@@ -216,25 +331,19 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
 /// The table and columns a request fills from, `fill=` and
 /// `fill_columns=`, if it names one.
 fn fill(query: &str) -> Result<Option<(Table, Vec<Column>)>> {
-    let Some(name) = value(query, "fill") else {
-        return Ok(None);
-    };
-    let fill =
-        Table::from_name(&name).ok_or_else(|| anyhow!("{name} is not a table this serves"))?;
-    let columns = value(query, "fill_columns")
-        .ok_or_else(|| anyhow!("which columns of {name}?"))?
-        .split(',')
-        .filter(|c| !c.is_empty())
-        .map(|c| column(fill, c))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Some((fill, columns)))
+    value(query, "fill")
+        .map(|name| {
+            let fill = named(&name)?;
+            Ok((fill, columns(query, "fill_columns", fill)?))
+        })
+        .transpose()
 }
 
 /// `/api/keys?table=`: the sources a log table names, by name, with
 /// their rows and the span of them.
 pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
+    let table = table(query)?;
     read(path, |reader| {
-        let table = table(query)?;
         Ok(Value::Array(
             reader
                 .keys(table)?
@@ -252,28 +361,29 @@ pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
 /// line breaks at; with `fill=&fill_columns=`, a log's where the daemon
 /// was not recording.
 pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
+    let table = table(query)?;
+    let columns = columns(query, "columns", table)?;
+    let fill = fill(query)?;
+    let source = source(query, table)?;
+    let points = points(query)?;
+    let cells = (columns.len() + fill.as_ref().map_or(0, |(_, c)| c.len())) * points;
+    if cells > MAX_CELLS {
+        return Err(refused(format!(
+            "{cells} buckets, its columns at points={points}, is more than {MAX_CELLS}"
+        )));
+    }
+    let asked = asked(query, points)?;
     read(path, |reader| {
-        let table = table(query)?;
-        let columns = value(query, "columns")
-            .ok_or_else(|| anyhow!("which columns?"))?
-            .split(',')
-            .filter(|c| !c.is_empty())
-            .map(|c| column(table, c))
-            .collect::<Result<Vec<_>>>()?;
-        if columns.is_empty() {
-            bail!("no columns asked for");
-        }
-        let fill = fill(query)?;
         let tables: Vec<Table> = [Some(table), fill.as_ref().map(|f| f.0)]
             .into_iter()
             .flatten()
             .collect();
-        let (window, bounds) = window(reader, &tables, query)?;
-        let series = match fill {
+        let (window, bounds) = window(reader, &tables, asked)?;
+        let series = match &fill {
             Some((fill, fill_columns)) => {
-                reader.filled(table, &columns, fill, &fill_columns, window)?
+                reader.filled(table, &columns, *fill, fill_columns, window)?
             }
-            None => reader.series(table, source(query, table)?.as_ref(), &columns, window)?,
+            None => reader.series(table, source.as_ref(), &columns, window)?,
         };
         let plots: Vec<Value> = series
             .plots
@@ -296,14 +406,17 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
 /// `/api/overlay?table=&column=&from=&to=&points=`: one column of every
 /// source, a line each, on one grid.
 pub(crate) fn overlay(path: &Path, query: &str) -> Result<Value> {
+    let table = table(query)?;
+    if !table.by_id() {
+        return Err(refused(format!(
+            "{} is not a table of the daemon's sources",
+            table.name()
+        )));
+    }
+    let column = one_column(query, table)?;
+    let asked = asked(query, points(query)?)?;
     read(path, |reader| {
-        let table = table(query)?;
-        if !table.by_id() {
-            bail!("{} is not a table of the daemon's sources", table.name());
-        }
-        let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
-        let column = column(table, &name)?;
-        let (window, bounds) = window(reader, &[table], query)?;
+        let (window, bounds) = window(reader, &[table], asked)?;
         let overlay = reader.overlay(column, window)?;
         let lines: Vec<Value> = overlay
             .lines
@@ -346,14 +459,11 @@ pub(crate) fn sources(path: &Path) -> Result<Value> {
 /// `/api/events?from=&to=&limit=`: events oldest first, each with its
 /// source's name.
 pub(crate) fn events(path: &Path, query: &str) -> Result<Value> {
+    let to = number(query, "to")?.unwrap_or_else(now);
+    let from = number(query, "from")?.unwrap_or(0.0);
+    let limit = count(query, "limit", MAX_EVENTS)?.unwrap_or(DEFAULT_EVENTS);
     read(path, |reader| {
         let names = names(reader)?;
-        let to = number(query, "to").unwrap_or_else(now);
-        let from = number(query, "from").unwrap_or(0.0);
-        let limit = value(query, "limit")
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_EVENTS)
-            .min(MAX_EVENTS);
         let events: Vec<Value> = reader
             .events(from, to, limit)?
             .into_iter()
@@ -385,18 +495,15 @@ fn percentile(values: &[f64], p: f64) -> Option<f64> {
 /// `/api/distribution?table=&column=&from=&to=&source=`: percentiles
 /// and a histogram of one column's readings over a range.
 pub(crate) fn distribution(path: &Path, query: &str) -> Result<Value> {
+    let table = table(query)?;
+    let column = one_column(query, table)?;
+    let source = source(query, table)?;
+    // Not bucketed: the points only fill in the window.
+    let asked = asked(query, DEFAULT_POINTS)?;
     read(path, |reader| {
-        let table = table(query)?;
-        let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
-        let column = column(table, &name)?;
-        let (window, bounds) = window(reader, &[table], query)?;
-        let (values, truncated) = reader.values(
-            column,
-            source(query, table)?.as_ref(),
-            window.from,
-            window.to,
-            MAX_VALUES,
-        )?;
+        let (window, bounds) = window(reader, &[table], asked)?;
+        let (values, truncated) =
+            reader.values(column, source.as_ref(), window.from, window.to, MAX_VALUES)?;
         let percentiles: Vec<Value> = PERCENTILES
             .iter()
             .map(|p| json!({ "p": p, "value": percentile(&values, *p) }))
@@ -454,5 +561,112 @@ mod tests {
         assert_eq!(percentile(&values, 100.0), Some(40.0));
         assert_eq!(percentile(&values, 12.5), Some(5.0));
         assert_eq!(percentile(&[], 50.0), None);
+    }
+
+    /// A path with no database: a request refused never reaches it, and
+    /// one that is not refused stops there.
+    const NOWHERE: &str = "/nonexistent/chronymon.sqlite";
+
+    /// Why `answer` failed, if it was refused, else None.
+    fn refusal(answer: Result<Value>) -> Option<String> {
+        let e = answer.expect_err("answered");
+        e.downcast_ref::<Refused>().map(ToString::to_string)
+    }
+
+    fn history_refusal(query: &str) -> Option<String> {
+        refusal(history(Path::new(NOWHERE), query))
+    }
+
+    #[test]
+    fn a_column_asked_for_twice_is_refused() {
+        let why = history_refusal("columns=poll,stratum,poll&table=source_sample");
+        assert_eq!(why.as_deref(), Some("poll is in columns= twice"));
+        // A small request repeating a column hundreds of times.
+        let many = vec!["skew"; 600].join(",");
+        assert!(history_refusal(&format!("columns={many}")).is_some());
+        let why = history_refusal("columns=frequency&fill=log_tracking&fill_columns=skew,skew");
+        assert_eq!(why.as_deref(), Some("skew is in fill_columns= twice"));
+    }
+
+    #[test]
+    fn too_many_points_or_cells_are_refused() {
+        let why = history_refusal(&format!("columns=skew&points={}", MAX_POINTS + 1));
+        assert_eq!(
+            why,
+            Some(format!(
+                "points={} is more than {MAX_POINTS}",
+                MAX_POINTS + 1
+            ))
+        );
+        assert!(history_refusal("columns=skew&points=-1").is_some());
+        assert!(history_refusal("columns=skew&points=1e9").is_some());
+        // Every column of tracking and of its log, each once, at the most
+        // points: more than one answer may cost.
+        let tracking = Table::Tracking.columns().join(",");
+        let logged = Table::LogTracking.columns().join(",");
+        let all = format!("columns={tracking}&fill=log_tracking&fill_columns={logged}");
+        let cells =
+            (Table::Tracking.columns().len() + Table::LogTracking.columns().len()) * MAX_POINTS;
+        assert!(cells > MAX_CELLS);
+        assert!(history_refusal(&format!("{all}&points={MAX_POINTS}")).is_some());
+        // At fewer points, the same columns are answered.
+        assert_eq!(
+            history_refusal(&format!("{all}&points={DEFAULT_POINTS}")),
+            None
+        );
+    }
+
+    #[test]
+    fn what_the_pages_ask_for_reaches_the_database() {
+        // Live's default columns and their log's, at the most points.
+        let live = "table=tracking&columns=last_offset,frequency,skew,rms_offset,root_delay,root_dispersion\
+                    &points=5000&from=0&to=100&fill=log_tracking\
+                    &fill_columns=offset,frequency,skew,root_delay,root_dispersion";
+        assert_eq!(history_refusal(live), None);
+        assert_eq!(
+            refusal(overlay(
+                Path::new(NOWHERE),
+                "table=ntp_sample&column=offset&points=5000"
+            )),
+            None
+        );
+        assert_eq!(
+            refusal(events(Path::new(NOWHERE), "limit=500&from=0")),
+            None
+        );
+    }
+
+    #[test]
+    fn every_other_parameter_is_checked() {
+        let nowhere = Path::new(NOWHERE);
+        for query in [
+            "columns=skew&from=yesterday",
+            "columns=skew&to=inf",
+            "columns=skew&from=10&to=5",
+            "columns=",
+            "table=nope&columns=skew",
+            "columns=nope",
+            "table=ntp_sample&columns=offset&source=one",
+            "columns=frequency&fill=log_tracking",
+            "columns=frequency&fill=nope&fill_columns=skew",
+        ] {
+            assert!(history_refusal(query).is_some(), "{query}");
+        }
+        for answer in [
+            overlay(nowhere, "table=tracking&column=skew"),
+            overlay(nowhere, "table=ntp_sample"),
+            overlay(
+                nowhere,
+                &format!("table=ntp_sample&column=offset&points={}", MAX_POINTS + 1),
+            ),
+            events(nowhere, &format!("limit={}", MAX_EVENTS + 1)),
+            events(nowhere, "limit=many"),
+            events(nowhere, "from=x"),
+            keys(nowhere, "table=nope"),
+            distribution(nowhere, "column=nope"),
+            distribution(nowhere, "column=skew&to=now"),
+        ] {
+            assert!(refusal(answer).is_some());
+        }
     }
 }
