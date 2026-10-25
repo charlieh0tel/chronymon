@@ -38,11 +38,19 @@ and restart it.  The view is read-only and asks for no password.
 ## Kiosk
 
 `http://<host>:8323/kiosk` is one screen for an unattended landscape
-display: the sync state, reference, offset, frequency and skew in
-large type, the sources, the newest events, and a day of charts.
-No nav, controls or pointer, and it never scrolls: full size from
-1440x1080 CSS pixels, scaled down to fit a smaller screen.  It never
-changes its address.  A reload paints the last status, sources and
+display.  Left, in large type, the sync state, the host's time in UTC
+(below it the date, and the display's local time), the reference,
+offset, frequency and skew, then the sources; right, a day of charts
+and the newest events.  The time is the server's at its last answer,
+counted on by the display's own clock; it stops, dimmed and showing
+its age, once no answer has come for 3 s, and is dimmed while the feed
+is not live.  The sources and events lose their last rows rather than
+scroll, the sources with a row saying how many more.  The offset
+overlay draws the sources listed, each in its color there, but those
+with `noselect`, which chronyd only watches.  No nav, controls,
+colophon or pointer, and it never scrolls: full size from 1440x1080
+CSS pixels, scaled down to fit a smaller screen.  It never changes its
+address.  A reload paints the last status, sources and
 events, kept in the browser's local storage and marked LAST SEEN,
 before the first poll answers; without storage it starts empty.
 

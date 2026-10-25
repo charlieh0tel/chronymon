@@ -22,6 +22,9 @@
   <div id="kiosk-head"><span class="muted">connecting...</span></div>
   <div class="panel" id="kiosk-sync">
     <div class="mode" id="kiosk-mode"></div>
+    <div class="clock" id="kiosk-clock"><span id="kiosk-time">--:--:--</span> <span class="muted">UTC</span>
+      <span class="age" id="kiosk-age" hidden></span></div>
+    <div class="muted" id="kiosk-date"></div>
     <div class="reference"><span id="kiosk-reference">--</span> <span class="muted" id="kiosk-stratum"></span></div>
     <div class="muted" id="kiosk-update"></div>
   </div>
@@ -29,25 +32,27 @@
   <div class="panel" id="kiosk-sources">
     <h2>Sources</h2>
     <div id="kiosk-source-rows"></div>
-  </div>
-  <div class="panel" id="kiosk-events">
-    <h2>What happened</h2>
-    <div id="kiosk-event-rows"></div>
-    <!-- A hidden copy of the events, laid out whole to see how many
-         fit.  Hidden here rather than in style.css, so it never paints
-         even before or without the stylesheet. -->
-    <div id="kiosk-event-measure" aria-hidden="true"
+    <!-- A hidden copy of the list, laid out whole to see how much fits,
+         as each list here has.  Hidden here rather than in style.css,
+         so it never paints even before or without the stylesheet. -->
+    <div class="measure" aria-hidden="true"
          style="position: absolute; top: 0; left: 0; width: 100%; box-sizing: border-box;
                 padding: inherit; visibility: hidden; pointer-events: none"></div>
   </div>
   <div id="kiosk-foot" class="muted" hidden></div>
-  <footer id="colophon"></footer>
 </section>
 
 <section id="kiosk-history">
   <div class="panel" id="kiosk-stack">
     <div id="charts"></div>
     <div id="note"></div>
+  </div>
+  <div class="panel" id="kiosk-events">
+    <h2>What happened</h2>
+    <div id="kiosk-event-rows"></div>
+    <div class="measure" aria-hidden="true"
+         style="position: absolute; top: 0; left: 0; width: 100%; box-sizing: border-box;
+                padding: inherit; visibility: hidden; pointer-events: none"></div>
   </div>
 </section>
 
@@ -60,11 +65,11 @@
 "use strict";
 
 // One page for an unattended display: the clock's state at a glance,
-// nothing to click, no scrolling.  chronyd's state in large type on
-// the left, from the status row the strip polls every second, its
-// sources and what happened lately; on the right the clock's offset,
-// frequency and skew and every source's offset, over one range (a day
-// unless `?last=` says otherwise).
+// nothing to click, no scrolling.  chronyd's state and the host's time
+// in large type on the left, from the status row the strip polls every
+// second, and its sources; on the right the clock's offset, frequency
+// and skew and every source's offset, over one range (a day unless
+// `?last=` says otherwise), and what happened lately.
 
 addressFixed = true;
 
@@ -134,6 +139,55 @@ if (DEBUG) {
   $("kiosk-foot").hidden = false;
   addEventListener("error", (e) => caught(e.message));
   addEventListener("unhandledrejection", (e) => caught(String(e.reason?.message ?? e.reason)));
+}
+
+// How old the server's last answer may be, in seconds, before the
+// clock stops counting on from it and says how old it is.
+const CLOCK_TRUSTED_FOR = 3;
+// The host's clock at the server's last answer, `/api/status`'s `now`,
+// in seconds since the epoch; when this page saw that answer, in ms by
+// its own monotonic clock; and whether the feed was live.  Null before
+// the first.
+let clockFrom = null;
+let clockTimer = null;
+// The display's time zone's name, as "PDT", for its local time.
+const ZONE = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" });
+const zoneName = (d) => ZONE.formatToParts(d).find((p) => p.type === "timeZoneName")?.value ?? "";
+
+const isoDate = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+const clockTime = (h, m, s) => `${pad(h)}:${pad(m)}:${pad(s)}`;
+
+// The host's time in UTC, counted on from the server's last answer by
+// the display's own clock, redrawn as each second begins, so it moves
+// evenly between polls rather than in whatever steps they arrive in.
+// Counted on only while answers keep coming: past that the last time
+// is shown as it was, with its age, rather than a confident time the
+// page made up.  Dimmed, too, while the feed is not live: the host's
+// clock, but not one chronyd is known to be keeping.  Below it the
+// UTC date, and the display's local time, with its date when that
+// differs.
+function drawClock() {
+  clearTimeout(clockTimer);
+  const since = clockFrom ? (performance.now() - clockFrom.at) / 1000 : 0;
+  const counting = !clockFrom || since <= CLOCK_TRUSTED_FOR;
+  const t = clockFrom ? clockFrom.now + (counting ? since : 0) : null;
+  const d = t === null ? null : new Date(Math.floor(t) * 1000);
+  update($("kiosk-time"), "textContent", d
+    ? clockTime(d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()) : "--:--:--");
+  let date = "";
+  if (d) {
+    const utc = isoDate(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    const local = isoDate(d.getFullYear(), d.getMonth(), d.getDate());
+    date = d.getTimezoneOffset() === 0 ? utc
+      : `${utc} · ${clockTime(d.getHours(), d.getMinutes(), d.getSeconds())} ${zoneName(d)}` +
+        (local === utc ? "" : ` ${local}`);
+  }
+  update($("kiosk-date"), "textContent", date);
+  update($("kiosk-age"), "textContent", counting ? "" : `as of ${age(since)} ago`);
+  update($("kiosk-age"), "hidden", counting);
+  $("kiosk-clock").classList.toggle("dim", !counting || !clockFrom?.live);
+  // At the next second of the time shown, or in a second, for the age.
+  clockTimer = setTimeout(drawClock, counting && t !== null ? (1 - (t % 1)) * 1000 : 1000);
 }
 
 // Where the last status, sources and events are kept, so a reload
@@ -273,10 +327,15 @@ function syncOf(s) {
 
 // Paint a status; `cached` for the one kept by the last load, shown as
 // last seen until the first poll answers.
-function renderKiosk(s, cached = false) {
+// `cachedAge` for the one kept by the last load, how long ago it was
+// kept, in seconds.
+function renderKiosk(s, cached = false, cachedAge = 0) {
   if (!cached) keep("status", s);
   showLoads();
   const [state, words] = cached ? ["stale", "LAST SEEN"] : feedState(s);
+  clockFrom = s.now == null ? null
+    : { now: s.now - cachedAge, at: performance.now() - cachedAge * 1000, live: state === "live" };
+  drawClock();
   showHtml($("kiosk-head"),
     `<span class="dot ${state}"></span><span>chronyd</span>` +
     (state === "live" ? "" : `<span class="pill ${state}">${esc(words)}</span>`) +
@@ -301,6 +360,8 @@ function lostKiosk(what, why) {
   update($("kiosk-mode"), "textContent", what);
   update($("kiosk-mode"), "className", "mode bad");
   update($("kiosk-update"), "textContent", why ?? "");
+  if (clockFrom) clockFrom.live = false;
+  drawClock();
   stale(true);
 }
 
@@ -311,30 +372,54 @@ function stale(dim) {
   for (const id of ["kiosk-tiles", "kiosk-sources"]) $(id).classList.toggle("dim", dim);
 }
 
-// Each source chronyd has now on a line, as it last reported it:
-// chronyc's mark for its state, its name in its color on the charts,
-// its reach, and its last offset.  Those removed are for the Sources
-// page, not a summary.
-function sourceRows(sources) {
-  const current = sources.filter((s) => !s.removed);
-  if (!current.length) return `<span class="muted">no sources recorded</span>`;
-  return `<table><tbody>${current.map((s) => {
+// How many rows of `html`, a list for `panel`, fit inside its padding:
+// laid out whole in the panel's hidden copy, under a copy of its
+// heading, so what is shown is written once, cut to fit rather than a
+// fixed count that leaves the panel half empty or cut off.
+function fitting(panel, html) {
+  const measure = panel.querySelector(".measure");
+  showHtml(measure, panel.querySelector("h2").outerHTML + html);
+  const room = panel.getBoundingClientRect().top + panel.clientTop + panel.clientHeight -
+    parseFloat(getComputedStyle(panel).paddingBottom);
+  return [...measure.querySelectorAll("tr")].filter((row) => row.getBoundingClientRect().bottom <= room).length;
+}
+
+// The sources last read.  Those removed are for the Sources page, not
+// a summary.
+let sources = [];
+const current = (list) => list.filter((s) => !s.removed);
+
+// The first `n` of the current sources on a line each, as chronyd last
+// reported them: chronyc's mark for its state, its name in its color on
+// the charts, its reach, and its last offset; and, when that is not all
+// of them, how many more there are.
+function sourceRows(n) {
+  const listed = current(sources);
+  if (!listed.length) return `<span class="muted">no sources recorded</span>`;
+  const more = listed.length - n;
+  return `<table><tbody>${listed.slice(0, n).map((s) => {
     const [mark, cls] = SOURCE_STATES[s.state] ?? ["", ""];
     const report = s.report ?? {};
     return `<tr><td class="${cls}" title="${esc(s.state ?? "")}">${esc(mark)}</td>` +
       `<td style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</td>` +
       `<td class="muted">${report.reachability == null ? "--" : report.reachability.toString(8)}</td>` +
       `<td>${esc(seconds(report.latest_measurement, true))}</td></tr>`;
-  }).join("")}</tbody></table>`;
+  }).join("")}${more > 0 ? `<tr><td></td><td class="muted" colspan="3">and ${more} more</td></tr>` : ""}` +
+    `</tbody></table>`;
+}
+
+// As many sources as fit: all of them, or a row fewer than fit and a
+// row saying how many more.
+function drawSources() {
+  const all = current(sources).length;
+  const fit = fitting($("kiosk-sources"), sourceRows(all));
+  showHtml($("kiosk-source-rows"), sourceRows(fit >= all ? all : Math.max(0, fit - 1)));
 }
 
 // The events last read, newest first.
 let events = [];
 
-// As many of the events as fit, newest first, rather than a fixed count
-// that leaves the panel half empty or cut off.  Laid out whole in a
-// hidden copy to see how many that is, so what is shown is written
-// once.
+// As many of the events as fit, newest first.
 function drawEvents() {
   const drawn = (n) => events.length
     ? `<table><tbody>${events.slice(0, n).map((e) =>
@@ -342,14 +427,14 @@ function drawEvents() {
         `<td><span style="color:${eventColor(e.kind)}">${esc(eventWords(e.kind))}</span>` +
         `${e.source ? ` <span class="muted">${esc(e.source)}</span>` : ""}</td></tr>`).join("")}</tbody></table>`
     : `<span class="muted">nothing recorded</span>`;
-  const panel = $("kiosk-events");
-  const measure = $("kiosk-event-measure");
-  showHtml(measure, drawn(events.length));
-  const box = panel.getBoundingClientRect();
-  const room = box.top + panel.clientTop + panel.clientHeight - parseFloat(getComputedStyle(panel).paddingBottom);
-  const rows = [...measure.querySelectorAll("tr")];
-  showHtml($("kiosk-event-rows"), drawn(rows.filter((row) => row.getBoundingClientRect().bottom <= room).length));
+  showHtml($("kiosk-event-rows"), drawn(fitting($("kiosk-events"), drawn(events.length))));
 }
+
+// A source chronyd never selects, its `noselect` option set: selection
+// state `N` (chronyc's selectdata, 4.3 to 4.9).  Left out of the offset
+// overlay, where a refclock kept only to be watched, as an NMEA
+// receiver tens of milliseconds off, would otherwise set the axis.
+const noselect = (s) => s.selection_state === "N";
 
 function overlayQuery([table, column], bounds) {
   const q = new URLSearchParams({ table, column, points: pointsFor(bounds.seconds) });
@@ -360,15 +445,16 @@ function overlayQuery([table, column], bounds) {
 
 async function load(signal) {
   const { from, to } = rangeBounds();
-  const [sources, marked, latest] = await Promise.all([
+  const [listed, marked, latest] = await Promise.all([
     ask("/api/sources", signal),
     eventsFor(signal, from, to),
     ask(`/api/events?limit=${KIOSK_EVENTS}`, signal),
   ]);
-  showHtml($("kiosk-source-rows"), sourceRows(sources));
+  sources = listed;
+  drawSources();
   events = [...latest].reverse();
   drawEvents();
-  keep("sources", sources);
+  keep("sources", listed);
   keep("events", events);
   stack.marks = marked.marks;
   if (!haveUplot) {
@@ -378,11 +464,17 @@ async function load(signal) {
   const fill = { table: "log_tracking", columns: KIOSK_COLUMNS.map((c) => KIOSK_FILLS[c]) };
   const clock = await readHistory(signal, "tracking", KIOSK_COLUMNS, null, fill);
   const overlay = await ask(overlayQuery(KIOSK_OVERLAY, boundsOf(clock)), signal, HISTORY_TIMEOUT);
+  // The overlay's lines are the sources listed, less noselect ones, and
+  // the list, colored alike, is its legend: eight names or more in its
+  // title would wrap onto the chart.
+  const charted = new Set(current(sources).filter((s) => !noselect(s)).map((s) => s.id));
   const names = new Map(sources.map((s) => [s.id, sourceName(s)]));
-  const drawn = [
-    ...filledCharts("tracking", clock, KIOSK_FILLS),
-    overlayChart(...KIOSK_OVERLAY, overlay, (id) => names.get(id) ?? `source ${id}`),
-  ];
+  const offsets = overlayChart(...KIOSK_OVERLAY,
+    { ...overlay, lines: overlay.lines.filter((l) => charted.has(l.source_id)) },
+    (id) => names.get(id) ?? `source ${id}`);
+  offsets.heading = esc(offsets.title) + `<span class="muted">: each source in its color` +
+    (current(sources).some(noselect) ? ", noselect ones left out" : "") + "</span>";
+  const drawn = [...filledCharts("tracking", clock, KIOSK_FILLS), offsets];
   drawStack(stack, { x: clock.at, drawn }, "no clock updates in this range");
 }
 
@@ -398,9 +490,12 @@ function paintKept() {
       ...status,
       now: status.now + since,
       status: status.status && { ...status.status, age: status.status.age + since },
-    }, true);
+    }, true, since);
   }
-  if (last.sources) showHtml($("kiosk-source-rows"), sourceRows(last.sources.value));
+  if (last.sources) {
+    sources = last.sources.value;
+    drawSources();
+  }
   if (last.events) {
     events = last.events.value;
     drawEvents();
@@ -421,7 +516,6 @@ function fit() {
     stackType();
     clearStack(stack, "");
   }
-  drawEvents();
   soon();
 }
 
@@ -430,6 +524,11 @@ stackType();
 fitted = `${innerWidth}x${innerHeight}`;
 readRange(KIOSK_RANGE);
 new ResizeObserver(fit).observe(document.body);
+// Each list's room changes with the panels beside it, as well as the
+// window's.
+new ResizeObserver(drawSources).observe($("kiosk-sources"));
+new ResizeObserver(drawEvents).observe($("kiosk-events"));
+drawClock();
 paintKept();
 content({
   floor: KIOSK_FLOOR,
@@ -438,6 +537,7 @@ content({
   clear(why) {
     clearStack(stack, why);
     events = [];
+    sources = [];
     showHtml($("kiosk-source-rows"), "");
     showHtml($("kiosk-event-rows"), `<span class="muted">${esc(why)}</span>`);
   },

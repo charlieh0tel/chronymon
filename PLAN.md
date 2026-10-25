@@ -154,6 +154,15 @@ Journal, Distribution, Kiosk.
 - **Kiosk**: smartclock's, one summary page, with `?inset=` and
   `?debug`; the last state from localStorage paints a reload at once.
   No warning colors on offset or skew: chrony documents no threshold.
+  The host's time in UTC, as smartclock's shows its receiver's: the
+  server's `now`, counted on between polls, stopped after 3 s without
+  an answer; local time below, smaller, since the display's zone need
+  not be the host's.  The offset overlay leaves out `noselect` sources
+  (selectdata state `N`): a watched NMEA refclock tens of milliseconds
+  off set its axis.  Its legend is the source list, colored alike:
+  eight names in its title wrapped onto the chart.  Events moved right,
+  under the charts their marks are on, so eight sources leave them
+  room; no colophon, as smartclock's has none.
   Rotating through the other pages, in frames, was built and dropped:
   they are for a person at a browser.
 

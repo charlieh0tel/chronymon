@@ -16,6 +16,12 @@ const PAGES = [
   { path: "/distribution", name: "Distribution" },
 ];
 
+// The synthetic sources: chronyd's now, and the removed ntp3.
+const SOURCES = [
+  "PPS", "NMEA", "ntp1.example.net", "ntp2.example.org", "ntp4.example.net",
+  "time-a.long-hostname.example.org", "b.ntp.example.com", "clock.example.edu", "ntp3.example.com",
+];
+
 // Each test's page errors, collected while it runs: uncaught
 // exceptions, console errors, and requests that failed.
 const pageErrors = new Map();
@@ -153,8 +159,8 @@ test("Live: an event centers the charts on it", async ({ page }) => {
 test("Sources: a row per source, overlays, and a link to each", async ({ page }) => {
   await page.goto("/sources?last=86400");
   const rows = page.locator("#sources tbody tr");
-  await expect(rows).toHaveCount(5);
-  for (const name of ["PPS", "NMEA", "ntp1.example.net", "ntp2.example.org", "ntp3.example.com"]) {
+  await expect(rows).toHaveCount(SOURCES.length);
+  for (const name of SOURCES) {
     await expect(page.locator("#sources")).toContainText(name);
   }
   await expect(charts(page).first()).toBeVisible();
@@ -166,7 +172,7 @@ test("Sources: a row per source, overlays, and a link to each", async ({ page })
 
 test("Sources: a placeholder for a name not resolved yet is never shown", async ({ page }) => {
   await page.goto("/sources?last=all");
-  await expect(page.locator("#sources tbody tr")).toHaveCount(5);
+  await expect(page.locator("#sources tbody tr")).toHaveCount(SOURCES.length);
   await expect(page.locator("#sources")).not.toContainText("00000001");
   await page.goto("/journal?last=all");
   await expect(page.locator("#events")).toContainText("ntp3.example.com");
@@ -228,7 +234,9 @@ const KIOSK_VIEWPORT = { width: 1920, height: 1080 };
 
 // The synthetic sources chronyd has now, all the kiosk lists: not the
 // removed ntp3.
-const KIOSK_SOURCES = 4;
+const KIOSK_SOURCES = SOURCES.length - 1;
+// Those the offset overlay draws: not the noselect NMEA.
+const KIOSK_CHARTED = KIOSK_SOURCES - 1;
 
 // Whether the page fits its window, with nothing to scroll.
 const fits = (page) => page.evaluate(() =>
@@ -247,11 +255,141 @@ test("Kiosk: the clock's state, its sources, events and charts, on one screen", 
   }
   await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(KIOSK_SOURCES);
   await expect(page.locator("#kiosk-source-rows")).toContainText("ntp1.example.net");
+  await expect(page.locator("#kiosk-source-rows")).toContainText("NMEA");
   await expect(page.locator("#kiosk-source-rows")).not.toContainText("ntp3.example.com");
   await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
+  await expect(page.locator("#kiosk-time")).toHaveText(/^\d\d:\d\d:\d\d$/);
   await expect(charts(page)).toHaveCount(4);
+  await expect(charts(page).last().locator(".u-title")).toContainText("noselect ones left out");
+  expect(await page.evaluate(() => stack.charts.at(-1).series.length - 1)).toBe(KIOSK_CHARTED);
   await expect(page.locator("nav")).toHaveCount(0);
+  await expect(page.locator("#colophon")).toHaveCount(0);
   expect(await fits(page)).toBe(true);
+});
+
+// What in the kiosk overlaps or overflows, each in words: its panels
+// must lie inside the body's padding and clear of one another; each
+// list's rows inside its panel; the charts inside theirs; and the
+// readings, names and titles not cut short.
+const kioskFaults = (page) => page.evaluate(() => {
+  const faults = [];
+  // A little for subpixel layout.
+  const SLACK = 0.5;
+  const shown = (el) => el.getClientRects().length > 0;
+  const label = (el) => el.id ? `#${el.id}` : `${el.tagName.toLowerCase()} "${el.textContent.slice(0, 40)}"`;
+  const inner = (el) => {
+    const b = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    const edge = (side) => parseFloat(s[`border${side}Width`]) + parseFloat(s[`padding${side}`]);
+    return { left: b.left + edge("Left"), top: b.top + edge("Top"),
+      right: b.right - edge("Right"), bottom: b.bottom - edge("Bottom") };
+  };
+  const inside = (a, b) => a.left >= b.left - SLACK && a.top >= b.top - SLACK &&
+    a.right <= b.right + SLACK && a.bottom <= b.bottom + SLACK;
+  const apart = (a, b) => a.right <= b.left + SLACK || b.right <= a.left + SLACK ||
+    a.bottom <= b.top + SLACK || b.bottom <= a.top + SLACK;
+  const screen = inner(document.body);
+  const panels = [...document.querySelectorAll("#kiosk-state > *, #kiosk-history > *")].filter(shown);
+  panels.forEach((a, n) => {
+    if (!inside(a.getBoundingClientRect(), screen)) faults.push(`${label(a)} off the screen`);
+    for (const b of panels.slice(n + 1)) {
+      if (!apart(a.getBoundingClientRect(), b.getBoundingClientRect())) faults.push(`${label(a)} overlaps ${label(b)}`);
+    }
+  });
+  for (const id of ["kiosk-sources", "kiosk-events"]) {
+    const room = inner(document.getElementById(id));
+    for (const row of document.querySelectorAll(`#${id} > div:not(.measure) tr`)) {
+      if (!inside(row.getBoundingClientRect(), room)) faults.push(`${label(row)} outside #${id}`);
+    }
+  }
+  const room = inner(document.getElementById("kiosk-stack"));
+  for (const canvas of document.querySelectorAll("#charts canvas")) {
+    if (!inside(canvas.getBoundingClientRect(), room)) faults.push("a chart outside #kiosk-stack");
+  }
+  const texts = "#kiosk-head, #kiosk-sync > *, .tile .v, .tile .k, #kiosk-source-rows td, #kiosk-event-rows td, .u-title";
+  for (const el of document.querySelectorAll(texts)) {
+    if (el.scrollWidth > el.clientWidth + SLACK) faults.push(`${label(el)} cut short`);
+    // Wrapped: two of its pieces of text, on lines one above the other.
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const pieces = [...range.getClientRects()].filter((b) => b.width > 0);
+    if (pieces.some((a) => pieces.some((b) => a.bottom <= b.top + SLACK))) faults.push(`${label(el)} wrapped`);
+  }
+  return faults;
+});
+
+// A display's size and the address it is shown: full size, and a
+// smaller screen that overscans.
+const KIOSK_SCREENS = [
+  { size: KIOSK_VIEWPORT, address: "/kiosk?last=86400" },
+  { size: { width: 1280, height: 720 }, address: "/kiosk?last=86400&inset=3,4" },
+];
+
+for (const { size, address } of KIOSK_SCREENS) {
+  test(`Kiosk: at ${size.width}x${size.height}, ${address}, nothing overlaps or overflows`, async ({ page }) => {
+    await page.setViewportSize(size);
+    await page.goto(address);
+    await expect(charts(page)).toHaveCount(4);
+    await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(KIOSK_SOURCES);
+    await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
+    expect(await kioskFaults(page)).toEqual([]);
+  });
+}
+
+test("Kiosk: more sources than fit, the last row says how many more", async ({ page }) => {
+  // Sources added to the server's, more than the panel holds.
+  const extra = 12;
+  await page.route("**/api/sources", async (route) => {
+    const response = await route.fetch();
+    const listed = await response.json();
+    const copy = listed.find((s) => s.name === "ntp1.example.net");
+    const added = Array.from({ length: extra }, (_, n) =>
+      ({ ...copy, id: 1000 + n, name: `extra${n}.example.net`, address: `192.0.2.${100 + n}` }));
+    return route.fulfill({ response, json: [...listed, ...added] });
+  });
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await page.goto("/kiosk?last=86400");
+  await expect(charts(page)).toHaveCount(4);
+  const rows = page.locator("#kiosk-source-rows tr");
+  await expect(rows.last()).toHaveText(/^and \d+ more$/);
+  const more = Number((await rows.last().textContent()).match(/\d+/)[0]);
+  expect(await rows.count() - 1 + more).toBe(KIOSK_SOURCES + extra);
+  expect(await kioskFaults(page)).toEqual([]);
+});
+
+test.describe("Kiosk: the clock", () => {
+  test.use({ timezoneId: "America/Los_Angeles" });
+
+  test("the host's time in UTC, counted on, then stopped once no answer comes", async ({ page }) => {
+    // The host's time the server is made to answer with, in seconds: an
+    // evening in Los Angeles, the next day in UTC.
+    const host = Date.parse("2026-01-02T03:04:05Z") / 1000;
+    const started = Date.now();
+    // How long answers are held back, once they are, in ms: longer than
+    // the clock counts on for.
+    const held = 6000;
+    let holding = false;
+    await page.route("**/api/status", async (route) => {
+      if (holding) await new Promise((done) => setTimeout(done, held));
+      const response = await route.fetch();
+      const status = await response.json();
+      return route.fulfill({ response, json: { ...status, now: host + (Date.now() - started) / 1000 } });
+    });
+    await page.setViewportSize(KIOSK_VIEWPORT);
+    await page.goto("/kiosk?last=86400");
+    const time = page.locator("#kiosk-time");
+    await expect(time).toHaveText(/^03:04:\d\d$/);
+    await expect(page.locator("#kiosk-date")).toHaveText(/^2026-01-02 · 19:04:\d\d PST 2026-01-01$/);
+    const first = await time.textContent();
+    await expect(time).not.toHaveText(first);
+    await expect(page.locator("#kiosk-age")).toBeHidden();
+    holding = true;
+    await expect(page.locator("#kiosk-age")).toHaveText(/^as of \d+ s ago$/, { timeout: held });
+    await expect(page.locator("#kiosk-clock")).toHaveClass(/dim/);
+    const stopped = await time.textContent();
+    await page.waitForTimeout(1500);
+    await expect(time).toHaveText(stopped);
+  });
 });
 
 test("Kiosk: never changes its address, and redraws in place", async ({ page }) => {
