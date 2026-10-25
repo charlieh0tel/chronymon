@@ -1,3 +1,14 @@
+chronymon (0.2.0-1) unstable; urgency=medium
+
+  * A kiosk page, /kiosk, for an unattended display.
+  * chronyd's log fills the charts only where the daemon was not
+    recording; the reported line no longer breaks between updates.
+  * Sources as chronyd last reported them (schema 3, migrated on start);
+    placeholder sources hidden, removed ones listed last, dimmed.
+  * /api/sources: `sample` is now `report`, and `removed` is added.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sun, 25 Oct 2026 12:28:27 -0700
+
 chronymon (0.1.1-1) unstable; urgency=medium
 
   * Browser tests for every page, README screenshots and RELEASING.md;
