@@ -133,6 +133,11 @@ The host's:
   `immutable` when there is no `-wal`) and never creates it.  It must
   not be able to make a `-wal` or `-shm`: one owned by the web view's
   user locks the daemon out.
+- `immutable` is unsafe once the daemon starts under it.  So a
+  connection per request, never reused, and the request read again
+  when the file's inode, length or modification time changed while
+  read: the daemon's writes go to its WAL, and only a checkpoint, which
+  changes the time, writes the file.
 - Every query the web view makes is served by an index matching its
   predicate and order (a test reads their plans): `source_sample` by
   `sample_time`, which it is charted by, and an extent as two queries,

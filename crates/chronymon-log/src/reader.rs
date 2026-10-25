@@ -12,15 +12,25 @@
 //! no write access to the directory, and while the daemon is not running
 //! -- no `-wal` beside the database, since SQLite removes it on the last
 //! clean close -- the file is opened `immutable`, which needs no WAL
-//! index and is safe because nothing is writing.  While it runs, its own
-//! `-shm` is read as it is (SQLite's read-only WAL, from 3.22).
+//! index.  While it runs, its own `-shm` is read as it is (SQLite's
+//! read-only WAL, from 3.22).
+//!
+//! `immutable` is safe only while nothing writes the file, and the
+//! daemon may start while a connection is open.  Its writes go to its
+//! new WAL, which the connection does not read; only a checkpoint
+//! writes the file.  So [`Reader::read`] notes the file's inode, length
+//! and modification time before opening, reads, and reads again with a
+//! new connection if they changed: a checkpoint changes the time before
+//! the data (Linux updates it before copying a write in).
 //!
 //! Bucketed in SQL rather than by the caller, so a year costs what a
 //! day does to send and draw.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
+use std::path::PathBuf;
 
 use chronymon::event::EventKind;
 use chronymon_control::report::SourceMode;
@@ -480,15 +490,75 @@ pub struct Event {
     pub detail: Option<String>,
 }
 
+/// How many times [`Reader::read`] reads a database that a checkpoint
+/// changes under it before giving up.
+const ATTEMPTS: usize = 3;
+
+/// A file as the filesystem describes it: what a write changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fingerprint {
+    inode: u64,
+    length: u64,
+    /// Modification time: seconds, then nanoseconds.
+    modified: (i64, i64),
+}
+
+impl Fingerprint {
+    fn of(path: &Path) -> Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            inode: metadata.ino(),
+            length: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+        })
+    }
+}
+
 /// The database, open for reading.
 #[derive(Debug)]
 pub struct Reader {
     connection: Connection,
+    path: PathBuf,
+    /// When opened `immutable`, the file as it was just before: what
+    /// it must still be for what was read to be right.
+    immutable: Option<Fingerprint>,
 }
 
 impl Reader {
+    /// `f` of the database at `path`, which must exist, with a
+    /// connection of its own: read again, with another, when the file
+    /// changed under an `immutable` one (see the module's
+    /// documentation), its result or error then not to be trusted.
+    pub fn read<T, E: From<Error>>(
+        path: &Path,
+        f: impl Fn(&Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        for _ in 0..ATTEMPTS {
+            let reader = Self::open(path)?;
+            let result = f(&reader);
+            if reader.unchanged()? {
+                return result;
+            }
+        }
+        Err(Error::Changing {
+            path: path.to_owned(),
+            attempts: ATTEMPTS,
+        }
+        .into())
+    }
+
+    /// Whether the file is as it was when opened, if `immutable`.
+    fn unchanged(&self) -> Result<bool> {
+        Ok(match self.immutable {
+            Some(before) => Fingerprint::of(&self.path)? == before,
+            None => true,
+        })
+    }
+
     /// Open the database at `path`, which must exist.
-    pub fn open(path: &Path) -> Result<Self> {
+    fn open(path: &Path) -> Result<Self> {
+        // Before looking for the WAL: a checkpoint after is then seen.
+        let before = Fingerprint::of(path)?;
         let mut wal = path.as_os_str().to_owned();
         wal.push("-wal");
         let writing = Path::new(&wal).exists();
@@ -507,7 +577,11 @@ impl Reader {
             path: path.to_owned(),
             source,
         })?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            path: path.to_owned(),
+            immutable: (!writing).then_some(before),
+        })
     }
 
     /// Whether the database has `table`: one from before its schema
@@ -1585,6 +1659,35 @@ mod tests {
         let reader = Reader::open(&path).expect("a reader");
         assert!(reader.status().expect("a read").is_none());
         assert!(!Path::new(&wal).exists());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_checkpoint_under_an_immutable_read_reads_again() {
+        let directory = std::env::temp_dir().join(format!(
+            "chronymon-reader-checkpoint-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        drop(Log::open(&path).expect("a database"));
+        let attempts = std::cell::Cell::new(0);
+        let polled = Reader::read(&path, |reader| {
+            attempts.set(attempts.get() + 1);
+            let before = reader.status()?.map(|s| s.polled_at);
+            if attempts.get() == 1 {
+                assert!(reader.immutable.is_some());
+                // The daemon starts, polls and stops, checkpointing on
+                // its close, while the read is under way.
+                let mut log = Log::open(&path)?;
+                log.write(|batch| batch.status(at(0), ChronydState::Up, None, None))?;
+            }
+            Ok::<_, Error>(before)
+        })
+        .expect("a read");
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(polled, Some(START * NS));
         let _ = std::fs::remove_dir_all(&directory);
     }
 

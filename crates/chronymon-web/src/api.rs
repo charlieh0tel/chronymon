@@ -45,16 +45,17 @@ const HISTOGRAM_TO: f64 = 99.5;
 /// Nanoseconds in a second.
 const NANOSECONDS: f64 = 1e9;
 
-/// The database at `path`, open to read, or why not: a database that is
-/// not there yet is the daemon not having run, which the pages say.
-fn open(path: &Path) -> Result<Reader> {
+/// `f` of the database at `path`, open to read (`Reader::read`), or
+/// why not: a database that is not there yet is the daemon not having
+/// run, which the pages say.
+fn read<T>(path: &Path, f: impl Fn(&Reader) -> Result<T>) -> Result<T> {
     if !path.exists() {
         bail!(
             "no database at {} yet: chronymond has not run, or writes elsewhere",
             path.display()
         );
     }
-    Reader::open(path).with_context(|| format!("opening {}", path.display()))
+    Reader::read(path, f)
 }
 
 /// Unix nanoseconds, as stored, as seconds.
@@ -167,48 +168,49 @@ fn names(reader: &Reader) -> Result<HashMap<i64, String>> {
 /// `/api/status`: the daemon's last poll and the newest clock update,
 /// with the reference's name.
 pub(crate) fn status(path: &Path) -> Result<Value> {
-    let reader = open(path)?;
-    let now = now();
-    let status = reader.status()?.map(|s| {
-        json!({
-            "polled_at": seconds(s.polled_at),
-            "age": now - seconds(s.polled_at),
-            "state": s.state,
-            "detail": s.detail,
-            "chronyd_pid": s.chronyd_pid,
-        })
-    });
-    let tracking = reader.latest_tracking()?;
-    // A refclock's address is its reference ID among the sources, but
-    // tracking leaves it unspecified (chrony 4.6.1 `reference.c:959`).
-    let reference_name = match &tracking {
-        Some(t) => {
-            let reference_id = format!("{:08X}", t.reference_id);
-            reader
-                .sources()?
-                .into_iter()
-                .find(|s| s.address == t.reference_address || s.address == reference_id)
-                .and_then(|s| s.name)
-        }
-        None => None,
-    };
-    let tracking = tracking.map(|t| {
-        json!({
-            // None while unsynchronized, which chronyd reports as 0.
-            "reference_time": (t.reference_time != 0).then(|| seconds(t.reference_time)),
-            "reference_id": format!("{:08X}", t.reference_id),
-            "reference_address": t.reference_address,
-            "stratum": t.stratum,
-            "leap": t.leap,
-            "values": object(&t.values),
-        })
-    });
-    Ok(json!({
-        "now": now,
-        "status": status,
-        "tracking": tracking,
-        "reference_name": reference_name,
-    }))
+    read(path, |reader| {
+        let now = now();
+        let status = reader.status()?.map(|s| {
+            json!({
+                "polled_at": seconds(s.polled_at),
+                "age": now - seconds(s.polled_at),
+                "state": s.state,
+                "detail": s.detail,
+                "chronyd_pid": s.chronyd_pid,
+            })
+        });
+        let tracking = reader.latest_tracking()?;
+        // A refclock's address is its reference ID among the sources, but
+        // tracking leaves it unspecified (chrony 4.6.1 `reference.c:959`).
+        let reference_name = match &tracking {
+            Some(t) => {
+                let reference_id = format!("{:08X}", t.reference_id);
+                reader
+                    .sources()?
+                    .into_iter()
+                    .find(|s| s.address == t.reference_address || s.address == reference_id)
+                    .and_then(|s| s.name)
+            }
+            None => None,
+        };
+        let tracking = tracking.map(|t| {
+            json!({
+                // None while unsynchronized, which chronyd reports as 0.
+                "reference_time": (t.reference_time != 0).then(|| seconds(t.reference_time)),
+                "reference_id": format!("{:08X}", t.reference_id),
+                "reference_address": t.reference_address,
+                "stratum": t.stratum,
+                "leap": t.leap,
+                "values": object(&t.values),
+            })
+        });
+        Ok(json!({
+            "now": now,
+            "status": status,
+            "tracking": tracking,
+            "reference_name": reference_name,
+        }))
+    })
 }
 
 /// The table and columns a request fills from, `fill=` and
@@ -231,15 +233,18 @@ fn fill(query: &str) -> Result<Option<(Table, Vec<Column>)>> {
 /// `/api/keys?table=`: the sources a log table names, by name, with
 /// their rows and the span of them.
 pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
-    let reader = open(path)?;
-    let table = table(query)?;
-    Ok(Value::Array(
-        reader
-            .keys(table)?
-            .into_iter()
-            .map(|n| json!({ "name": n.name, "rows": n.rows, "first": n.first, "last": n.last }))
-            .collect(),
-    ))
+    read(path, |reader| {
+        let table = table(query)?;
+        Ok(Value::Array(
+            reader
+                .keys(table)?
+                .into_iter()
+                .map(
+                    |n| json!({ "name": n.name, "rows": n.rows, "first": n.first, "last": n.last }),
+                )
+                .collect(),
+        ))
+    })
 }
 
 /// `/api/history?table=&columns=a,b&from=&to=&points=&source=`: one
@@ -247,119 +252,123 @@ pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
 /// line breaks at; with `fill=&fill_columns=`, a log's where the daemon
 /// was not recording.
 pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
-    let reader = open(path)?;
-    let table = table(query)?;
-    let columns = value(query, "columns")
-        .ok_or_else(|| anyhow!("which columns?"))?
-        .split(',')
-        .filter(|c| !c.is_empty())
-        .map(|c| column(table, c))
-        .collect::<Result<Vec<_>>>()?;
-    if columns.is_empty() {
-        bail!("no columns asked for");
-    }
-    let fill = fill(query)?;
-    let tables: Vec<Table> = [Some(table), fill.as_ref().map(|f| f.0)]
-        .into_iter()
-        .flatten()
-        .collect();
-    let (window, bounds) = window(&reader, &tables, query)?;
-    let series = match fill {
-        Some((fill, fill_columns)) => {
-            reader.filled(table, &columns, fill, &fill_columns, window)?
+    read(path, |reader| {
+        let table = table(query)?;
+        let columns = value(query, "columns")
+            .ok_or_else(|| anyhow!("which columns?"))?
+            .split(',')
+            .filter(|c| !c.is_empty())
+            .map(|c| column(table, c))
+            .collect::<Result<Vec<_>>>()?;
+        if columns.is_empty() {
+            bail!("no columns asked for");
         }
-        None => reader.series(table, source(query, table)?.as_ref(), &columns, window)?,
-    };
-    let plots: Vec<Value> = series
-        .plots
-        .iter()
-        .map(|p| {
-            json!({
-                "table": p.table,
-                "column": p.column,
-                "mean": p.mean,
-                "min": p.min,
-                "max": p.max,
-                "gaps": p.gaps,
+        let fill = fill(query)?;
+        let tables: Vec<Table> = [Some(table), fill.as_ref().map(|f| f.0)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let (window, bounds) = window(reader, &tables, query)?;
+        let series = match fill {
+            Some((fill, fill_columns)) => {
+                reader.filled(table, &columns, fill, &fill_columns, window)?
+            }
+            None => reader.series(table, source(query, table)?.as_ref(), &columns, window)?,
+        };
+        let plots: Vec<Value> = series
+            .plots
+            .iter()
+            .map(|p| {
+                json!({
+                    "table": p.table,
+                    "column": p.column,
+                    "mean": p.mean,
+                    "min": p.min,
+                    "max": p.max,
+                    "gaps": p.gaps,
+                })
             })
-        })
-        .collect();
-    Ok(with(json!({ "at": series.at, "plots": plots }), bounds))
+            .collect();
+        Ok(with(json!({ "at": series.at, "plots": plots }), bounds))
+    })
 }
 
 /// `/api/overlay?table=&column=&from=&to=&points=`: one column of every
 /// source, a line each, on one grid.
 pub(crate) fn overlay(path: &Path, query: &str) -> Result<Value> {
-    let reader = open(path)?;
-    let table = table(query)?;
-    if !table.by_id() {
-        bail!("{} is not a table of the daemon's sources", table.name());
-    }
-    let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
-    let column = column(table, &name)?;
-    let (window, bounds) = window(&reader, &[table], query)?;
-    let overlay = reader.overlay(column, window)?;
-    let lines: Vec<Value> = overlay
-        .lines
-        .iter()
-        .map(|l| json!({ "source_id": l.source_id, "mean": l.mean, "gaps": l.gaps }))
-        .collect();
-    Ok(with(json!({ "at": overlay.at, "lines": lines }), bounds))
+    read(path, |reader| {
+        let table = table(query)?;
+        if !table.by_id() {
+            bail!("{} is not a table of the daemon's sources", table.name());
+        }
+        let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
+        let column = column(table, &name)?;
+        let (window, bounds) = window(reader, &[table], query)?;
+        let overlay = reader.overlay(column, window)?;
+        let lines: Vec<Value> = overlay
+            .lines
+            .iter()
+            .map(|l| json!({ "source_id": l.source_id, "mean": l.mean, "gaps": l.gaps }))
+            .collect();
+        Ok(with(json!({ "at": overlay.at, "lines": lines }), bounds))
+    })
 }
 
 /// `/api/sources`: every source with the latest of each report, those
 /// chronyd has removed last.
 pub(crate) fn sources(path: &Path) -> Result<Value> {
-    let reader = open(path)?;
-    let sources: Vec<Value> = reader
-        .sources()?
-        .into_iter()
-        .map(|s| {
-            json!({
-                "id": s.id,
-                "address": s.address,
-                "mode": s.mode,
-                "name": s.name,
-                "first_seen": seconds(s.first_seen),
-                "last_seen": seconds(s.last_seen),
-                "removed": s.removed,
-                "state": s.report.as_ref().map(|(state, _)| state),
-                "report": s.report.as_ref().map(|(_, values)| object(values)),
-                "selection_state": s.selection.as_ref().map(|(state, _)| state),
-                "selection": s.selection.as_ref().map(|(_, values)| object(values)),
-                "stats": s.stats.as_ref().map(object),
-                "ntp": s.ntp.as_ref().map(object),
+    read(path, |reader| {
+        let sources: Vec<Value> = reader
+            .sources()?
+            .into_iter()
+            .map(|s| {
+                json!({
+                    "id": s.id,
+                    "address": s.address,
+                    "mode": s.mode,
+                    "name": s.name,
+                    "first_seen": seconds(s.first_seen),
+                    "last_seen": seconds(s.last_seen),
+                    "removed": s.removed,
+                    "state": s.report.as_ref().map(|(state, _)| state),
+                    "report": s.report.as_ref().map(|(_, values)| object(values)),
+                    "selection_state": s.selection.as_ref().map(|(state, _)| state),
+                    "selection": s.selection.as_ref().map(|(_, values)| object(values)),
+                    "stats": s.stats.as_ref().map(object),
+                    "ntp": s.ntp.as_ref().map(object),
+                })
             })
-        })
-        .collect();
-    Ok(Value::Array(sources))
+            .collect();
+        Ok(Value::Array(sources))
+    })
 }
 
 /// `/api/events?from=&to=&limit=`: events oldest first, each with its
 /// source's name.
 pub(crate) fn events(path: &Path, query: &str) -> Result<Value> {
-    let reader = open(path)?;
-    let names = names(&reader)?;
-    let to = number(query, "to").unwrap_or_else(now);
-    let from = number(query, "from").unwrap_or(0.0);
-    let limit = value(query, "limit")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_EVENTS)
-        .min(MAX_EVENTS);
-    let events: Vec<Value> = reader
-        .events(from, to, limit)?
-        .into_iter()
-        .map(|e| {
-            json!({
-                "at": seconds(e.at),
-                "kind": e.kind,
-                "source_id": e.source_id,
-                "source": e.source_id.and_then(|id| names.get(&id)),
-                "detail": e.detail,
+    read(path, |reader| {
+        let names = names(reader)?;
+        let to = number(query, "to").unwrap_or_else(now);
+        let from = number(query, "from").unwrap_or(0.0);
+        let limit = value(query, "limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_EVENTS)
+            .min(MAX_EVENTS);
+        let events: Vec<Value> = reader
+            .events(from, to, limit)?
+            .into_iter()
+            .map(|e| {
+                json!({
+                    "at": seconds(e.at),
+                    "kind": e.kind,
+                    "source_id": e.source_id,
+                    "source": e.source_id.and_then(|id| names.get(&id)),
+                    "detail": e.detail,
+                })
             })
-        })
-        .collect();
-    Ok(Value::Array(events))
+            .collect();
+        Ok(Value::Array(events))
+    })
 }
 
 /// The `p`th percentile of sorted `values`, by linear interpolation
@@ -376,60 +385,61 @@ fn percentile(values: &[f64], p: f64) -> Option<f64> {
 /// `/api/distribution?table=&column=&from=&to=&source=`: percentiles
 /// and a histogram of one column's readings over a range.
 pub(crate) fn distribution(path: &Path, query: &str) -> Result<Value> {
-    let reader = open(path)?;
-    let table = table(query)?;
-    let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
-    let column = column(table, &name)?;
-    let (window, bounds) = window(&reader, &[table], query)?;
-    let (values, truncated) = reader.values(
-        column,
-        source(query, table)?.as_ref(),
-        window.from,
-        window.to,
-        MAX_VALUES,
-    )?;
-    let percentiles: Vec<Value> = PERCENTILES
-        .iter()
-        .map(|p| json!({ "p": p, "value": percentile(&values, *p) }))
-        .collect();
-    let count = values.len() as f64;
-    let mean = values.iter().sum::<f64>() / count;
-    let deviation = (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count).sqrt();
-    let histogram = match (
-        percentile(&values, HISTOGRAM_FROM),
-        percentile(&values, HISTOGRAM_TO),
-    ) {
-        (Some(lo), Some(hi)) if hi > lo => {
-            let width = (hi - lo) / BINS as f64;
-            let mut counts = vec![0_u64; BINS];
-            let (mut below, mut above) = (0_u64, 0_u64);
-            for v in &values {
-                if *v < lo {
-                    below += 1;
-                } else if *v > hi {
-                    above += 1;
-                } else {
-                    let bin = (((v - lo) / width) as usize).min(BINS - 1);
-                    counts[bin] += 1;
+    read(path, |reader| {
+        let table = table(query)?;
+        let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
+        let column = column(table, &name)?;
+        let (window, bounds) = window(reader, &[table], query)?;
+        let (values, truncated) = reader.values(
+            column,
+            source(query, table)?.as_ref(),
+            window.from,
+            window.to,
+            MAX_VALUES,
+        )?;
+        let percentiles: Vec<Value> = PERCENTILES
+            .iter()
+            .map(|p| json!({ "p": p, "value": percentile(&values, *p) }))
+            .collect();
+        let count = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / count;
+        let deviation = (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count).sqrt();
+        let histogram = match (
+            percentile(&values, HISTOGRAM_FROM),
+            percentile(&values, HISTOGRAM_TO),
+        ) {
+            (Some(lo), Some(hi)) if hi > lo => {
+                let width = (hi - lo) / BINS as f64;
+                let mut counts = vec![0_u64; BINS];
+                let (mut below, mut above) = (0_u64, 0_u64);
+                for v in &values {
+                    if *v < lo {
+                        below += 1;
+                    } else if *v > hi {
+                        above += 1;
+                    } else {
+                        let bin = (((v - lo) / width) as usize).min(BINS - 1);
+                        counts[bin] += 1;
+                    }
                 }
+                let edges: Vec<f64> = (0..=BINS).map(|n| lo + n as f64 * width).collect();
+                json!({ "edges": edges, "counts": counts, "below": below, "above": above })
             }
-            let edges: Vec<f64> = (0..=BINS).map(|n| lo + n as f64 * width).collect();
-            json!({ "edges": edges, "counts": counts, "below": below, "above": above })
-        }
-        _ => Value::Null,
-    };
-    Ok(with(
-        json!({
-            "column": column.name(),
-            "count": values.len(),
-            "truncated": truncated,
-            "mean": if values.is_empty() { None } else { Some(mean) },
-            "standard_deviation": if values.is_empty() { None } else { Some(deviation) },
-            "percentiles": percentiles,
-            "histogram": histogram,
-        }),
-        bounds,
-    ))
+            _ => Value::Null,
+        };
+        Ok(with(
+            json!({
+                "column": column.name(),
+                "count": values.len(),
+                "truncated": truncated,
+                "mean": if values.is_empty() { None } else { Some(mean) },
+                "standard_deviation": if values.is_empty() { None } else { Some(deviation) },
+                "percentiles": percentiles,
+                "histogram": histogram,
+            }),
+            bounds,
+        ))
+    })
 }
 
 #[cfg(test)]
