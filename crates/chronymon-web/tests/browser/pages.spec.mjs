@@ -87,7 +87,7 @@ test("Live: a column unticked leaves its chart", async ({ page }) => {
   await expect(charts(page)).toHaveCount(before - 1);
 });
 
-test("Live: chronyd's log fills where the daemon has no rows", async ({ page }) => {
+test("Live: chronyd's log fills before the daemon ran", async ({ page }) => {
   await page.goto("/?last=all");
   await expect(charts(page).first()).toBeVisible();
   const over = charts(page).first().locator(".u-over");
@@ -95,6 +95,39 @@ test("Live: chronyd's log fills where the daemon has no rows", async ({ page }) 
   // The far left of "all" is before the daemon's first poll.
   await page.mouse.move(box.x + 4, box.y + box.height / 2);
   await expect(page.locator("#readout")).toContainText("from chronyd's log");
+});
+
+test("Live: the log fills only while the daemon was stopped, and a slow clock's line spans", async ({ page }) => {
+  // The synthetic run's stop, after which chronyd updates every 64 s: a
+  // row only every few buckets, its log in the buckets between.
+  const events = await (await page.request.get("/api/events?limit=500")).json();
+  const stop = events.find((e) => e.kind === "daemon_stop").at;
+  const start = events.find((e) => e.kind === "daemon_start" && e.at > stop).at;
+  await page.goto(`/?from=${stop - 3600}&to=${stop + 4 * 3600}`);
+  await expect(charts(page).first()).toBeVisible();
+  const drawn = await page.evaluate(() => {
+    const chart = stack.charts[0];
+    const x = chart.data[0];
+    return chart.chronymonLines.map((l) => {
+      const values = chart.data[l.series];
+      return {
+        breaks: values.filter((v) => v === null).length,
+        at: x.filter((_, i) => values[i] != null),
+      };
+    });
+  });
+  expect(drawn).toHaveLength(2);
+  const [reported, logged] = drawn;
+  // The reported line breaks once, for the stop, and spans the buckets
+  // between its rows; the log is drawn only while it was stopped.
+  expect(reported.breaks).toBe(1);
+  expect(reported.at.length).toBeGreaterThan(100);
+  expect(logged.breaks).toBe(0);
+  expect(logged.at.length).toBeGreaterThan(0);
+  for (const t of logged.at) expect(t > stop && t < start).toBe(true);
+  // But for the daemon's first row after it started, whose reference
+  // time is its sample's, a little before.
+  for (const t of reported.at) expect(t > stop && t < start - 60).toBe(false);
 });
 
 test("Live: the range buttons move the window and the address", async ({ page }) => {

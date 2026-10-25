@@ -100,9 +100,12 @@ The host's:
   nothing.
 - Threads, no async runtime.
 - Raw rows kept forever; charts get one min/mean/max bucket per pixel
-  column at query time, all of a table's columns on one grid.  A line
-  breaks only at a hole wider than a few buckets and three times the
-  series' own spacing, so a 64 s cadence is not drawn as gaps.
+  column at query time, all of a table's columns on one grid.  The
+  daemon's rows are written on change, so its lines span empty buckets
+  and break only where it stopped recording (its events: stopped,
+  crashed, chronyd down; a source also where removed).  A log's line
+  breaks at a hole wider than a few buckets and three times its own
+  spacing.  Empty buckets are `null`, breaks listed as `gaps`.
 - The reader opens the database read-only (the daemon's `-shm`, or
   `immutable` when there is no `-wal`) and never creates it.  It must
   not be able to make a `-wal` or `-shm`: one owned by the web view's
@@ -127,9 +130,10 @@ ticks at zero, the threshold and its decades.
 Pages: Live, Sources and each source's own, Refclocks, Temperature,
 Journal, Distribution, Kiosk.
 
-- Live, and the frequency on Temperature, draw `tracking.log` where
-  `tracking` has no rows, bucket by bucket, dashed and named "from
-  chronyd's log".
+- Live, Kiosk and the frequency on Temperature draw `tracking.log`
+  where the daemon was not recording, dashed and named "from chronyd's
+  log": not wherever a bucket lacks a row, which at a 64 s update
+  interval is most of them, and the two lines alternated as scraps.
 - Temperature is in the sensor's own unit (a thermal zone's
   millidegrees), labeled so, not converted on a guess.
 - A page whose table is empty says why: chronyd logs refclocks and
@@ -175,8 +179,9 @@ Journal, Distribution, Kiosk.
 - `/var/lib/chronymon` is `_chrony:chronymon` 2750, so the web view
   reads and can create nothing.  2770 with `UMask=0007` was tried
   first; the web view then made WAL files the daemon could not open.
-- The logs fill the charts only where the protocol has no rows,
-  marked as lower precision; otherwise they feed only what they alone
+- The logs fill the charts only where the daemon was not recording
+  (first decided as wherever the protocol has no rows), marked as
+  lower precision; otherwise they feed only what they alone
   have: refclocks, tempcomp, every NTP packet.
 - The status strip reads only the `status` row, even when the
   database holds only logs.

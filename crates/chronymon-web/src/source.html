@@ -85,9 +85,9 @@ function offsetBounds(got) {
     x: got.at,
     title: "Offset and round trip, µs",
     lines: [
-      { column: k, name: "offset", values: scaled(offset.mean, k), color: TRACE },
-      { column: k, name: "+ delay / 2", values: scaled(half(1), k), color: ENVELOPE },
-      { column: k, name: "− delay / 2", values: scaled(half(-1), k), color: ENVELOPE },
+      { column: k, name: "offset", values: scaled(spanned(offset.mean, offset.gaps), k), color: TRACE },
+      { column: k, name: "+ delay / 2", values: scaled(spanned(half(1), offset.gaps), k), color: ENVELOPE },
+      { column: k, name: "− delay / 2", values: scaled(spanned(half(-1), offset.gaps), k), color: ENVELOPE },
     ],
   };
 }

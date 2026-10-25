@@ -75,7 +75,7 @@ const stack = {
 let scatterChart = null;
 
 // The frequency as one series: the protocol's, or the log's where the
-// protocol has none.
+// daemon was not recording.
 function frequencyValues(got) {
   const reported = got.plots.find((p) => p.table === "tracking");
   const logged = got.plots.find((p) => p.table === "log_tracking");

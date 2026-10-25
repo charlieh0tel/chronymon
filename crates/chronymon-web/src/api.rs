@@ -237,8 +237,9 @@ pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
 }
 
 /// `/api/history?table=&columns=a,b&from=&to=&points=&source=`: one
-/// table's columns, bucketed on one grid; with `fill=&fill_columns=`,
-/// another table's in the buckets where the first has no rows.
+/// table's columns, bucketed on one grid, each with the indexes its
+/// line breaks at; with `fill=&fill_columns=`, a log's where the daemon
+/// was not recording.
 pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
     let reader = open(path)?;
     let table = table(query)?;
