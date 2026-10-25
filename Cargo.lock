@@ -94,11 +94,11 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "chronymon"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "chronymon-control"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chronymon",
  "jiff",
@@ -107,14 +107,14 @@ dependencies = [
 
 [[package]]
 name = "chronymon-http"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "chronymon-log"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chronymon",
  "chronymon-control",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "chronymon-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chronymon",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "chronymond"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chronymon",
