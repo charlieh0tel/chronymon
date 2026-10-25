@@ -153,14 +153,36 @@ test("Live: an event centers the charts on it", async ({ page }) => {
 test("Sources: a row per source, overlays, and a link to each", async ({ page }) => {
   await page.goto("/sources?last=86400");
   const rows = page.locator("#sources tbody tr");
-  await expect(rows).toHaveCount(3);
-  for (const name of ["PPS", "ntp1.example.net", "ntp2.example.org"]) {
+  await expect(rows).toHaveCount(5);
+  for (const name of ["PPS", "NMEA", "ntp1.example.net", "ntp2.example.org", "ntp3.example.com"]) {
     await expect(page.locator("#sources")).toContainText(name);
   }
   await expect(charts(page).first()).toBeVisible();
   await page.locator("#sources a", { hasText: "ntp1.example.net" }).first().click();
   await expect(page).toHaveURL(/\/source\?/);
   await expect(page.locator("#heading")).toContainText("ntp1.example.net");
+  await expect(charts(page).first()).toBeVisible();
+});
+
+test("Sources: a source with no sample shows none, not its last", async ({ page }) => {
+  await page.goto("/sources?last=86400");
+  const nmea = page.locator("#sources tbody tr", { hasText: "NMEA" });
+  // State, name, address, mode, stratum, poll, reach, last offset.
+  const cells = nmea.locator("td");
+  await expect(cells.nth(0)).toHaveText("?");
+  await expect(cells.nth(6)).toHaveText("0");
+  await expect(cells.nth(7)).toHaveText(/^-- /);
+});
+
+test("Sources: a removed source is last, dimmed, its history kept", async ({ page }) => {
+  await page.goto("/sources?last=86400");
+  const rows = page.locator("#sources tbody tr");
+  await expect(rows.last()).toContainText("ntp3.example.com");
+  await expect(rows.last()).toHaveClass("removed");
+  await expect(page.locator("#sources tbody tr.removed")).toHaveCount(1);
+  await rows.last().locator("a").click();
+  await expect(page.locator("#heading")).toContainText("ntp3.example.com");
+  await expect(page.locator("#heading")).toContainText("removed");
   await expect(charts(page).first()).toBeVisible();
 });
 
@@ -195,6 +217,10 @@ test("Journal: the synthetic run's events", async ({ page }) => {
 // A kiosk's display: landscape, as a television is.
 const KIOSK_VIEWPORT = { width: 1920, height: 1080 };
 
+// The synthetic sources chronyd has now, all the kiosk lists: not the
+// removed ntp3.
+const KIOSK_SOURCES = 4;
+
 // Whether the page fits its window, with nothing to scroll.
 const fits = (page) => page.evaluate(() =>
   Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) <= innerHeight &&
@@ -210,8 +236,9 @@ test("Kiosk: the clock's state, its sources, events and charts, on one screen", 
   for (const name of ["last offset", "frequency", "skew", "leap"]) {
     await expect(page.locator("#kiosk-tiles .tile .k", { hasText: name }).first()).toBeVisible();
   }
-  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(KIOSK_SOURCES);
   await expect(page.locator("#kiosk-source-rows")).toContainText("ntp1.example.net");
+  await expect(page.locator("#kiosk-source-rows")).not.toContainText("ntp3.example.com");
   await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
   await expect(charts(page)).toHaveCount(4);
   await expect(page.locator("nav")).toHaveCount(0);
@@ -265,7 +292,7 @@ test("Kiosk: laid out inside the inset an overscanning display asks for", async 
 test("Kiosk: reloaded, paints the last state before the first poll answers", async ({ page }) => {
   await page.setViewportSize(KIOSK_VIEWPORT);
   await page.goto("/kiosk");
-  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(KIOSK_SOURCES);
   await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
   // How long the server's answers are held back after the reload, in ms.
   const held = 3000;
@@ -278,7 +305,7 @@ test("Kiosk: reloaded, paints the last state before the first poll answers", asy
   await expect(head).toContainText("LAST SEEN", { timeout: held / 2 });
   await expect(page.locator("#kiosk-reference")).toHaveText("PPS");
   await expect(page.locator("#kiosk-tiles .tile")).toHaveCount(8);
-  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(KIOSK_SOURCES);
   await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
   await expect(head).not.toContainText("LAST SEEN", { timeout: 3 * held });
 });
@@ -294,7 +321,7 @@ test("Kiosk: works with storage refused", async ({ page }) => {
   await page.setViewportSize(KIOSK_VIEWPORT);
   await page.goto("/kiosk?debug");
   await expect(page.locator("#kiosk-mode")).toHaveText(/^(synchronized|stale)$/);
-  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(3);
+  await expect(page.locator("#kiosk-source-rows tr")).toHaveCount(KIOSK_SOURCES);
   await expect(charts(page)).toHaveCount(4);
   await expect(page.locator("#kiosk-foot")).toContainText("load ? (navigate)");
 });

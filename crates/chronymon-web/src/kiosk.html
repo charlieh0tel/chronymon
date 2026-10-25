@@ -311,17 +311,20 @@ function stale(dim) {
   for (const id of ["kiosk-tiles", "kiosk-sources"]) $(id).classList.toggle("dim", dim);
 }
 
-// Each source on a line: chronyc's mark for its state, its name in its
-// color on the charts, its reach, and its last offset.
+// Each source chronyd has now on a line, as it last reported it:
+// chronyc's mark for its state, its name in its color on the charts,
+// its reach, and its last offset.  Those removed are for the Sources
+// page, not a summary.
 function sourceRows(sources) {
-  if (!sources.length) return `<span class="muted">no sources recorded</span>`;
-  return `<table><tbody>${sources.map((s) => {
+  const current = sources.filter((s) => !s.removed);
+  if (!current.length) return `<span class="muted">no sources recorded</span>`;
+  return `<table><tbody>${current.map((s) => {
     const [mark, cls] = SOURCE_STATES[s.state] ?? ["", ""];
-    const sample = s.sample ?? {};
+    const report = s.report ?? {};
     return `<tr><td class="${cls}" title="${esc(s.state ?? "")}">${esc(mark)}</td>` +
       `<td style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</td>` +
-      `<td class="muted">${sample.reachability == null ? "--" : sample.reachability.toString(8)}</td>` +
-      `<td>${esc(seconds(sample.latest_measurement, true))}</td></tr>`;
+      `<td class="muted">${report.reachability == null ? "--" : report.reachability.toString(8)}</td>` +
+      `<td>${esc(seconds(report.latest_measurement, true))}</td></tr>`;
   }).join("")}</tbody></table>`;
 }
 

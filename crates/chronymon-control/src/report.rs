@@ -18,6 +18,11 @@ pub enum Address {
     Ip(IpAddr),
     /// A source with no address, a refclock, known by its reference ID.
     ReferenceId(u32),
+    /// An NTP source whose name is not resolved yet, by the placeholder
+    /// ID chronyd numbers it with (`IPADDR_ID`, `NSR_AddSourceByName`
+    /// in `ntp_sources.c`, chrony 4.3 to 4.9).  chronyc's `sources`
+    /// leaves these out unless asked for all (`-a`).
+    Unresolved(u32),
 }
 
 impl fmt::Display for Address {
@@ -26,6 +31,8 @@ impl fmt::Display for Address {
             Self::Unspecified => write!(f, "-"),
             Self::Ip(address) => write!(f, "{address}"),
             Self::ReferenceId(id) => write!(f, "{}", ReferenceId(*id)),
+            // As chronyd prints it (`UTI_IPToString`).
+            Self::Unresolved(id) => write!(f, "ID#{id:010}"),
         }
     }
 }

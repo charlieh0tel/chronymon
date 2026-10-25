@@ -99,17 +99,17 @@ const own = (table, got, skip = []) =>
   chartsOf(table, got.plots.filter((p) => !skip.includes(p.column))).map((d) => ({ ...d, x: got.at }));
 
 function describe(s, now) {
-  const sample = s.sample ?? {};
+  const report = s.report ?? {};
   const name = s.name && s.name !== s.address ? `${s.name} (${s.address})` : s.address;
-  update($("heading"), "textContent", `${s.mode} ${name}`);
+  update($("heading"), "textContent", `${s.mode} ${name}${s.removed ? ", removed" : ""}`);
   const tiles = [
     { k: "state", v: s.state ?? "--" },
     { k: "selection", v: `${s.selection_state ?? "--"} ${s.selection ? fmt(s.selection.score, 2) : ""}` },
-    { k: "stratum", v: String(sample.stratum ?? "--") },
-    { k: "poll", v: sample.poll == null ? "--" : `${age(2 ** sample.poll)}` },
-    { k: "reach", v: sample.reachability == null ? "--" : sample.reachability.toString(8) },
-    { k: "last offset", v: seconds(sample.latest_measurement, true) },
-    { k: "error bound", v: seconds(sample.latest_measurement_error) },
+    { k: "stratum", v: String(report.stratum ?? "--") },
+    { k: "poll", v: report.poll == null ? "--" : `${age(2 ** report.poll)}` },
+    { k: "reach", v: report.reachability == null ? "--" : report.reachability.toString(8) },
+    { k: "last offset", v: seconds(report.latest_measurement, true) },
+    { k: "error bound", v: seconds(report.latest_measurement_error) },
     { k: "frequency", v: ppm(s.stats?.residual_frequency, true) },
     { k: "skew", v: ppm(s.stats?.skew) },
     { k: "first seen", v: new Date(s.first_seen * 1000).toLocaleString() },

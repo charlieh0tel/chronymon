@@ -33,11 +33,20 @@ beside it, as chronyc does.  No access, no start.
    | Report | New row when |
    | - | - |
    | `tracking` | its reference time changes |
-   | `sources` | its last-sample age resets |
+   | `sources` | its last-sample age resets; `source_report`, one row per source, replaced when anything else changes |
    | `sourcestats` | any value changes (no timestamp of its own) |
    | `ntpdata` | its valid-sample counter increments |
    | `selectdata` | it changes |
    | `sourcename` | once per new source |
+
+   The Sources table reads `source_report`, not the last sample row,
+   so reach run down to 0, or no sample at all after a restart (age
+   `(uint32_t)-1`, `SST_DoSourceReport`), shows as chronyd reports it,
+   not as the last sample left it.  Sources named by `server` or
+   `pool` start under placeholder addresses (`IPADDR_ID`,
+   `NSR_AddSourceByName`; `ID#0000000001` in the log) until resolved;
+   chronyc hides them without `-a` (`client.c`), and the daemon skips
+   them.  An older database's, stored in hex, show as `ID#`.
 
 2. **Log files**, backfilled from rotations, `.gz` included:
    `refclocks.log` and `tempcomp.log`, which hold what the protocol
@@ -130,6 +139,9 @@ ticks at zero, the threshold and its decades.
 Pages: Live, Sources and each source's own, Refclocks, Temperature,
 Journal, Distribution, Kiosk.
 
+- Sources chronyd has removed stay listed, last and dimmed, their
+  history a link away.  Removed: missing from the daemon's latest read
+  (`last_seen` older than the newest), or its last event its removal.
 - Live, Kiosk and the frequency on Temperature draw `tracking.log`
   where the daemon was not recording, dashed and named "from chronyd's
   log": not wherever a bucket lacks a row, which at a 64 s update

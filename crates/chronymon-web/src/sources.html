@@ -22,7 +22,7 @@
 </nav>
 
 <div class="panel">
-  <h2>Sources, as last reported</h2>
+  <h2>Sources, as last reported; those chronyd has removed last, dimmed</h2>
   <div id="table-wrap"><div id="sources"><span class="muted">waiting...</span></div></div>
 </div>
 
@@ -76,19 +76,22 @@ function sourcesTable(sources, now) {
   if (!sources.length) return `<span class="muted">no sources recorded</span>`;
   const rows = sources.map((s) => {
     const [mark, cls] = SOURCE_STATES[s.state] ?? ["", ""];
-    const sample = s.sample ?? {};
+    const report = s.report ?? {};
     const stats = s.stats ?? {};
-    const since = s.last_seen ? `${age(now - s.last_seen)} ago` : "--";
-    return `<tr>` +
+    const since = s.last_seen ? `${s.removed ? "removed, " : ""}${age(now - s.last_seen)} ago` : "--";
+    // A removed source's own page opens on its whole life, which the
+    // default, the last hour, would miss.
+    const life = s.removed ? `&from=${Math.floor(s.first_seen)}&to=${Math.ceil(s.last_seen)}` : "";
+    return `<tr${s.removed ? ` class="removed" title="removed by chronyd"` : ""}>` +
       `<td><span class="${cls}" title="${esc(s.state ?? "")}">${esc(mark)}</span></td>` +
-      `<td><a href="/source?source=${s.id}" style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</a></td>` +
+      `<td><a href="${esc(`/source?source=${s.id}${life}`)}" style="color:${sourceColor(s.id)}">${esc(sourceName(s))}</a></td>` +
       `<td class="muted">${esc(s.address)}</td>` +
       `<td>${esc(s.mode)}</td>` +
-      `<td>${sample.stratum ?? "--"}</td>` +
-      `<td>${esc(poll(sample.poll))}</td>` +
-      `<td>${sample.reachability == null ? "--" : sample.reachability.toString(8)}</td>` +
-      `<td>${esc(seconds(sample.latest_measurement, true))} ` +
-      `<span class="muted">± ${esc(seconds(sample.latest_measurement_error))}</span></td>` +
+      `<td>${report.stratum ?? "--"}</td>` +
+      `<td>${esc(poll(report.poll))}</td>` +
+      `<td>${report.reachability == null ? "--" : report.reachability.toString(8)}</td>` +
+      `<td>${esc(seconds(report.latest_measurement, true))} ` +
+      `<span class="muted">± ${esc(seconds(report.latest_measurement_error))}</span></td>` +
       `<td>${esc(s.selection_state ?? "--")} ${s.selection ? fmt(s.selection.score, 2) : ""}</td>` +
       `<td>${stats.samples ?? "--"}</td>` +
       `<td>${esc(ppm(stats.residual_frequency, true))}</td>` +

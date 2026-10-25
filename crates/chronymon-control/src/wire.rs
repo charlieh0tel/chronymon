@@ -117,7 +117,7 @@ impl<'a> Reader<'a> {
             FAMILY_UNSPECIFIED => Address::Unspecified,
             FAMILY_INET4 => Address::Ip(IpAddr::V4(Ipv4Addr::new(a, b, c, d))),
             FAMILY_INET6 => Address::Ip(IpAddr::V6(Ipv6Addr::from(union))),
-            FAMILY_ID => Address::ReferenceId(u32::from_be_bytes([a, b, c, d])),
+            FAMILY_ID => Address::Unresolved(u32::from_be_bytes([a, b, c, d])),
             other => return Err(DecodeError::AddressFamily(other)),
         })
     }
@@ -209,6 +209,17 @@ mod tests {
             let decoded = Reader::new(&bytes).address().expect("an address");
             assert_eq!(decoded, Address::Ip(address));
         }
+    }
+
+    #[test]
+    fn an_unresolved_source_is_its_placeholder() {
+        let mut bytes = [0; ADDRESS_LENGTH];
+        bytes[..4].copy_from_slice(&7u32.to_be_bytes());
+        bytes[ADDRESS_UNION_LENGTH..ADDRESS_UNION_LENGTH + 2]
+            .copy_from_slice(&FAMILY_ID.to_be_bytes());
+        let decoded = Reader::new(&bytes).address().expect("an address");
+        assert_eq!(decoded, Address::Unresolved(7));
+        assert_eq!(decoded.to_string(), "ID#0000000007");
     }
 
     #[test]

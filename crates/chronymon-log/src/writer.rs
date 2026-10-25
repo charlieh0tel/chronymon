@@ -145,6 +145,14 @@ fn loaded_u64(value: i64) -> Result<u64> {
     u64::try_from(value).map_err(|_| Error::Negative(value))
 }
 
+/// When a source's last sample arrived, as of `at`; `None` before its
+/// first.
+fn sample_time(at: Timestamp, s: &SourceData) -> Result<Option<Timestamp>> {
+    s.since_sample
+        .map(|age| at.checked_sub(age).map_err(|_| Error::Timestamp))
+        .transpose()
+}
+
 /// How a source's address is stored: the IP address, or a refclock's
 /// reference ID in hex.
 fn address(address: Address) -> String {
@@ -246,13 +254,44 @@ impl Batch<'_> {
         Ok(())
     }
 
+    /// What `sources` now says of a source, in place of what it said
+    /// before: its sample's columns NULL while it has none.
+    pub fn source_report(&self, at: Timestamp, source_id: i64, s: &SourceData) -> Result<()> {
+        let sample = s.since_sample.is_some();
+        let sample_time = sample_time(at, s)?.map(to_stored).transpose()?;
+        self.transaction.execute(
+            "INSERT INTO source_report (source_id, at, poll, stratum, state, reachability,
+                 sample_time, latest_measurement, original_latest_measurement,
+                 latest_measurement_error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (source_id) DO UPDATE SET at = excluded.at, poll = excluded.poll,
+                 stratum = excluded.stratum, state = excluded.state,
+                 reachability = excluded.reachability, sample_time = excluded.sample_time,
+                 latest_measurement = excluded.latest_measurement,
+                 original_latest_measurement = excluded.original_latest_measurement,
+                 latest_measurement_error = excluded.latest_measurement_error",
+            params![
+                source_id,
+                to_stored(at)?,
+                s.poll,
+                s.stratum,
+                text::state(s.state),
+                s.reachability,
+                sample_time,
+                sample.then(|| s.latest_measurement.get()),
+                sample.then(|| s.original_latest_measurement.get()),
+                sample.then(|| s.latest_measurement_error.get()),
+            ],
+        )?;
+        Ok(())
+    }
+
     /// A source's new sample, from `sources`.  A source with no sample
     /// yet has none to record.
     pub fn source_sample(&self, at: Timestamp, source_id: i64, s: &SourceData) -> Result<()> {
-        let Some(age) = s.since_sample else {
+        let Some(sample_time) = sample_time(at, s)? else {
             return Ok(());
         };
-        let sample_time = at.checked_sub(age).map_err(|_| Error::Timestamp)?;
         self.transaction.execute(
             "INSERT INTO source_sample (at, source_id, sample_time, poll, stratum, state,
                  reachability, latest_measurement, original_latest_measurement,
@@ -503,6 +542,9 @@ impl Batch<'_> {
 
 #[cfg(test)]
 mod tests {
+    use chronymon::units::Seconds;
+    use chronymon_control::report::SourceState;
+
     use super::*;
 
     fn schema_version(log: &Log) -> i64 {
@@ -544,6 +586,7 @@ mod tests {
                     "DROP TABLE log_tracking; DROP TABLE log_measurement;
                      DROP TABLE log_statistics; DROP TABLE refclock_sample;
                      DROP TABLE tempcomp_sample; DROP TABLE log_file;
+                     DROP TABLE source_report;
                      UPDATE meta SET value = '1' WHERE key = 'schema_version';",
                 )
                 .expect("downgraded");
@@ -560,6 +603,55 @@ mod tests {
             .write(|batch| Ok((batch.log_line(&line)?, batch.log_line(&line)?)))
             .expect("written");
         assert!(first && !again);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn adds_the_source_report_to_schema_2() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v2-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let log = Log::open(&path).expect("created");
+            log.connection
+                .execute_batch(
+                    "DROP TABLE source_report;
+                     UPDATE meta SET value = '2' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let mut log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        let at = Timestamp::new(1_800_000_000, 0).expect("in range");
+        let data = SourceData {
+            address: Address::ReferenceId(u32::from_be_bytes(*b"PPS\0")),
+            poll: 4,
+            stratum: 0,
+            state: SourceState::Nonselectable,
+            mode: SourceMode::Refclock,
+            reachability: 0,
+            since_sample: None,
+            original_latest_measurement: Seconds::new(0.0),
+            latest_measurement: Seconds::new(0.0),
+            latest_measurement_error: Seconds::new(0.0),
+        };
+        log.write(|batch| {
+            let id = batch.source(at, data.address, ReferenceId(1), data.mode, None)?;
+            batch.source_report(at, id, &data)?;
+            batch.source_report(at, id, &data)
+        })
+        .expect("written");
+        let (rows, sample_time, measurement): (i64, Option<i64>, Option<f64>) = log
+            .connection
+            .query_row(
+                "SELECT COUNT(*), sample_time, latest_measurement FROM source_report",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("a report");
+        assert_eq!((rows, sample_time, measurement), (1, None, None));
         let _ = std::fs::remove_dir_all(&directory);
     }
 
