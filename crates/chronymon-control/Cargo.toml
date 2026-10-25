@@ -1,0 +1,17 @@
+[package]
+name = "chronymon-control"
+description = "Client for chronyd's control protocol, the one chronyc speaks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chronymon = { version = "0.1.0", path = "../chronymon" }
+jiff = "0.2.38"
+thiserror = "2.0.21"
+
+[lints]
+workspace = true

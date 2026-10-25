@@ -1,0 +1,128 @@
+#!/bin/bash
+# Capture chronyc's control-protocol exchanges with chronyd, and its
+# output, for each supported release: the oracle chronymon-control's
+# tests decode against.  See crates/chronymon-control/tests/fixtures/README.md.
+#
+# Usage: tools/capture-fixtures [IMAGE...]
+set -euo pipefail
+
+DEFAULT_IMAGES=(debian:bookworm ubuntu:24.04 debian:trixie ubuntu:26.04 debian:forky)
+SERVER_IMAGE=debian:trixie
+# Samples the selected source needs before its statistics are worth keeping.
+MIN_SAMPLES=8
+# How long to wait for that, in seconds.
+SYNC_TIMEOUT=180
+COMMANDS=(tracking sources sources-n sourcestats ntpdata selectdata activity serverstats)
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+out="$repo/crates/chronymon-control/tests/fixtures"
+extract="$repo/tools/strace-datagrams"
+# Fixed names, not per run: chronyc's text output reverse-resolves the
+# server to its container and network names.
+tag=chronymon-fixture
+network=$tag
+work=$(mktemp -d)
+
+remove_containers() {
+    docker rm -f "$tag-server" "$tag-client" >/dev/null 2>&1 || true
+    docker network rm "$network" >/dev/null 2>&1 || true
+}
+cleanup() {
+    remove_containers
+    rm -rf "$work"
+}
+trap cleanup EXIT
+
+# An image of IMAGE with chrony and strace, tagged by IMAGE.
+build() {
+    local image=$1 name
+    name=chronymon-fixture:${image//[:\/]/-}
+    docker build -q -t "$name" - >/dev/null <<EOF
+FROM $image
+RUN apt-get update && apt-get install -y --no-install-recommends chrony strace \
+    && rm -rf /var/lib/apt/lists/*
+EOF
+    echo "$name"
+}
+
+# Start chronyd in the background in a new container: NAME ALIAS IMAGE
+# CONFIG.  The alias is its name on the network, fixed so the source
+# name in the fixtures does not change from run to run.  -x: never
+# touch the clock, which a container may not.
+start() {
+    docker run -d --name "$1" --hostname "$2" --network "$network" \
+        --network-alias "$2" \
+        --cap-add SYS_PTRACE -v "$4:/etc/chrony/fixture.conf:ro" \
+        "$3" chronyd -x -d -f /etc/chrony/fixture.conf >/dev/null
+}
+
+flags() {
+    case $1 in
+        sources) echo "-N sources" ;;
+        sources-n) echo "-n sources" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Wait until the client has selected the server and holds MIN_SAMPLES of it.
+wait_synced() {
+    local deadline=$((SECONDS + SYNC_TIMEOUT))
+    while ((SECONDS < deadline)); do
+        if docker exec "$tag-client" chronyc -c -n sources | grep -q '^\^,\*,' &&
+            docker exec "$tag-client" chronyc -c -n sourcestats |
+            awk -F, -v n="$MIN_SAMPLES" '$2 >= n { found = 1 } END { exit !found }'; then
+            return 0
+        fi
+        sleep 2
+    done
+    echo "client did not synchronize within ${SYNC_TIMEOUT}s" >&2
+    return 1
+}
+
+capture() {
+    local image=$1 client version dir
+    client=$(build "$image")
+    docker rm -f "$tag-client" >/dev/null 2>&1 || true
+    start "$tag-client" client "$client" "$work/client.conf"
+    wait_synced
+    version=$(docker exec "$tag-client" chronyd --version | head -1)
+    dir="$out/$(sed -E 's/.*version ([0-9.]+).*/\1/' <<<"$version")"
+    package=$(docker exec "$tag-client" dpkg-query -W -f '${Version}' chrony)
+    mkdir -p "$dir"
+    for command in "${COMMANDS[@]}"; do
+        # shellcheck disable=SC2046 # flags() is meant to split.
+        {
+            echo "# $version on $image (package $package)"
+            echo "# captured $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            docker exec "$tag-client" strace -f -xx -s 4096 -e trace=network \
+                -o /tmp/trace chronyc -c $(flags "$command") >"$work/csv"
+            docker exec "$tag-client" cat /tmp/trace | python3 -I "$extract"
+            sed 's/^/csv /' "$work/csv"
+            docker exec "$tag-client" chronyc $(flags "$command") | sed 's/^/text /;s/^text $/text/'
+        } >"$dir/$command.txt"
+    done
+    echo "$image: $version -> ${dir#"$repo"/}"
+}
+
+cat >"$work/server.conf" <<EOF
+local stratum 8
+allow all
+EOF
+# The good server polled every second; one that never answers; a
+# refclock with no data, so every source mode has an entry.
+cat >"$work/client.conf" <<EOF
+server server iburst minpoll 0 maxpoll 0
+server 192.0.2.1 iburst
+refclock SHM 0
+EOF
+
+# Left behind by a run that was killed.
+remove_containers
+docker network create "$network" >/dev/null
+start "$tag-server" server "$(build "$SERVER_IMAGE")" "$work/server.conf"
+
+images=("$@")
+((${#images[@]})) || images=("${DEFAULT_IMAGES[@]}")
+for image in "${images[@]}"; do
+    capture "$image"
+done

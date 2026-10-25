@@ -33,8 +33,12 @@ chronyd answers its control protocol, the one chronyc speaks
 answers only the reports `opencommands` enables (from 4.7; fixed
 before), which by default excludes `ntpdata`, `sourcestats` and
 `selectdata`: `ntpdata` gave `501 Not authorised` on 4.8.  The Unix
-socket answers all of them; the client binds its own socket in
-`/run/chrony/`, which needs the `_chrony` user or group.
+socket answers all of them.  The client binds its own socket in a
+private directory beside chronyd's, as chronyc does, for chronyd to
+reply to.  chronyd creates its directory and socket under a 022 umask,
+so `/run/chrony` is 0750 and `chronyd.sock` 0755 (seen on 4.8): only
+`_chrony` and root can send to the socket or bind beside it, and
+membership of the group is not enough.
 
 chronymon speaks the Unix socket only.  UDP would give a partial
 picture, and one path is less to test.  Without access to the socket
@@ -109,7 +113,18 @@ answering again), a step (tracking's correction jumping past
 chronyd's own `makestep` threshold, read from its configuration, 1 s
 if it has none), reference change,
 source added or removed, leap status change, and the daemon's own
-start and stop.
+start and stop.  And the host's:
+
+- **Boot**: `/proc/sys/kernel/random/boot_id` differs from the last
+  run's.
+- **Shutdown or power-off**: the daemon, stopped by SIGTERM while
+  systemd reports the system `stopping`, records a clean shutdown.
+- **Crash or power loss**: the last run recorded no stop.  With a new
+  boot ID it was the host (a kernel crash if pstore holds a new dump,
+  else power loss or a hard reset); with the same one, chronymond
+  itself.
+- **chronyd crash**: its socket gone while `chronyd.pid` names a dead
+  process; a clean exit removes the file.
 
 ## Architecture
 
@@ -189,9 +204,12 @@ Pages:
    captured from each version as fixtures: a script in `tools/` runs
    each release's packaged chronyd in a Docker container with `-x`,
    synchronized to a second chronyd container serving as a local
-   stratum, offline and repeatable, and records its replies.
+   stratum, offline and repeatable, and records its replies.  Done:
+   every report decodes as chronyc prints it, for 4.3, 4.5, 4.6.1,
+   4.8 and 4.9, and the client runs against a live chronyd as
+   `_chrony`.
 2. **Daemon, protocol ingest.**  Schema 1 and `migrate()`, collectors,
-   change detection, events, the live socket.
+   change detection, events, the status row the web view reads.
 3. **Web.**  Copy in smartclock's HTTP crate and web assets; Live,
    Sources, Journal; then Distribution.
 4. **Log ingest.**  Backfill, rotated and `.gz` files, header-based
@@ -199,7 +217,7 @@ Pages:
 5. **Packaging.**  One Debian package, `chronymon`, amd64 and arm64,
    released through deb-workflows (`rust-build-deb.yml`): both
    binaries, their systemd units and `/etc/default` files, and a
-   `chronymon` system user (sysusers.d) in the `_chrony` group.
+   `chronymon` system user and group (sysusers.d) for the web view.
 6. **Later, maybe.**  A kiosk page, smartclock-sensord's ambient
    readings, a Prometheus exporter.
 
@@ -212,10 +230,13 @@ Pages:
   wrong numbers.
 - **A client written from GPL-2.0-only headers.**  Layouts and codes
   only, no text copied, so the client stays ours to license.
-- **Privilege.**  The socket needs `_chrony`.  On Debian,
-  `LogsDirectoryMode=0750` and the socket's mode reset on each chronyd
-  start, so group membership is the only setup that survives.  The
-  daemon must say plainly when it is refused, not log nothing.
+- **Privilege.**  The socket needs the `_chrony` user itself, so the
+  daemon runs as it, and through the socket it could change chronyd's
+  state.  It sends only reports and takes no input from the network;
+  the web view, which does, runs as another user and reads the
+  database through a shared group, so a compromised web view cannot
+  steer the clock.  The daemon must say plainly when it is refused,
+  not log nothing.
 - **Snapshots, not streams.**  `sourcestats` has no timestamp, so its
   rows carry the poll time; `ntpdata` keeps only the last sample, so a
   sample is lost if two arrive between polls (impossible above a 1 s
@@ -250,10 +271,15 @@ Pages:
   types: 4.9's are 4.8's; 4.3 to 4.5 send `RPY_NTP_DATA`, 4.6 on
   `RPY_NTP_DATA2`.
 - Unix socket only; no socket access means the daemon does not start.
-- The daemon runs as its own `chronymon` user, in the `_chrony` group,
-  so it can read the socket and the logs but not chrony's state.
+- The daemon runs as `_chrony`, the only user besides root that can
+  use chronyd's socket (decided first as its own user in the
+  `_chrony` group, which the socket's mode does not allow).  The web
+  view runs as `chronymon`.
 - The database is `/var/lib/chronymon/chronymon.sqlite`
-  (`StateDirectory=chronymon`).
+  (`StateDirectory=chronymon`, owned `_chrony:chronymon`, 2770, the
+  daemon under `UMask=0007`), so the web view, in group `chronymon`,
+  opens it like the daemon.  No `unsafe` to keep WAL files for
+  read-only readers, as smartclock needs.
 - Polled every second by default, set in `/etc/default/chronymond`.
 - Web on 127.0.0.1:8323 by default; one package for amd64 and arm64.
 - Timestamps stored as integer nanoseconds since the epoch, as

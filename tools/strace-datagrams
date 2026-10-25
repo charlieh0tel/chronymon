@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Extract the datagrams chronyc exchanged with chronyd from strace output.
+
+Reads `strace -f -xx -s 4096 -e trace=network` output on stdin and prints,
+in order, `request <hex>` for each datagram sent on the socket connected to
+chronyd's Unix socket and `reply <hex>` for each one received on it.  A
+resend (same sequence number as the request before it) is printed as a
+comment rather than a second request.
+"""
+
+import re
+import sys
+
+SOCKET_NAME = "chronyd.sock"
+# Request header: version, pkt_type, res1, res2, command u16, attempt u16,
+# sequence u32 -- so the sequence is bytes 8 to 12.
+SEQUENCE = slice(8, 12)
+
+PID_PREFIX = re.compile(r"^(?:\[pid\s+\d+\]\s+|\d+\s+)")
+CALL = re.compile(r"^(\w+)\((\d+),")
+RESULT = re.compile(r"\)\s+=\s+(-?\d+)")
+STRING = re.compile(r'"((?:\\x[0-9a-f]{2})*)"')
+SEND = {"send", "sendto", "sendmsg"}
+RECEIVE = {"recv", "recvfrom", "recvmsg"}
+
+
+def decode(escaped):
+    return bytes.fromhex(escaped.replace("\\x", ""))
+
+
+def payload(name, line):
+    """The data argument: the iovec's for the msg calls, else the first string."""
+    if name.endswith("msg"):
+        at = line.find("iov_base=")
+        if at < 0:
+            return None
+        line = line[at:]
+    match = STRING.search(line)
+    return decode(match.group(1)) if match else None
+
+
+def main():
+    chronyd_fds = set()
+    last_sequence = None
+    for raw in sys.stdin:
+        line = PID_PREFIX.sub("", raw.rstrip("\n"))
+        call = CALL.match(line)
+        result = RESULT.search(line)
+        if not call or not result:
+            continue
+        name, fd, returned = call.group(1), int(call.group(2)), int(result.group(1))
+        if name == "connect":
+            match = STRING.search(line)
+            if match and decode(match.group(1)).decode(errors="replace").endswith(SOCKET_NAME):
+                chronyd_fds.add(fd)
+            continue
+        if fd not in chronyd_fds or returned <= 0:
+            continue
+        data = payload(name, line)
+        if data is None:
+            continue
+        data = data[:returned]
+        if name in SEND:
+            sequence = data[SEQUENCE]
+            if sequence == last_sequence:
+                print(f"# resend of sequence {sequence.hex()} omitted")
+                continue
+            last_sequence = sequence
+            print(f"request {data.hex()}")
+        elif name in RECEIVE:
+            print(f"reply {data.hex()}")
+
+
+if __name__ == "__main__":
+    main()

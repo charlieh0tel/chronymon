@@ -3,6 +3,7 @@
 [workspace]
 members = [
     "crates/chronymon",
+    "crates/chronymon-control",
 ]
 resolver = "3"
 

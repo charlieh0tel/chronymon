@@ -1,0 +1,16 @@
+# chronyd (chrony) version 4.3 (+CMDMON +NTP +REFCLOCK +RTC +PRIVDROP +SCFILTER +SIGND +ASYNCDNS +NTS +SECHASH +IPV6 -DEBUG) on debian:bookworm (package 4.3-2+deb12u3)
+# captured 2026-10-25T05:24:20Z
+request 060100000036000070cc1100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+reply 0602000000360018000000000000000070cc110000000000000000000000000000000000000000510000000000000000000000000000000000000000000000000000000000000000
+csv 0,0,81,0,0,0,0,0,0,0,0
+text NTP packets received       : 0
+text NTP packets dropped        : 0
+text Command packets received   : 82
+text Command packets dropped    : 0
+text Client log records dropped : 0
+text NTS-KE connections accepted: 0
+text NTS-KE connections dropped : 0
+text Authenticated NTP packets  : 0
+text Interleaved NTP packets    : 0
+text NTP timestamps held        : 0
+text NTP timestamp span         : 0

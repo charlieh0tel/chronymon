@@ -1,0 +1,11 @@
+# chronyd (chrony) version 4.6.1 (+CMDMON +NTP +REFCLOCK +RTC +PRIVDROP +SCFILTER +SIGND +ASYNCDNS +NTS +SECHASH +IPV6 -DEBUG) on debian:trixie (package 4.6.1-3+deb13u2)
+# captured 2026-10-25T05:24:39Z
+request 06010000002c00006beb8873000000000000000000000000000000000000000000000000000000000000000000000000
+reply 06020000002c000c00000000000000006beb887300000000000000000000000100000000000000010000000000000000
+csv 1,0,1,0,0
+text 200 OK
+text 1 sources online
+text 0 sources offline
+text 1 sources doing burst (return to online)
+text 0 sources doing burst (return to offline)
+text 0 sources with unknown address

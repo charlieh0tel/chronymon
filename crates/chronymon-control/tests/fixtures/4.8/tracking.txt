@@ -1,0 +1,18 @@
+# chronyd (chrony) version 4.8 (+CMDMON +REFCLOCK +RTC +PRIVDROP +SCFILTER +SIGND +NTS +SECHASH +IPV6 -DEBUG) on ubuntu:26.04 (package 4.8-2ubuntu1)
+# captured 2026-10-25T05:24:46Z
+request 0601000000210000634ee3e40000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+reply 06020000002100050000000000000000634ee3e40000000000000000ac120002ac1200020000000000000000000000000001000000090000000000006add929d2fb40b53e1072328d8b940d5dabee3a1fab618aef6f8aee9029a4d7ae2f2e23edecd6d5d0481ee1b
+csv AC120002,172.18.0.2,9,1792905885.800328531,-0.000007417,0.000000345,0.000000711,0.044,0.015,0.603,0.000014477,0.000003061,1.0,Normal
+text Reference ID    : AC120002 (chronymon-fixture-server.chronymon-fixture)
+text Stratum         : 9
+text Ref time (UTC)  : Sun Oct 25 05:24:45 2026
+text System time     : 0.000007422 seconds fast of NTP time
+text Last offset     : +0.000000345 seconds
+text RMS offset      : 0.000000711 seconds
+text Frequency       : 0.044 ppm fast
+text Residual freq   : +0.015 ppm
+text Skew            : 0.603 ppm
+text Root delay      : 0.000014477 seconds
+text Root dispersion : 0.000003259 seconds
+text Update interval : 1.0 seconds
+text Leap status     : Normal

@@ -1,0 +1,11 @@
+# chronyd (chrony) version 4.9 (+CMDMON +REFCLOCK +RTC +PRIVDROP +SCFILTER +SIGND +NTS +SECHASH +IPV6 -DEBUG) on debian:forky (package 4.9-2)
+# captured 2026-10-25T05:24:56Z
+request 06010000002c000014d88132000000000000000000000000000000000000000000000000000000000000000000000000
+reply 06020000002c000c000000000000000014d8813200000000000000000000000100000000000000010000000000000000
+csv 1,0,1,0,0
+text 200 OK
+text 1 sources online
+text 0 sources offline
+text 1 sources doing burst (return to online)
+text 0 sources doing burst (return to offline)
+text 0 sources with unknown address
