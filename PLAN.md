@@ -239,9 +239,14 @@ Pages:
   that overscans.  Left, the sync state, reference and the strip's
   readings in large type, the sources, and the newest events, cut to
   fit; right, Live's offset, frequency and skew and every source's
-  offset over six hours.  Tiles and charts are updated in place, and
-  it never writes its address.  It inlines style.css, common.js and
-  charts.js, so a reload waits on nothing.  One page only: it is
+  offset over a day, as smartclock's shows.  Tiles and charts are
+  updated in place, and it never writes its address.  It inlines
+  style.css, common.js and charts.js, and keeps the last status,
+  sources and events in localStorage, painted as last seen, so a
+  reload waits on nothing; without storage it starts empty.
+  `?debug` adds smartclock's foot of loads, uptime, browser and last
+  error, for a display with no console.  No warning colors on offset
+  or skew: there is no documented threshold to draw.  One page only: it is
   enough to read the clock from across a room, and the other pages
   are for diagnosis, by a person at a browser.  Showing them in turn,
   in frames, was built and dropped as more to keep than it gave.

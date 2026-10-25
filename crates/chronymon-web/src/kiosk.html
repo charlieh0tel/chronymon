@@ -40,6 +40,7 @@
          style="position: absolute; top: 0; left: 0; width: 100%; box-sizing: border-box;
                 padding: inherit; visibility: hidden; pointer-events: none"></div>
   </div>
+  <div id="kiosk-foot" class="muted" hidden></div>
   <footer id="colophon"></footer>
 </section>
 
@@ -62,8 +63,8 @@
 // nothing to click, no scrolling.  chronyd's state in large type on
 // the left, from the status row the strip polls every second, its
 // sources and what happened lately; on the right the clock's offset,
-// frequency and skew and every source's offset, over one range (six
-// hours unless `?last=` says otherwise).
+// frequency and skew and every source's offset, over one range (a day
+// unless `?last=` says otherwise).
 
 addressFixed = true;
 
@@ -88,15 +89,80 @@ function inset() {
 }
 inset();
 
+// One of the stylesheet's kiosk pixels in CSS pixels, as `--u`: 1 at
+// full size, less on a smaller page.  `scale` sets it.
+let unitPx = 1;
+
+// With `?debug`, the foot shows how many times this browser has loaded
+// it so, how this load came about (navigate, reload), how long it has
+// been up, the browser's Chrome version, the viewport, and the last
+// error the page did not catch: a display that flashes now and then
+// may be its player reloading the page, which this tells apart from
+// the page redrawing itself, and a display has no console to read.
+const DEBUG = view.has("debug");
+const loadedHow = performance.getEntriesByType?.("navigation")[0]?.type ?? "?";
+const chromeVersion = navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] ?? "?";
+const loadedAt = Date.now();
+let lastError = null;
+const LOADS_KEY = "kiosk:loads";
+function countLoad() {
+  try {
+    const n = Number(localStorage.getItem(LOADS_KEY) ?? 0) + 1;
+    localStorage.setItem(LOADS_KEY, String(n));
+    return n;
+  } catch (e) {
+    return "?";
+  }
+}
+const loadCount = DEBUG ? countLoad() : null;
+
+// Write the foot, with `?debug`.  Called with each status, and at once
+// on an error: one that stops the status being painted would otherwise
+// never be shown.
+function showLoads() {
+  if (!DEBUG) return;
+  update($("kiosk-foot"), "textContent",
+    `load ${loadCount} (${loadedHow}), up ${age((Date.now() - loadedAt) / 1000)}, Chrome ${chromeVersion}, ` +
+    `${innerWidth}x${innerHeight} at ${devicePixelRatio}x, scale ${unitPx.toFixed(2)}` +
+    (lastError ? `, error: ${lastError}` : ""));
+}
+function caught(message) {
+  lastError = message;
+  showLoads();
+}
+if (DEBUG) {
+  $("kiosk-foot").hidden = false;
+  addEventListener("error", (e) => caught(e.message));
+  addEventListener("unhandledrejection", (e) => caught(String(e.reason?.message ?? e.reason)));
+}
+
+// Where the last status, sources and events are kept, so a reload
+// paints them before the first poll answers.  Storage may be refused
+// or full; the page works without it.
+const LAST_KEY = "kiosk:last";
+function keep(part, value) {
+  try {
+    const kept = JSON.parse(localStorage.getItem(LAST_KEY)) ?? {};
+    kept[part] = { value, at: Date.now() };
+    localStorage.setItem(LAST_KEY, JSON.stringify(kept));
+  } catch (e) {
+    // Not kept: a reload paints once read again.
+  }
+}
+function kept() {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_KEY)) ?? {};
+  } catch (e) {
+    return {};
+  }
+}
+
 // The least room, in CSS pixels inside the inset, the kiosk is drawn
 // full size in.  On less it is scaled down to fit: a player's display
 // zoom can leave a 1920x1080 screen a 1280x720 page.
 const FULL_SIZE = { width: 1440, height: 1080 };
 // The stylesheet's own padding at each edge, in kiosk pixels.
 const EDGE = 12;
-// One of the stylesheet's kiosk pixels in CSS pixels, as `--u`: 1 at
-// full size, less on a smaller page.
-let unitPx = 1;
 // Set `--u` for the room the page has now.  Answers whether it changed.
 function scale() {
   const style = getComputedStyle(document.body);
@@ -138,9 +204,9 @@ const SHORTEST_CHART = 60;
 // sized for.
 const KIOSK_TYPE = 17;
 const UPLOT_TYPE = 12;
-// The range shown unless `?last=` says otherwise, in seconds: six
-// hours, long enough to see the frequency follow the day's temperature.
-const KIOSK_RANGE = 21600;
+// The range shown unless `?last=` says otherwise, in seconds: a day,
+// one turn of the room's temperature, as smartclock's kiosk shows.
+const KIOSK_RANGE = 86400;
 // The shortest refresh, in seconds: the status is polled every second
 // regardless; the charts, sources and events are read at this.
 const KIOSK_FLOOR = 30;
@@ -205,8 +271,12 @@ function syncOf(s) {
   return ["synchronized", ""];
 }
 
-function renderKiosk(s) {
-  const [state, words] = feedState(s);
+// Paint a status; `cached` for the one kept by the last load, shown as
+// last seen until the first poll answers.
+function renderKiosk(s, cached = false) {
+  if (!cached) keep("status", s);
+  showLoads();
+  const [state, words] = cached ? ["stale", "LAST SEEN"] : feedState(s);
   showHtml($("kiosk-head"),
     `<span class="dot ${state}"></span><span>chronyd</span>` +
     (state === "live" ? "" : `<span class="pill ${state}">${esc(words)}</span>`) +
@@ -226,6 +296,7 @@ function renderKiosk(s) {
 }
 
 function lostKiosk(what, why) {
+  showLoads();
   showHtml($("kiosk-head"), `<span class="dot down"></span><span class="pill down">${esc(what)}</span>`);
   update($("kiosk-mode"), "textContent", what);
   update($("kiosk-mode"), "className", "mode bad");
@@ -294,6 +365,8 @@ async function load(signal) {
   showHtml($("kiosk-source-rows"), sourceRows(sources));
   events = [...latest].reverse();
   drawEvents();
+  keep("sources", sources);
+  keep("events", events);
   stack.marks = marked.marks;
   if (!haveUplot) {
     clearStack(stack, NO_UPLOT);
@@ -308,6 +381,27 @@ async function load(signal) {
     overlayChart(...KIOSK_OVERLAY, overlay, (id) => names.get(id) ?? `source ${id}`),
   ];
   drawStack(stack, { x: clock.at, drawn }, "no clock updates in this range");
+}
+
+// Paint what the last load kept, before anything is read: a player
+// that reloads the page then shows the last state, as last seen, not
+// an empty screen.  The status's ages are counted on to now.
+function paintKept() {
+  const last = kept();
+  const status = last.status?.value;
+  if (status) {
+    const since = (Date.now() - last.status.at) / 1000;
+    renderKiosk({
+      ...status,
+      now: status.now + since,
+      status: status.status && { ...status.status, age: status.status.age + since },
+    }, true);
+  }
+  if (last.sources) showHtml($("kiosk-source-rows"), sourceRows(last.sources.value));
+  if (last.events) {
+    events = last.events.value;
+    drawEvents();
+  }
 }
 
 // The window's size the page was last fitted to.
@@ -333,6 +427,7 @@ stackType();
 fitted = `${innerWidth}x${innerHeight}`;
 readRange(KIOSK_RANGE);
 new ResizeObserver(fit).observe(document.body);
+paintKept();
 content({
   floor: KIOSK_FLOOR,
   render: renderKiosk,
