@@ -544,3 +544,23 @@ test("Distribution: percentiles and a histogram", async ({ page }) => {
   await expect(page.locator("#figures .uplot").first()).toBeVisible();
   await expect(page.locator("#figures")).toContainText("%");
 });
+
+test("Distribution: all is every reading, not the latest hour's", async ({ page }) => {
+  // The readings the page's first figures count.
+  const readings = async () => {
+    const cell = page.locator("#figures table").first().locator("tr", { hasText: "readings" }).locator("td");
+    return Number((await cell.textContent()).replace(/\D/g, ""));
+  };
+  await page.goto("/distribution?last=86400&columns=last_offset");
+  await expect(page.locator("#figures table")).toHaveCount(1);
+  const day = await readings();
+  const asked = page.waitForRequest(/\/api\/distribution\?.*from=0/);
+  await page.goto("/distribution?last=all&columns=last_offset");
+  await asked;
+  await expect(page.locator("#figures table")).toHaveCount(1);
+  const all = await readings();
+  const whole = await (await page.request.get("/api/distribution?column=last_offset&from=0")).json();
+  expect(all).toBe(whole.count);
+  // 48 h of the daemon's rows, against a day's.
+  expect(all).toBeGreaterThan(1.5 * day);
+});

@@ -102,10 +102,11 @@ async function ask(url, signal, timeout = QUICK_TIMEOUT) {
 // ------------------------------------------------------------- address
 
 // Put `bounds`' ends, unix seconds, on the query `q`, whole seconds
-// outward; an end left open is the server's to choose.
+// outward; an end left open, null, is the server's to choose.  Zero is
+// an end: `all` starts at it.
 function setBounds(q, bounds) {
-  if (bounds.from) q.set("from", Math.floor(bounds.from));
-  if (bounds.to) q.set("to", Math.ceil(bounds.to));
+  if (bounds.from != null) q.set("from", Math.floor(bounds.from));
+  if (bounds.to != null) q.set("to", Math.ceil(bounds.to));
 }
 
 // Merge `params` into the address without touching the rest of it: a
