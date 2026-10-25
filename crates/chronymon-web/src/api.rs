@@ -12,6 +12,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use chronymon_log::reader::Column;
+use chronymon_log::reader::Key;
 use chronymon_log::reader::Reader;
 use chronymon_log::reader::Table;
 use chronymon_log::reader::Values;
@@ -103,12 +104,18 @@ fn column(table: Table, name: &str) -> Result<Column> {
     })
 }
 
-/// The source a request names, as its ID.
-fn source(query: &str) -> Result<Option<i64>> {
+/// The source a request names: the daemon's ID for a table keyed by
+/// it, the log's name for a log's.
+fn source(query: &str, table: Table) -> Result<Option<Key>> {
     value(query, "source")
         .map(|v| {
-            v.parse::<i64>()
-                .with_context(|| format!("{v} is not a source ID"))
+            if table.by_id() {
+                v.parse::<i64>()
+                    .map(Key::Id)
+                    .with_context(|| format!("{v} is not a source ID"))
+            } else {
+                Ok(Key::Name(v))
+            }
         })
         .transpose()
 }
@@ -205,7 +212,7 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
         bail!("no columns asked for");
     }
     let (window, bounds) = window(&reader, table, query)?;
-    let series = reader.series(table, source(query)?, &columns, window)?;
+    let series = reader.series(table, source(query, table)?.as_ref(), &columns, window)?;
     let plots: Vec<Value> = series
         .plots
         .iter()
@@ -219,8 +226,8 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
 pub(crate) fn overlay(path: &Path, query: &str) -> Result<Value> {
     let reader = open(path)?;
     let table = table(query)?;
-    if !table.per_source() {
-        bail!("{} is not a table of sources", table.name());
+    if !table.by_id() {
+        bail!("{} is not a table of the daemon's sources", table.name());
     }
     let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
     let column = column(table, &name)?;
@@ -306,8 +313,13 @@ pub(crate) fn distribution(path: &Path, query: &str) -> Result<Value> {
     let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
     let column = column(table, &name)?;
     let (window, bounds) = window(&reader, table, query)?;
-    let (values, truncated) =
-        reader.values(column, source(query)?, window.from, window.to, MAX_VALUES)?;
+    let (values, truncated) = reader.values(
+        column,
+        source(query, table)?.as_ref(),
+        window.from,
+        window.to,
+        MAX_VALUES,
+    )?;
     let percentiles: Vec<Value> = PERCENTILES
         .iter()
         .map(|p| json!({ "p": p, "value": percentile(&values, *p) }))

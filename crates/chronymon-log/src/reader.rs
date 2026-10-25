@@ -25,6 +25,7 @@ use rusqlite::Connection;
 use rusqlite::OpenFlags;
 use rusqlite::OptionalExtension as _;
 use rusqlite::params;
+use rusqlite::types::Value;
 
 use crate::error::Error;
 use crate::error::Result;
@@ -61,16 +62,53 @@ pub enum Table {
     NtpSample,
     /// Sources' selection, `selectdata`.
     Selection,
+    /// The local clock, from `tracking.log`: to the second and four
+    /// significant digits, but from before the daemon ran.
+    LogTracking,
+    /// NTP sources' packets, from `measurements.log`.
+    LogMeasurement,
+    /// Sources' regressions, from `statistics.log`, frequencies as
+    /// fractions rather than ppm.
+    LogStatistics,
+    /// Refclocks' samples, from `refclocks.log`, the only record of them.
+    RefclockSample,
+    /// Temperature compensation, from `tempcomp.log`, likewise.
+    TempcompSample,
+}
+
+/// Which source's rows a per-source table is asked for: by the
+/// daemon's ID, or by the address or reference a log names it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Key {
+    /// A row of `source`.
+    Id(i64),
+    /// An address, or a refclock's reference such as `PPS`.
+    Name(String),
+}
+
+impl Key {
+    fn value(key: Option<&Self>) -> Value {
+        match key {
+            None => Value::Null,
+            Some(Self::Id(id)) => Value::Integer(*id),
+            Some(Self::Name(name)) => Value::Text(name.clone()),
+        }
+    }
 }
 
 impl Table {
     /// Every chartable table.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 10] = [
         Self::Tracking,
         Self::SourceSample,
         Self::SourceStats,
         Self::NtpSample,
         Self::Selection,
+        Self::LogTracking,
+        Self::LogMeasurement,
+        Self::LogStatistics,
+        Self::RefclockSample,
+        Self::TempcompSample,
     ];
 
     /// Its name, as the schema and the web view's requests have it.
@@ -81,6 +119,11 @@ impl Table {
             Self::SourceStats => "source_stats",
             Self::NtpSample => "ntp_sample",
             Self::Selection => "selection",
+            Self::LogTracking => "log_tracking",
+            Self::LogMeasurement => "log_measurement",
+            Self::LogStatistics => "log_statistics",
+            Self::RefclockSample => "refclock_sample",
+            Self::TempcompSample => "tempcomp_sample",
         }
     }
 
@@ -96,13 +139,34 @@ impl Table {
         match self {
             Self::Tracking => "reference_time",
             Self::SourceSample => "sample_time",
-            Self::SourceStats | Self::NtpSample | Self::Selection => "at",
+            _ => "at",
+        }
+    }
+
+    /// The column naming whose a row is, for a per-source table.
+    pub const fn key(self) -> Option<&'static str> {
+        match self {
+            Self::Tracking | Self::LogTracking | Self::TempcompSample => None,
+            Self::SourceSample | Self::SourceStats | Self::NtpSample | Self::Selection => {
+                Some("source_id")
+            }
+            Self::LogMeasurement | Self::LogStatistics => Some("source"),
+            Self::RefclockSample => Some("reference"),
         }
     }
 
     /// Whether its rows are a source's.
     pub const fn per_source(self) -> bool {
-        !matches!(self, Self::Tracking)
+        self.key().is_some()
+    }
+
+    /// Whether its rows are keyed by the daemon's source IDs, rather
+    /// than the names a log gives.
+    pub const fn by_id(self) -> bool {
+        matches!(
+            self,
+            Self::SourceSample | Self::SourceStats | Self::NtpSample | Self::Selection
+        )
     }
 
     /// The numeric columns that may be charted.  Checked against this
@@ -151,6 +215,48 @@ impl Table {
                 "stratum",
             ],
             Self::Selection => &["score", "low_limit", "high_limit"],
+            Self::LogTracking => &[
+                "frequency",
+                "skew",
+                "offset",
+                "offset_sd",
+                "remaining_correction",
+                "root_delay",
+                "root_dispersion",
+                "max_error",
+                "stratum",
+                "combined_sources",
+            ],
+            Self::LogMeasurement => &[
+                "offset",
+                "peer_delay",
+                "peer_dispersion",
+                "root_delay",
+                "root_dispersion",
+                "score",
+                "local_poll",
+                "remote_poll",
+                "stratum",
+            ],
+            Self::LogStatistics => &[
+                "estimated_offset",
+                "offset_sd",
+                "standard_deviation",
+                "residual_frequency",
+                "skew",
+                "stress",
+                "samples",
+                "runs",
+                "asymmetry",
+            ],
+            Self::RefclockSample => &[
+                "cooked_offset",
+                "raw_offset",
+                "dispersion",
+                "pulse",
+                "driver_polls",
+            ],
+            Self::TempcompSample => &["temperature", "compensation"],
         }
     }
 
@@ -311,6 +417,19 @@ pub struct Source {
     pub ntp: Option<Values>,
 }
 
+/// A source a log names, and what the table holds of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Named {
+    /// Its address, or a refclock's reference.
+    pub name: String,
+    /// Its rows.
+    pub rows: i64,
+    /// Its first and last rows' times, unix seconds.
+    pub first: f64,
+    /// See `first`.
+    pub last: f64,
+}
+
 /// One event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
@@ -413,6 +532,30 @@ impl Reader {
             .map(|(first, last)| (seconds(first), seconds(last))))
     }
 
+    /// Every source a per-source log table names, by name, with its
+    /// rows: the refclocks of `refclock_sample`, say.
+    pub fn keys(&self, table: Table) -> Result<Vec<Named>> {
+        let Some(key) = table.key().filter(|_| !table.by_id()) else {
+            return Ok(Vec::new());
+        };
+        let time = table.time();
+        let sql = format!(
+            "SELECT {key}, COUNT(*), MIN({time}), MAX({time}) FROM {} GROUP BY {key} ORDER BY {key}",
+            table.name()
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        Ok(statement
+            .query_map([], |row| {
+                Ok(Named {
+                    name: row.get(0)?,
+                    rows: row.get(1)?,
+                    first: seconds(row.get(2)?),
+                    last: seconds(row.get(3)?),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Every source, the most recently seen first, each with the
     /// latest of each report.
     pub fn sources(&self) -> Result<Vec<Source>> {
@@ -489,7 +632,7 @@ impl Reader {
     pub fn series(
         &self,
         table: Table,
-        source_id: Option<i64>,
+        source: Option<&Key>,
         columns: &[Column],
         window: Window,
     ) -> Result<Series> {
@@ -505,25 +648,19 @@ impl Reader {
             .map(|c| format!("AVG({c}), MIN({c}), MAX({c})"))
             .collect::<Vec<_>>()
             .join(", ");
-        let source = if table.per_source() {
-            "AND (?4 IS NULL OR source_id = ?4)"
-        } else {
-            // Always true: the source parameter is bound whatever the
-            // table, and SQLite refuses one a statement does not use.
-            "AND (?4 IS NULL OR ?4 IS NOT NULL)"
-        };
+        let filter = source_filter(table, 4);
         let sql = format!(
             // Divided by the span plus one, so a row exactly at `to`
             // falls in the last bucket rather than one past it.
             "SELECT CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
                     AVG({time}), {aggregates}
              FROM {}
-             WHERE {time} >= ?1 AND {time} <= ?2 {source}
+             WHERE {time} >= ?1 AND {time} <= ?2 {filter}
              GROUP BY bucket ORDER BY bucket",
             table.name()
         );
         let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query(params![from, to, points, source_id])?;
+        let mut rows = statement.query(params![from, to, points, Key::value(source)])?;
         let mut buckets = Vec::new();
         while let Some(row) = rows.next()? {
             let values = (0..columns.len())
@@ -567,8 +704,9 @@ impl Reader {
         Ok(series)
     }
 
-    /// One column of every source of a per-source `table` over
-    /// `window`, on one grid of buckets, a line per source.
+    /// One column of every source of a table keyed by the daemon's
+    /// source IDs over `window`, on one grid of buckets, a line per
+    /// source.
     pub fn overlay(&self, column: Column, window: Window) -> Result<Overlay> {
         let table = column.table;
         let column = column.name;
@@ -649,7 +787,7 @@ impl Reader {
     pub fn values(
         &self,
         column: Column,
-        source_id: Option<i64>,
+        source: Option<&Key>,
         from: f64,
         to: f64,
         limit: usize,
@@ -662,22 +800,20 @@ impl Reader {
         }
         .stored();
         let time = table.time();
-        let source = if table.per_source() {
-            "AND (?3 IS NULL OR source_id = ?3)"
-        } else {
-            // Always true, as in `series`.
-            "AND (?3 IS NULL OR ?3 IS NOT NULL)"
-        };
+        let filter = source_filter(table, 3);
         let sql = format!(
-            "SELECT {} FROM {} WHERE {time} >= ?1 AND {time} <= ?2 {source}
+            // A refclock's filtered sample has no raw offset: NULL, and
+            // not a reading.
+            "SELECT {column} FROM {table} WHERE {time} >= ?1 AND {time} <= ?2 {filter}
+               AND {column} IS NOT NULL
              ORDER BY {time} DESC LIMIT ?4",
-            column.name,
-            table.name()
+            column = column.name,
+            table = table.name()
         );
         let mut statement = self.connection.prepare(&sql)?;
         let asked = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
         let mut values = statement
-            .query_map(params![from, to, source_id, asked], |row| {
+            .query_map(params![from, to, Key::value(source), asked], |row| {
                 row.get::<_, f64>(0)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -713,6 +849,17 @@ impl Reader {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
+/// The clause choosing one source's rows, by parameter `n`, or every
+/// row when it is NULL.  Bound whatever the table, since SQLite refuses
+/// a parameter a statement does not use, so a table without sources
+/// gets a clause that is always true.
+fn source_filter(table: Table, n: usize) -> String {
+    match table.key() {
+        Some(key) => format!("AND (?{n} IS NULL OR {key} = ?{n})"),
+        None => format!("AND (?{n} IS NULL OR ?{n} IS NOT NULL)"),
     }
 }
 
@@ -770,6 +917,8 @@ mod tests {
     use jiff::Timestamp;
 
     use super::*;
+    use crate::chrony_log::Line;
+    use crate::chrony_log::RefclockLine;
     use crate::writer::ChronydState;
     use crate::writer::Log;
 
@@ -898,6 +1047,61 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_log_table_by_its_names() {
+        let mut db = Database::new("logs");
+        db.log
+            .write(|batch| {
+                for second in 0..20 {
+                    for (reference, raw) in [("PPS", Some(-15.0)), ("NMEA", None)] {
+                        batch.log_line(&Line::Refclock(RefclockLine {
+                            at: at(second),
+                            reference: reference.to_owned(),
+                            driver_polls: Some(1),
+                            leap: 'N',
+                            pulse: Some(true),
+                            raw_offset: raw,
+                            cooked_offset: second as f64 * 1e-9,
+                            dispersion: 1e-6,
+                        }))?;
+                    }
+                }
+                Ok(())
+            })
+            .expect("written");
+        let reader = db.reader();
+        let names: Vec<String> = reader
+            .keys(Table::RefclockSample)
+            .expect("keys")
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        assert_eq!(names, ["NMEA", "PPS"]);
+        assert!(reader.keys(Table::SourceSample).expect("keys").is_empty());
+        let pps = Key::Name("PPS".to_owned());
+        let cooked = column(Table::RefclockSample, "cooked_offset");
+        let series = reader
+            .series(
+                Table::RefclockSample,
+                Some(&pps),
+                &[cooked],
+                window(0, 19, 20),
+            )
+            .expect("a series");
+        assert_eq!(series.at.len(), 20);
+        // NMEA's raw offsets are NULL, filtered samples; none is a reading.
+        let raw = column(Table::RefclockSample, "raw_offset");
+        let nmea = Key::Name("NMEA".to_owned());
+        let (values, _) = reader
+            .values(raw, Some(&nmea), START as f64, (START + 19) as f64, 100)
+            .expect("values");
+        assert!(values.is_empty());
+        let (values, _) = reader
+            .values(raw, Some(&pps), START as f64, (START + 19) as f64, 100)
+            .expect("values");
+        assert_eq!(values.len(), 20);
+    }
+
+    #[test]
     fn only_listed_columns() {
         assert!(Table::Tracking.column("frequency").is_some());
         assert!(
@@ -977,7 +1181,7 @@ mod tests {
         let series = reader
             .series(
                 Table::SourceSample,
-                Some(1),
+                Some(&Key::Id(1)),
                 &[offset],
                 window(0, 3600, 1500),
             )
@@ -987,7 +1191,7 @@ mod tests {
         let other = reader
             .series(
                 Table::SourceSample,
-                Some(2),
+                Some(&Key::Id(2)),
                 &[offset],
                 window(0, 3600, 1500),
             )
