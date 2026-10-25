@@ -11,8 +11,8 @@
 # Seconds between polls of chronyd.
 #CHRONYMOND_INTERVAL=1
 
-# chronyd's configuration, read for its makestep threshold, which
-# decides when a correction is recorded as a step.
+# chronyd's configuration, read for its makestep, which decides when a
+# correction is recorded as a step rather than a large offset.
 #CHRONYMOND_CHRONY_CONFIG=/etc/chrony/chrony.conf
 
 # chronyd's log directory, and seconds between reads of it.  chronyd

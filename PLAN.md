@@ -95,9 +95,21 @@ From chrony 4.2 to 4.9's source and `chrony-candm` 0.1.3's,
 ### Events
 
 Derived at poll: chronyd restart (`chronyd.pid` changing, or the
-socket refusing then answering), a step (the correction jumping past
-chronyd's own `makestep` threshold, 1 s if none), reference change,
-source added or removed, leap change, the daemon's start and stop.
+socket refusing then answering), a step, a large offset, reference
+change, source added or removed, leap change, the daemon's start and
+stop.
+
+A step or a large offset: an update's last offset past `makestep`'s
+threshold (1 s if none).  A step only as chronyd would make one: in
+its first `limit` updates, any if negative, none without `makestep`
+(`is_step_limit_reached`, `reference.c`; `conf.c`).  Otherwise slewed:
+a large offset.  An update is the last offset or its RMS changing; both
+0 is a chronyd not yet updated, which starts the count.  A chronyd
+already updating when the daemon first saw it, or back unseen, has an
+unknown count: a large offset, unless the limit is negative.  Unseen:
+`-R` (no limited steps), `chronyc makestep`, two updates within one
+poll.
+
 The host's:
 
 - **Boot**: `boot_id` differs from the last run's.

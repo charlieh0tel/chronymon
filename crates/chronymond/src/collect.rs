@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use chronymon::event::EventKind;
-use chronymon::units::Seconds;
 use chronymon_control::client::Client;
 use chronymon_control::error::DecodeError;
 use chronymon_control::error::Error;
@@ -23,6 +22,8 @@ use chronymon_log::writer::Batch;
 use chronymon_log::writer::ChronydState;
 use jiff::Timestamp;
 
+use crate::config::DEFAULT_LARGE_OFFSET;
+use crate::config::MakeStep;
 use crate::host::Process;
 
 /// The reports a poll reads, so tests can stand in for chronyd.
@@ -162,7 +163,10 @@ struct Seen {
 /// changed.
 #[derive(Debug)]
 pub(crate) struct Collector {
-    step_threshold: Seconds,
+    make_step: Option<MakeStep>,
+    /// chronyd's clock updates since it started, as far as seen; `None`
+    /// when it was running before they could be counted.
+    updates: Option<u32>,
     /// The last poll's state of chronyd; `None` before the first poll.
     state: Option<ChronydState>,
     /// chronyd's PID as last seen running.
@@ -178,9 +182,10 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
-    pub(crate) fn new(step_threshold: Seconds) -> Self {
+    pub(crate) fn new(make_step: Option<MakeStep>) -> Self {
         Self {
-            step_threshold,
+            make_step,
+            updates: None,
             state: None,
             pid: None,
             tracking: None,
@@ -229,12 +234,15 @@ impl Collector {
             Ok(snapshot) => {
                 if self.state.is_some_and(|state| state != ChronydState::Up) {
                     batch.event(at, EventKind::ChronydUp, None, None)?;
+                    // It may have restarted, and updated, unseen.
+                    self.updates = None;
                 }
                 if let (Some(before), Some(now)) = (self.pid, pid)
                     && before != now
                 {
                     let detail = format!("pid {before} to {now}");
                     batch.event(at, EventKind::ChronydRestart, None, Some(&detail))?;
+                    self.updates = None;
                 }
                 self.state = Some(ChronydState::Up);
                 self.pid = pid.or(self.pid);
@@ -273,6 +281,12 @@ impl Collector {
         if before != Some(*tracking) {
             batch.tracking_report(at, tracking)?;
         }
+        if never_updated(tracking) {
+            self.updates = Some(0);
+        } else if before.is_some_and(|before| updated(&before, tracking)) {
+            self.updates = self.updates.map(|n| n.saturating_add(1));
+            self.record_correction(batch, at, tracking)?;
+        }
         if before.is_some_and(|before| before.reference_time == tracking.reference_time) {
             return Ok(());
         }
@@ -280,10 +294,6 @@ impl Collector {
         let Some(before) = before else {
             return Ok(());
         };
-        if tracking.last_offset.get().abs() > self.step_threshold.get() {
-            let detail = format!("{} s", tracking.last_offset.get());
-            batch.event(at, EventKind::Step, None, Some(&detail))?;
-        }
         if before.reference_id != tracking.reference_id {
             let detail = format!("{} to {}", before.address, tracking.address);
             batch.event(at, EventKind::ReferenceChange, None, Some(&detail))?;
@@ -293,6 +303,32 @@ impl Collector {
             batch.event(at, EventKind::LeapChange, None, Some(&detail))?;
         }
         Ok(())
+    }
+
+    /// A step or a large offset, for an update's correction past the
+    /// threshold: a step only where `makestep` allows one.
+    fn record_correction(
+        &self,
+        batch: &Batch<'_>,
+        at: Timestamp,
+        tracking: &Tracking,
+    ) -> chronymon_log::error::Result<()> {
+        let threshold = self
+            .make_step
+            .map_or(DEFAULT_LARGE_OFFSET, |make_step| make_step.threshold);
+        if tracking.last_offset.get().abs() <= threshold.get() {
+            return Ok(());
+        }
+        let kind = if self
+            .make_step
+            .is_some_and(|make_step| make_step.steps_on(self.updates))
+        {
+            EventKind::Step
+        } else {
+            EventKind::LargeOffset
+        };
+        let detail = format!("{} s", tracking.last_offset.get());
+        batch.event(at, kind, None, Some(&detail))
     }
 
     fn record_sources(
@@ -373,6 +409,20 @@ impl Collector {
     }
 }
 
+/// Whether chronyd has not updated the clock since it started: its last
+/// offset and the RMS of its offsets are both still 0, which every
+/// update changes (`REF_SetReference`, `reference.c`, 4.3 to 4.9).
+fn never_updated(tracking: &Tracking) -> bool {
+    tracking.last_offset.get() == 0.0 && tracking.rms_offset.get() == 0.0
+}
+
+/// Whether chronyd updated the clock between two reports.  Not the
+/// reference time, which also changes when chronyd loses or regains
+/// sync, or serves its local reference.
+fn updated(before: &Tracking, now: &Tracking) -> bool {
+    before.last_offset != now.last_offset || before.rms_offset != now.rms_offset
+}
+
 /// Whether selection treats a source differently: anything but the
 /// age of its last sample, which grows every second.
 fn selection_changed(before: &SelectData, now: &SelectData) -> bool {
@@ -428,6 +478,7 @@ pub(crate) mod tests {
     use std::time::Duration;
 
     use chronymon::units::Ppm;
+    use chronymon::units::Seconds;
     use chronymon_control::report::Leap;
     use chronymon_control::report::SelectOptions;
     use chronymon_control::report::SourceState;
@@ -499,6 +550,12 @@ pub(crate) mod tests {
 
     const SERVER: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
 
+    /// Debian's and Ubuntu's `makestep`.
+    const MAKE_STEP: Option<MakeStep> = Some(MakeStep {
+        threshold: Seconds::new(1.0),
+        limit: 3,
+    });
+
     fn tracking(reference_second: i64, last_offset: f64) -> Tracking {
         Tracking {
             reference_id: ReferenceId(0xc000_0201),
@@ -515,6 +572,16 @@ pub(crate) mod tests {
             root_delay: Seconds::new(0.01),
             root_dispersion: Seconds::new(0.001),
             last_update_interval: Seconds::new(64.0),
+        }
+    }
+
+    /// chronyd's tracking before its first clock update.
+    fn fresh() -> Tracking {
+        Tracking {
+            reference_time: Timestamp::UNIX_EPOCH,
+            last_offset: Seconds::new(0.0),
+            rms_offset: Seconds::new(0.0),
+            ..tracking(0, 0.0)
         }
     }
 
@@ -612,7 +679,7 @@ pub(crate) mod tests {
     #[test]
     fn writes_only_what_changed() {
         let mut db = Database::new("changes");
-        let mut collector = Collector::new(Seconds::new(1.0));
+        let mut collector = Collector::new(MAKE_STEP);
         let running = Process::Running(100);
         for (second, read) in [
             (0, snapshot(tracking(0, 1e-6), vec![source(5, 10)])),
@@ -642,9 +709,9 @@ pub(crate) mod tests {
     #[test]
     fn derives_events() {
         let mut db = Database::new("events");
-        let mut collector = Collector::new(Seconds::new(1.0));
+        let mut collector = Collector::new(MAKE_STEP);
         let polls = [
-            (snapshot(tracking(0, 0.0), vec![]), Process::Running(100)),
+            (snapshot(fresh(), vec![]), Process::Running(100)),
             // A source appears.
             (
                 snapshot(tracking(0, 0.0), vec![source(1, 1)]),
@@ -659,7 +726,7 @@ pub(crate) mod tests {
             (down(), Process::Dead(100)),
             (down(), Process::Dead(100)),
             // and comes back as another process, without the source.
-            (snapshot(tracking(5, 0.0), vec![]), Process::Running(200)),
+            (snapshot(tracking(5, 1e-6), vec![]), Process::Running(200)),
         ];
         for (second, (read, process)) in (0..).zip(polls) {
             db.log
@@ -682,6 +749,81 @@ pub(crate) mod tests {
             .query_row("SELECT state FROM status", [], |row| row.get(0))
             .expect("a status");
         assert_eq!(state, "up");
+    }
+
+    /// The events of `collector` recording each poll's tracking, from
+    /// chronyd at the PID beside it, one poll a second.
+    fn corrections(
+        name: &str,
+        mut collector: Collector,
+        polls: impl IntoIterator<Item = (Tracking, u32)>,
+    ) -> Vec<String> {
+        let mut db = Database::new(name);
+        for (second, (tracking, pid)) in (0..).zip(polls) {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(tracking, vec![]),
+                        Process::Running(pid),
+                    )
+                })
+                .expect("recorded");
+        }
+        db.events()
+    }
+
+    #[test]
+    fn steps_only_where_makestep_would() {
+        let polls = [
+            (fresh(), 100),
+            (tracking(1, 1.5), 100),
+            // Read again, not updated.
+            (tracking(1, 1.5), 100),
+            // Sync lost: the reference time changes, the offset not.
+            (
+                Tracking {
+                    reference_time: Timestamp::UNIX_EPOCH,
+                    ..tracking(1, 1.5)
+                },
+                100,
+            ),
+            (tracking(3, 1e-3), 100),
+            (tracking(4, 2e-3), 100),
+            // The fourth update: slewed.
+            (tracking(5, -2.0), 100),
+            // A restart, and its first update.
+            (fresh(), 200),
+            (tracking(7, 3.0), 200),
+        ];
+        assert_eq!(
+            corrections("makestep", Collector::new(MAKE_STEP), polls),
+            ["step", "large_offset", "chronyd_restart", "step"]
+        );
+        // No makestep: chronyd never steps.
+        assert_eq!(
+            corrections("no-makestep", Collector::new(None), polls),
+            [
+                "large_offset",
+                "large_offset",
+                "chronyd_restart",
+                "large_offset"
+            ]
+        );
+        // Running before the daemon: its updates were not counted.
+        assert_eq!(
+            corrections("unknown", Collector::new(MAKE_STEP), polls[1..7].to_vec()),
+            ["large_offset"]
+        );
+        let always = Some(MakeStep {
+            threshold: Seconds::new(1.0),
+            limit: -1,
+        });
+        assert_eq!(
+            corrections("always", Collector::new(always), polls[1..7].to_vec()),
+            ["step"]
+        );
     }
 
     /// chronyd answering with `sources`, by index.
@@ -749,7 +891,7 @@ pub(crate) mod tests {
             sources: vec![placeholder, source(5, 10)],
             remove: None,
         };
-        let snapshot = Collector::new(Seconds::new(1.0))
+        let snapshot = Collector::new(MAKE_STEP)
             .read(&mut fake)
             .expect("a snapshot");
         let sources = snapshot.sources.expect("sources");
@@ -775,7 +917,7 @@ pub(crate) mod tests {
         let addresses: Vec<IpAddr> = (1..=3)
             .map(|host| IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, host)))
             .collect();
-        let collector = Collector::new(Seconds::new(1.0));
+        let collector = Collector::new(MAKE_STEP);
         // The source being read goes: the next one's reports take its
         // index.  Then one not yet read goes: the one after it is moved
         // past.
@@ -795,7 +937,7 @@ pub(crate) mod tests {
     #[test]
     fn reports_reach_lost_and_samples_gone() {
         let mut db = Database::new("report");
-        let mut collector = Collector::new(Seconds::new(1.0));
+        let mut collector = Collector::new(MAKE_STEP);
         let unreached = |age, reachability| {
             let mut s = source(age, 10);
             s.data.reachability = reachability;
@@ -849,7 +991,7 @@ pub(crate) mod tests {
     #[test]
     fn a_report_waits_for_a_change() {
         let mut db = Database::new("report-age");
-        let mut collector = Collector::new(Seconds::new(1.0));
+        let mut collector = Collector::new(MAKE_STEP);
         for (second, age) in [(0, 5), (1, 6)] {
             db.log
                 .write(|batch| {
@@ -872,7 +1014,7 @@ pub(crate) mod tests {
     #[test]
     fn extrapolation_is_not_a_new_regression() {
         let mut db = Database::new("extrapolated");
-        let mut collector = Collector::new(Seconds::new(1.0));
+        let mut collector = Collector::new(MAKE_STEP);
         for second in 0..4 {
             // One regression, its offset and error extrapolated a second
             // further each poll, as chronyd reports them; a new sample,
@@ -902,7 +1044,7 @@ pub(crate) mod tests {
     #[test]
     fn tracking_is_reported_as_chronyd_last_said() {
         let mut db = Database::new("tracking-report");
-        let mut collector = Collector::new(Seconds::new(1.0));
+        let mut collector = Collector::new(MAKE_STEP);
         // chronyd's while unsynchronized (`REF_GetReferenceParams`,
         // chrony 4.8 `reference.c:1216`).
         let unsynchronized = Tracking {
