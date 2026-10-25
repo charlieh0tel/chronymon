@@ -22,9 +22,13 @@ use rusqlite::params;
 use crate::chrony_log::Line;
 use crate::error::Error;
 use crate::error::Result;
+use crate::schema::LOG_TABLES;
+use crate::schema::LOG_TABLES_ASIDE;
+use crate::schema::LOG_TABLES_BACK;
 use crate::schema::META;
 use crate::schema::TABLES;
 use crate::schema::VERSION;
+use crate::schema::WHOLE_LINES;
 use crate::text;
 use crate::timestamp::to_stored;
 
@@ -52,6 +56,30 @@ impl ChronydState {
             Self::Unsupported => "unsupported",
         }
     }
+}
+
+/// A file as its file system knows it, the same across renames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileId {
+    /// The device holding it.
+    pub device: u64,
+    /// Its inode there.
+    pub inode: u64,
+}
+
+/// How far a log file was read, and how to tell it is still the file
+/// read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogFile {
+    /// Its length then.
+    pub length: u64,
+    /// The bytes read, up to the last whole line.
+    pub read: u64,
+    /// The bytes just before `read`: gone or changed, the file is
+    /// another.
+    pub fingerprint: Vec<u8>,
+    /// Whether its header was refused, so none of it is read.
+    pub rejected: bool,
 }
 
 /// The database, open for writing.
@@ -108,7 +136,16 @@ impl Log {
                 supported: VERSION,
             });
         }
+        // Schema 2 and 3's log tables, keyed by part of a line, set aside
+        // for [`TABLES`] to make them anew, then copied in.
+        let rekey = found.is_some_and(|found| (LOG_TABLES..WHOLE_LINES).contains(&found));
+        if rekey {
+            transaction.execute_batch(LOG_TABLES_ASIDE)?;
+        }
         transaction.execute_batch(TABLES)?;
+        if rekey {
+            transaction.execute_batch(LOG_TABLES_BACK)?;
+        }
         transaction.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -491,34 +528,45 @@ impl Batch<'_> {
         Ok(inserted > 0)
     }
 
-    /// How far the log file with `inode` was read: its length then, and
-    /// the bytes read, up to the last whole line.
-    pub fn log_file(&self, inode: u64) -> Result<Option<(u64, u64)>> {
-        let found: Option<(i64, i64)> = self
+    /// How far the log file `id` was read.
+    pub fn log_file(&self, id: FileId) -> Result<Option<LogFile>> {
+        let found: Option<(i64, i64, Vec<u8>, bool)> = self
             .transaction
             .query_row(
-                "SELECT length, read FROM log_file WHERE inode = ?1",
-                params![stored_u64(inode)?],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                "SELECT length, read, fingerprint, rejected FROM log_file
+                 WHERE device = ?1 AND inode = ?2",
+                params![stored_u64(id.device)?, stored_u64(id.inode)?],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
         found
-            .map(|(length, read)| Ok((loaded_u64(length)?, loaded_u64(read)?)))
+            .map(|(length, read, fingerprint, rejected)| {
+                Ok(LogFile {
+                    length: loaded_u64(length)?,
+                    read: loaded_u64(read)?,
+                    fingerprint,
+                    rejected,
+                })
+            })
             .transpose()
     }
 
-    /// Record how far the log file with `inode`, now at `path`, was
-    /// read.
-    pub fn set_log_file(&self, inode: u64, path: &str, length: u64, read: u64) -> Result<()> {
+    /// Record how far the log file `id`, now at `path`, was read.
+    pub fn set_log_file(&self, id: FileId, path: &str, file: &LogFile) -> Result<()> {
         self.transaction.execute(
-            "INSERT INTO log_file (inode, path, length, read) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (inode) DO UPDATE SET path = excluded.path,
-                 length = excluded.length, read = excluded.read",
+            "INSERT INTO log_file (device, inode, path, length, read, fingerprint, rejected)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (device, inode) DO UPDATE SET path = excluded.path,
+                 length = excluded.length, read = excluded.read,
+                 fingerprint = excluded.fingerprint, rejected = excluded.rejected",
             params![
-                stored_u64(inode)?,
+                stored_u64(id.device)?,
+                stored_u64(id.inode)?,
                 path,
-                stored_u64(length)?,
-                stored_u64(read)?
+                stored_u64(file.length)?,
+                stored_u64(file.read)?,
+                file.fingerprint,
+                file.rejected,
             ],
         )?;
         Ok(())
@@ -653,6 +701,154 @@ mod tests {
             .expect("a report");
         assert_eq!((rows, sample_time, measurement), (1, None, None));
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn rekeys_the_log_tables_of_schema_3() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v3-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let log = Log::open(&path).expect("created");
+            // Back to schema 3's log tables, keyed by part of a line, and
+            // its checkpoints by inode alone.
+            log.connection
+                .execute_batch(
+                    "DROP TABLE log_tracking; DROP TABLE log_measurement;
+                     DROP TABLE log_statistics; DROP TABLE refclock_sample;
+                     DROP TABLE tempcomp_sample; DROP TABLE log_file;
+                     CREATE TABLE log_tracking (at INTEGER NOT NULL, reference TEXT NOT NULL,
+                         stratum INTEGER NOT NULL, frequency REAL NOT NULL, skew REAL NOT NULL,
+                         offset REAL NOT NULL, leap TEXT NOT NULL,
+                         combined_sources INTEGER NOT NULL, offset_sd REAL NOT NULL,
+                         remaining_correction REAL NOT NULL, root_delay REAL NOT NULL,
+                         root_dispersion REAL NOT NULL, max_error REAL NOT NULL,
+                         UNIQUE (at, reference, offset, frequency)) STRICT;
+                     CREATE TABLE log_measurement (at INTEGER NOT NULL, source TEXT NOT NULL,
+                         leap TEXT NOT NULL, stratum INTEGER NOT NULL, tests INTEGER NOT NULL,
+                         local_poll INTEGER NOT NULL, remote_poll INTEGER NOT NULL,
+                         score REAL NOT NULL, offset REAL NOT NULL, peer_delay REAL NOT NULL,
+                         peer_dispersion REAL NOT NULL, root_delay REAL NOT NULL,
+                         root_dispersion REAL NOT NULL, reference_id INTEGER NOT NULL,
+                         mode INTEGER NOT NULL, interleaved INTEGER NOT NULL,
+                         transmit_timestamp_source TEXT NOT NULL,
+                         receive_timestamp_source TEXT NOT NULL,
+                         UNIQUE (at, source, offset, peer_delay)) STRICT;
+                     CREATE INDEX log_measurement_source ON log_measurement(source, at);
+                     CREATE TABLE log_statistics (at INTEGER NOT NULL, source TEXT NOT NULL,
+                         standard_deviation REAL NOT NULL, estimated_offset REAL NOT NULL,
+                         offset_sd REAL NOT NULL, residual_frequency REAL NOT NULL,
+                         skew REAL NOT NULL, stress REAL NOT NULL, samples INTEGER NOT NULL,
+                         best_start INTEGER NOT NULL, runs INTEGER NOT NULL,
+                         asymmetry REAL NOT NULL,
+                         UNIQUE (at, source, samples, estimated_offset)) STRICT;
+                     CREATE INDEX log_statistics_source ON log_statistics(source, at);
+                     CREATE TABLE refclock_sample (at INTEGER NOT NULL, reference TEXT NOT NULL,
+                         driver_polls INTEGER, leap TEXT NOT NULL, pulse INTEGER,
+                         raw_offset REAL, cooked_offset REAL NOT NULL,
+                         dispersion REAL NOT NULL,
+                         UNIQUE (at, reference, cooked_offset)) STRICT;
+                     CREATE TABLE tempcomp_sample (at INTEGER NOT NULL,
+                         temperature REAL NOT NULL, compensation REAL NOT NULL,
+                         UNIQUE (at, temperature, compensation)) STRICT;
+                     CREATE TABLE log_file (inode INTEGER PRIMARY KEY, path TEXT NOT NULL,
+                         length INTEGER NOT NULL, read INTEGER NOT NULL) STRICT;
+                     INSERT INTO refclock_sample VALUES (1, 'PPS', 0, 'N', 1, 1e-6, 1e-6, 1e-9);
+                     INSERT INTO log_file VALUES (7, 'refclocks.log', 100, 100);
+                     UPDATE meta SET value = '3' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let mut log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        let count = |log: &Log, sql: &str| -> i64 {
+            log.connection
+                .query_row(sql, [], |row| row.get(0))
+                .expect("a count")
+        };
+        assert_eq!(count(&log, "SELECT COUNT(*) FROM refclock_sample"), 1);
+        // Every file to be read again, under the new keys.
+        assert_eq!(count(&log, "SELECT COUNT(*) FROM log_file"), 0);
+        assert_eq!(
+            count(
+                &log,
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'old_%'"
+            ),
+            0
+        );
+        // The filtered sample schema 3 took for the raw one.
+        let filtered = Line::Refclock(crate::chrony_log::RefclockLine {
+            at: Timestamp::new(0, 1).expect("in range"),
+            reference: "PPS".to_owned(),
+            driver_polls: None,
+            leap: 'N',
+            pulse: None,
+            raw_offset: None,
+            cooked_offset: 1e-6,
+            dispersion: 1e-9,
+        });
+        assert!(
+            log.write(|batch| batch.log_line(&filtered))
+                .expect("written")
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn keys_a_refclock_line_whole() {
+        let mut log = Log::in_memory().expect("a database");
+        let raw = crate::chrony_log::RefclockLine {
+            at: Timestamp::new(1_800_000_000, 123_000).expect("in range"),
+            reference: "PPS".to_owned(),
+            driver_polls: Some(0),
+            leap: 'N',
+            pulse: Some(true),
+            raw_offset: Some(1e-6),
+            cooked_offset: 1e-6,
+            dispersion: 1e-9,
+        };
+        let filtered = Line::Refclock(crate::chrony_log::RefclockLine {
+            driver_polls: None,
+            pulse: None,
+            raw_offset: None,
+            ..raw.clone()
+        });
+        let raw = Line::Refclock(raw);
+        let written = log
+            .write(|batch| {
+                Ok([
+                    batch.log_line(&raw)?,
+                    batch.log_line(&filtered)?,
+                    batch.log_line(&raw)?,
+                    batch.log_line(&filtered)?,
+                ])
+            })
+            .expect("written");
+        assert_eq!(written, [true, true, false, false]);
+    }
+
+    #[test]
+    fn records_where_a_log_file_was_read() {
+        let mut log = Log::in_memory().expect("a database");
+        let id = FileId {
+            device: 2049,
+            inode: 7,
+        };
+        let file = LogFile {
+            length: 120,
+            read: 100,
+            fingerprint: b"line\n".to_vec(),
+            rejected: true,
+        };
+        let found = log
+            .write(|batch| {
+                batch.set_log_file(id, "tracking.log", &file)?;
+                batch.log_file(id)
+            })
+            .expect("written");
+        assert_eq!(found, Some(file));
     }
 
     #[test]

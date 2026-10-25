@@ -9,7 +9,7 @@
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
@@ -19,6 +19,43 @@ pub const LOG_TABLES: i64 = 2;
 /// empty, on open, likewise; its sources' latest reports are their
 /// latest samples' until the daemon next polls.
 pub const SOURCE_REPORT: i64 = 3;
+
+/// The first schema keying a log's lines by the whole line, and its
+/// files by device, inode and the bytes before where reading stopped.
+/// An older database's log tables are rebuilt on open, their rows
+/// kept, and every log file read again from its start: the lines the
+/// older keys had taken for one another are found again, and those
+/// already in are not written twice.
+pub const WHOLE_LINES: i64 = 4;
+
+/// Schema 3's log tables renamed out of [`TABLES`]' way, the indexes
+/// that went with them dropped, and the checkpoints, by inode alone,
+/// dropped.
+pub(crate) const LOG_TABLES_ASIDE: &str = "
+    DROP INDEX log_measurement_source;
+    DROP INDEX log_statistics_source;
+    ALTER TABLE log_tracking RENAME TO old_log_tracking;
+    ALTER TABLE log_measurement RENAME TO old_log_measurement;
+    ALTER TABLE log_statistics RENAME TO old_log_statistics;
+    ALTER TABLE refclock_sample RENAME TO old_refclock_sample;
+    ALTER TABLE tempcomp_sample RENAME TO old_tempcomp_sample;
+    DROP TABLE log_file;
+";
+
+/// Their rows copied into [`TABLES`]' new ones, the old dropped.  The
+/// columns are as they were.
+pub(crate) const LOG_TABLES_BACK: &str = "
+    INSERT INTO log_tracking SELECT * FROM old_log_tracking;
+    INSERT INTO log_measurement SELECT * FROM old_log_measurement;
+    INSERT INTO log_statistics SELECT * FROM old_log_statistics;
+    INSERT INTO refclock_sample SELECT * FROM old_refclock_sample;
+    INSERT INTO tempcomp_sample SELECT * FROM old_tempcomp_sample;
+    DROP TABLE old_log_tracking;
+    DROP TABLE old_log_measurement;
+    DROP TABLE old_log_statistics;
+    DROP TABLE old_refclock_sample;
+    DROP TABLE old_tempcomp_sample;
+";
 
 /// Facts about the database itself, the schema version first.
 pub(crate) const META: &str = "CREATE TABLE IF NOT EXISTS meta (
@@ -192,8 +229,9 @@ pub(crate) const TABLES: &str = r"
     -- full record of every sample (the protocol gives the last), the
     -- only one of refclock and tempcomp samples, and the history from
     -- before the daemon ran.  Times are to the second but for
-    -- refclocks, so the keys include the values: two packets from one
-    -- source in a second are two rows, and a line read twice is one.
+    -- refclocks, so each is keyed by the whole line: two packets from
+    -- one source in a second are two rows, and a line read twice is
+    -- one.
 
     -- tracking.log.
     CREATE TABLE IF NOT EXISTS log_tracking (
@@ -210,9 +248,11 @@ pub(crate) const TABLES: &str = r"
         remaining_correction REAL    NOT NULL,
         root_delay           REAL    NOT NULL,
         root_dispersion      REAL    NOT NULL,
-        max_error            REAL    NOT NULL,
-        UNIQUE (at, reference, offset, frequency)
+        max_error            REAL    NOT NULL
     ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS log_tracking_line ON log_tracking (at, reference,
+        stratum, frequency, skew, offset, leap, combined_sources, offset_sd,
+        remaining_correction, root_delay, root_dispersion, max_error);
 
     -- measurements.log.
     CREATE TABLE IF NOT EXISTS log_measurement (
@@ -233,9 +273,12 @@ pub(crate) const TABLES: &str = r"
         mode                      INTEGER NOT NULL,
         interleaved               INTEGER NOT NULL,
         transmit_timestamp_source TEXT    NOT NULL,
-        receive_timestamp_source  TEXT    NOT NULL,
-        UNIQUE (at, source, offset, peer_delay)
+        receive_timestamp_source  TEXT    NOT NULL
     ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS log_measurement_line ON log_measurement (at, source,
+        leap, stratum, tests, local_poll, remote_poll, score, offset, peer_delay,
+        peer_dispersion, root_delay, root_dispersion, reference_id, mode, interleaved,
+        transmit_timestamp_source, receive_timestamp_source);
     CREATE INDEX IF NOT EXISTS log_measurement_source ON log_measurement(source, at);
 
     -- statistics.log.  Frequencies as fractions, as the log has them.
@@ -251,12 +294,15 @@ pub(crate) const TABLES: &str = r"
         samples            INTEGER NOT NULL,
         best_start         INTEGER NOT NULL,
         runs               INTEGER NOT NULL,
-        asymmetry          REAL    NOT NULL,
-        UNIQUE (at, source, samples, estimated_offset)
+        asymmetry          REAL    NOT NULL
     ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS log_statistics_line ON log_statistics (at, source,
+        standard_deviation, estimated_offset, offset_sd, residual_frequency, skew, stress,
+        samples, best_start, runs, asymmetry);
     CREATE INDEX IF NOT EXISTS log_statistics_source ON log_statistics(source, at);
 
-    -- refclocks.log.  The driver's fields are NULL in a filtered sample.
+    -- refclocks.log.  The driver's fields are NULL in a filtered sample,
+    -- `-` in the log (`log_sample`, refclock.c, 4.3 to 4.9).
     CREATE TABLE IF NOT EXISTS refclock_sample (
         at            INTEGER NOT NULL,
         reference     TEXT    NOT NULL,
@@ -265,25 +311,41 @@ pub(crate) const TABLES: &str = r"
         pulse         INTEGER,
         raw_offset    REAL,
         cooked_offset REAL    NOT NULL,
-        dispersion    REAL    NOT NULL,
-        UNIQUE (at, reference, cooked_offset)
+        dispersion    REAL    NOT NULL
     ) STRICT;
+    -- NULLs are distinct in a key, so each is keyed as the log writes
+    -- it, `-`: text, never equal to a number.  A filtered sample read
+    -- twice is one row; a raw one with the same values beside it is
+    -- another.
+    CREATE UNIQUE INDEX IF NOT EXISTS refclock_sample_line ON refclock_sample (at, reference,
+        IFNULL(driver_polls, '-'), leap, IFNULL(pulse, '-'), IFNULL(raw_offset, '-'),
+        cooked_offset, dispersion);
 
     -- tempcomp.log.
     CREATE TABLE IF NOT EXISTS tempcomp_sample (
         at           INTEGER NOT NULL,
         temperature  REAL    NOT NULL,
-        compensation REAL    NOT NULL,
-        UNIQUE (at, temperature, compensation)
+        compensation REAL    NOT NULL
     ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS tempcomp_sample_line ON tempcomp_sample (at,
+        temperature, compensation);
 
-    -- How far each log file has been read, by inode, which survives
-    -- logrotate's renames: a file grown since is read from here, one
-    -- of the same length is not read again.
+    -- How far each log file has been read, by device and inode, which
+    -- survive logrotate's renames: a file grown since is read from
+    -- here, one of the same length is not read again.
     CREATE TABLE IF NOT EXISTS log_file (
-        inode  INTEGER PRIMARY KEY,
-        path   TEXT    NOT NULL,
-        length INTEGER NOT NULL,
-        read   INTEGER NOT NULL
+        device      INTEGER NOT NULL,
+        inode       INTEGER NOT NULL,
+        path        TEXT    NOT NULL,
+        length      INTEGER NOT NULL,
+        read        INTEGER NOT NULL,
+        -- The bytes just before `read`, a line or two: changed or gone,
+        -- the file was truncated and rewritten, or the inode reused, and
+        -- it is read from its start.
+        fingerprint BLOB    NOT NULL,
+        -- 1 when its header was refused: none of this file is read,
+        -- however it grows.
+        rejected    INTEGER NOT NULL,
+        PRIMARY KEY (device, inode)
     ) STRICT;
 ";
