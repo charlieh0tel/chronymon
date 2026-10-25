@@ -96,13 +96,26 @@ fn main() -> ExitCode {
     }
 }
 
-fn refused(error: &ControlError) -> bool {
+/// What failed in reaching chronyd's socket, or setting up the client's.
+fn io_kind(error: &ControlError) -> Option<ErrorKind> {
     match error {
         ControlError::Connect { source, .. } | ControlError::Socket { source, .. } => {
-            source.kind() == ErrorKind::PermissionDenied
+            Some(source.kind())
         }
-        _ => false,
+        _ => None,
     }
+}
+
+fn refused(error: &ControlError) -> bool {
+    io_kind(error) == Some(ErrorKind::PermissionDenied)
+}
+
+/// Whether the client's directory beside chronyd's socket could not be
+/// made for a read-only file system: under systemd, `/run/chrony` made
+/// after the daemon started, which its mount namespace has read-only.
+/// Only a restart, with a new namespace, makes it writable.
+fn read_only(error: &ControlError) -> bool {
+    io_kind(error) == Some(ErrorKind::ReadOnlyFilesystem)
 }
 
 fn seconds(value: f64, option: &str) -> Result<Duration> {
@@ -178,6 +191,8 @@ fn run(cli: &Cli) -> Result<()> {
     let mut collector = Collector::new(make_step);
     let mut state = None;
     let mut next = Instant::now();
+    // Why the loop stopped, if not for a signal.
+    let mut failed = None;
     loop {
         let at = Timestamp::now();
         // A fresh socket after any failure: chronyd may have restarted.
@@ -194,6 +209,12 @@ fn run(cli: &Cli) -> Result<()> {
             }
             Err(e) => Err(e),
         };
+        if let Err(e) = &read
+            && read_only(e)
+        {
+            failed = Some(e.to_string());
+            break;
+        }
         if let Err(e) = &read {
             let now = collect::state_of(e);
             if state != Some(now) {
@@ -232,6 +253,12 @@ fn run(cli: &Cli) -> Result<()> {
     ingest.scan(&mut log);
     let system_stopping = host::system_stopping();
     log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
+    if let Some(e) = failed {
+        anyhow::bail!(
+            "{e}: exiting, for a restart to find {} writable",
+            cli.socket.parent().unwrap_or(&cli.socket).display()
+        );
+    }
     eprintln!("chronymond: stopped");
     Ok(())
 }
