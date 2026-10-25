@@ -1,0 +1,5 @@
+# Pinned so a lint that fires in CI fires locally too; the shared
+# workflows read the channel from here.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]

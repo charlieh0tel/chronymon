@@ -9,17 +9,17 @@ open work.
 - `PLAN.md` records why things are the way they are.  Read it before
   proposing architectural changes, and update it when a decision
   changes.
-- chrony's own documentation and source (`candm.h` for the cmdmon
+- chrony's own documentation and source (`candm.h` for the control
   protocol) are the specification.  Do not guess at report layouts or
   log columns -- look them up and cite the version.
 
 
 ## chronyd
 
-- Send chronyd only read-only cmdmon requests (reports).  Never a
-  request that changes its state (`makestep`, `burst`, `offline`,
-  `settime`, `local`, `add`/`delete` source, and the like) without
-  asking.
+- Send chronyd only read-only control protocol requests (reports).
+  Never a request that changes its state (`makestep`, `burst`,
+  `offline`, `settime`, `local`, `add`/`delete` source, and the like)
+  without asking.
 
 ## Critical Rules
 
@@ -81,7 +81,7 @@ open work.
   to `rep` or `repeat` but not to `rpt`.  Domain acronyms / wire-
   protocol terms are fine -- `ntp`, `nts`, `pps`, `nmea`, `gps`,
   `utc`, `tai`, `rtc`, `rms`, `ppm`, `ppb`, `ip`, `udp`, `rx`, `tx`,
-  `cmdmon`, `refclock`, `tempcomp`, `refid`.
+  `refclock`, `tempcomp`, `refid`.
 - chrony's names keep their documented spelling where they are wire or
   file terms (report names, log column headers).  Rust identifiers use
   the long form: `root_dispersion`, not `root_disp`.

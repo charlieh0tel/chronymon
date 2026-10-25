@@ -1,0 +1,9 @@
+# Actions only: the pinned third-party actions are the supply-chain
+# risk worth a weekly pull request.  deb-workflows@v1 is a moving tag
+# and needs none.  Cargo advisories are audit.yml's job.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

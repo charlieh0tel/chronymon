@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    # The shared definition, so this repo's CI matches the others.
+    #
+    #   fmt-toolchain  empty: resolved from rust-toolchain.toml, like the
+    #                  build, rather than a nightly for rustfmt alone.
+    #   audit          off here; audit.yml runs it, on a schedule a
+    #                  called workflow cannot have.
+    #   check-args     --all-targets, or clippy never sees the tests.
+    uses: charlieh0tel/deb-workflows/.github/workflows/rust-ci.yml@v1
+    with:
+      fmt-toolchain: ""
+      audit: false
+      check-args: "--workspace --all-targets --all-features"
+
+  attribution:
+    # No commit credits an AI assistant (AGENTS.md).  The commit-msg
+    # hook's check, over the whole history, for a clone without the hook.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: git log --format=%B HEAD | sh .githooks/commit-msg /dev/stdin

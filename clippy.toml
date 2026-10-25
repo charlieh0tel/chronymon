@@ -1,0 +1,2 @@
+# Names that are prose, not code items.  ".." keeps clippy's defaults.
+doc-valid-idents = ["SQLite", ".."]
