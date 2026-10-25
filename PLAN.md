@@ -103,8 +103,9 @@ Researched against chrony 4.2 to 4.9's source and `chrony-candm`
   protocol gives the last), the only source for refclock and tempcomp
   samples, and the backfill for time the daemon was not running.
 
-Events are derived at ingest: chronyd restart (socket gone and back,
-or its start time moving), a step (tracking's correction jumping past
+Events are derived at ingest: chronyd restart (the PID in
+`/run/chrony/chronyd.pid` changing, or the socket refusing and then
+answering again), a step (tracking's correction jumping past
 chronyd's own `makestep` threshold, read from its configuration, 1 s
 if it has none), reference change,
 source added or removed, leap status change, and the daemon's own
@@ -154,7 +155,8 @@ appends what is new.  Nothing arrives faster than chronyd's own
 updates, so a push channel would buy nothing.
 
 The y axis of offset charts is linear near zero and logarithmic beyond
-(uPlot's `asinh` scale, threshold from the median magnitude), so a
+(uPlot's `asinh` scale option, the linear threshold, present in
+1.6.32; threshold from the median magnitude), so a
 microsecond wander and a millisecond spike are both readable on one
 chart.  Percentile lines (1, 5, 50, 95, 99) on request.
 
@@ -185,11 +187,13 @@ Pages:
 1. **Control client.**  `chronymon-control`: every report in the
    table, each reply type the supported versions send, with replies
    captured from each version as fixtures: a script in `tools/` runs
-   each release's packaged chronyd in a Docker container with `-x`
-   and records its replies.
+   each release's packaged chronyd in a Docker container with `-x`,
+   synchronized to a second chronyd container serving as a local
+   stratum, offline and repeatable, and records its replies.
 2. **Daemon, protocol ingest.**  Schema 1 and `migrate()`, collectors,
    change detection, events, the live socket.
-3. **Web.**  Live, Sources, Journal; then Distribution.
+3. **Web.**  Copy in smartclock's HTTP crate and web assets; Live,
+   Sources, Journal; then Distribution.
 4. **Log ingest.**  Backfill, rotated and `.gz` files, header-based
    columns; then the Refclocks and Temperature pages.
 5. **Packaging.**  One Debian package, `chronymon`, amd64 and arm64,
@@ -252,6 +256,9 @@ Pages:
   (`StateDirectory=chronymon`).
 - Polled every second by default, set in `/etc/default/chronymond`.
 - Web on 127.0.0.1:8323 by default; one package for amd64 and arm64.
+- Timestamps stored as integer nanoseconds since the epoch, as
+  smartclock's schema does: chrony's reference times are in
+  nanoseconds, and 64 bits run to 2262.
 - Debian package and systemd units; CI and release through
   deb-workflows.
 - Our own control protocol client, with the logs beside it.
