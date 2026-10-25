@@ -1,6 +1,6 @@
 // Browser tests for chronymon-web's pages.
 //
-// The servers are tools/test-web's: the real chronymon-web, one serving
+// The servers are tools/with-web's: the real chronymon-web, one serving
 // a synthetic database and one a path with none.  Started there rather
 // than here so the tests can run in Playwright's container while the
 // servers run on the host they were built for.

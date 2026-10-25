@@ -13,14 +13,14 @@ on:
       - "crates/**"
       - "Cargo.lock"
       - "Makefile"
-      - "tools/test-web"
+      - "tools/with-web"
       - ".github/workflows/web.yml"
   pull_request:
     paths:
       - "crates/**"
       - "Cargo.lock"
       - "Makefile"
-      - "tools/test-web"
+      - "tools/with-web"
       - ".github/workflows/web.yml"
 
 jobs:

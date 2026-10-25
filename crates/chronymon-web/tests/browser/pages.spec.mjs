@@ -1,21 +1,11 @@
-// Every page, against the synthetic database (tools/test-web): it
+// Every page, against the synthetic database (tools/with-web): it
 // loads without an error, draws what it should, and its controls work;
 // and against no database at all, where every page must say so.
 
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-
 import { expect, test } from "@playwright/test";
 
+import { routeCdn } from "./cdn.mjs";
 import { MISSING } from "./playwright.config.mjs";
-
-const require = createRequire(import.meta.url);
-const UPLOT = dirname(require.resolve("uplot/package.json"));
-
-// uPlot from node_modules, at the version the pages ask jsdelivr for,
-// so the tests need no network; anything else off this host fails.
-const CDN = /^https:\/\/cdn\.jsdelivr\.net\/npm\/uplot@1\.6\.32\/dist\/(.+)$/;
 
 const PAGES = [
   { path: "/", name: "Live" },
@@ -38,13 +28,7 @@ test.beforeEach(async ({ page }, info) => {
     if (m.type() === "error") errors.push(`console: ${m.text()}`);
   });
   page.on("requestfailed", (r) => errors.push(`request: ${r.url()} ${r.failure()?.errorText}`));
-  await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
-    const match = CDN.exec(route.request().url());
-    if (!match) return route.abort();
-    const body = readFileSync(join(UPLOT, "dist", match[1]));
-    const contentType = match[1].endsWith(".css") ? "text/css" : "application/javascript";
-    return route.fulfill({ body, contentType });
-  });
+  await routeCdn(page);
 });
 
 test.afterEach(async ({}, info) => {

@@ -37,6 +37,6 @@ web-deps:
 	cd $(WEB_TESTS) && npm ci --no-fund --no-audit && npm run install-browser
 
 # The web pages in a browser: the real server, serving a synthetic
-# database and none.  See tools/test-web.
+# database and none.  See tools/with-web.
 test-web:
-	tools/test-web
+	tools/with-web npx playwright test
