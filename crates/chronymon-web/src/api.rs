@@ -273,6 +273,7 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
                 "mean": p.mean,
                 "min": p.min,
                 "max": p.max,
+                "gaps": p.gaps,
             })
         })
         .collect();
