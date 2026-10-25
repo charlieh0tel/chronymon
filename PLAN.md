@@ -150,7 +150,17 @@ The smartclock layout, so the two read the same:
   journaled; alerting is left to other tools.
 - Raw rows kept forever; charts get one min/max pair per pixel column,
   computed at query time from the timestamp index, so a range of a year
-  costs what a range of a day does to draw.
+  costs what a range of a day does to draw.  The buckets carry mean,
+  min and max, in smartclock's shape, all columns of a table in one
+  query so stacked charts share one grid.  A line breaks only at a
+  hole wider than a few buckets and three times the series' own
+  typical spacing: a source sampled every 64 s leaves dozens of empty
+  buckets between samples at an hour's zoom, which is its cadence, not
+  a gap.
+- The reader opens the database read-write but `query_only`, and never
+  creates it: the web view's user may write the file (that is what
+  keeps the WAL index without `unsafe`), and `query_only` keeps it
+  from doing so.
 
 Rough volume: ten sources at a 64 s poll plus tracking is about 20,000
 rows a day, 7 million a year.  Raw retention is affordable.

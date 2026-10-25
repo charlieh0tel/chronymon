@@ -4,6 +4,7 @@
 //! same file while it writes.
 
 pub mod error;
+pub mod reader;
 pub mod schema;
 mod text;
 pub mod timestamp;
