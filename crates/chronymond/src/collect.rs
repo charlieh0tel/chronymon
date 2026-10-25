@@ -327,8 +327,7 @@ impl Collector {
             batch.tracking(at, tracking)?;
         }
         if before.reference_id != tracking.reference_id {
-            let detail = format!("{} to {}", before.address, tracking.address);
-            batch.event(at, EventKind::ReferenceChange, None, Some(&detail))?;
+            batch.reference_change(at, &before, tracking)?;
         }
         if before.leap != tracking.leap {
             batch.leap_change(at, before.leap, tracking.leap)?;

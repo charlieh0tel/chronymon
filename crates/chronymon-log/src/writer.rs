@@ -646,6 +646,12 @@ impl Batch<'_> {
         Ok(())
     }
 
+    /// chronyd's reference changing from `before`'s to `now`'s.
+    pub fn reference_change(&self, at: Timestamp, before: &Tracking, now: &Tracking) -> Result<()> {
+        let detail = text::reference_change(before, now);
+        self.event(at, EventKind::ReferenceChange, None, Some(&detail))
+    }
+
     /// chronyd's leap status changing from `before` to `now`.
     pub fn leap_change(&self, at: Timestamp, before: Leap, now: Leap) -> Result<()> {
         let detail = text::leap_change(before, now);

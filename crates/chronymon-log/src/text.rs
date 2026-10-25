@@ -5,6 +5,7 @@ use chronymon_control::report::Leap;
 use chronymon_control::report::SelectOptions;
 use chronymon_control::report::SourceMode;
 use chronymon_control::report::SourceState;
+use chronymon_control::report::Tracking;
 
 pub(crate) const fn leap(leap: Leap) -> &'static str {
     match leap {
@@ -20,6 +21,12 @@ pub(crate) const fn leap(leap: Leap) -> &'static str {
 /// written it.
 pub(crate) fn leap_change(before: Leap, now: Leap) -> String {
     format!("{before:?} to {now:?}")
+}
+
+/// A reference change's detail: the references' addresses before and
+/// after, "192.0.2.1 to 192.0.2.2".
+pub(crate) fn reference_change(before: &Tracking, now: &Tracking) -> String {
+    format!("{} to {}", before.address, now.address)
 }
 
 pub(crate) const fn mode(mode: SourceMode) -> &'static str {
