@@ -309,7 +309,8 @@ pub struct Series {
 
 /// One column's buckets, against [`Series::at`].  `min` and `max` are
 /// kept because a mean alone hides an excursion inside a bucket.  All
-/// three are `None` in the bucket that marks a gap.
+/// three are `None` where it has no rows, which is not a gap:
+/// [`Plot::gaps`] says where the line breaks, as [`Line::gaps`] does.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plot {
     /// The column's table.
@@ -322,6 +323,8 @@ pub struct Plot {
     pub min: Vec<Option<f64>>,
     /// Each bucket's highest.
     pub max: Vec<Option<f64>>,
+    /// Indexes into [`Series::at`] where the line breaks.
+    pub gaps: Vec<usize>,
 }
 
 /// One column of every source, bucketed on one grid.
@@ -672,7 +675,7 @@ impl Reader {
             .copied()
             .filter(|c| c.table == table)
             .collect();
-        let buckets = self.buckets(table, source, &columns, window)?;
+        let buckets = broken_at_gaps(self.buckets(table, source, &columns, window)?);
         Ok(assemble(&columns, buckets, window))
     }
 
@@ -705,6 +708,7 @@ impl Reader {
             .into_iter()
             .map(|mut b| {
                 b.values.extend(vec![[None; 3]; fill_columns.len()]);
+                b.broken.extend(vec![false; fill_columns.len()]);
                 b
             })
             .collect();
@@ -717,12 +721,16 @@ impl Reader {
                         .into_iter()
                         .chain(b.values)
                         .collect(),
+                    broken: vec![false; columns.len()]
+                        .into_iter()
+                        .chain(b.broken)
+                        .collect(),
                     ..b
                 }),
         );
         merged.sort_by_key(|b| b.index);
         let all: Vec<Column> = columns.into_iter().chain(fill_columns).collect();
-        Ok(assemble(&all, merged, window))
+        Ok(assemble(&all, broken_at_gaps(merged), window))
     }
 
     /// The buckets of `columns` of `table` over `window`, in order.
@@ -766,6 +774,7 @@ impl Reader {
             buckets.push(Bucket {
                 index: row.get(0)?,
                 at: row.get(1)?,
+                broken: vec![false; values.len()],
                 values,
             });
         }
@@ -924,19 +933,35 @@ impl Reader {
 }
 
 /// One bucket of a series: its index on the window's grid, its rows'
-/// mean time in unix nanoseconds, and each column's mean, min and max.
+/// mean time in unix nanoseconds, each column's mean, min and max, and
+/// whether each column's line breaks before it.
 struct Bucket {
     index: i64,
     at: f64,
     values: Vec<[Option<f64>; 3]>,
+    broken: Vec<bool>,
 }
 
-/// `buckets`, of `columns` over `window`, as a series, with a break
-/// before each gap.
+/// `buckets`, each broken before for every column where a gap precedes
+/// it.
+fn broken_at_gaps(buckets: Vec<Bucket>) -> Vec<Bucket> {
+    let breaks = gaps(&buckets.iter().map(|b| b.index).collect::<Vec<_>>());
+    buckets
+        .into_iter()
+        .zip(breaks)
+        .map(|(b, broken)| Bucket {
+            broken: vec![broken; b.values.len()],
+            ..b
+        })
+        .collect()
+}
+
+/// `buckets`, of `columns` over `window`, as a series: a bucket marking
+/// each break, before the bucket it precedes, the break of every column
+/// whose line breaks there.
 fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series {
     let (from, to, points) = window.stored();
     let width = (to - from + 1) as f64 / points as f64;
-    let breaks = gaps(&buckets.iter().map(|b| b.index).collect::<Vec<_>>());
     let mut series = Series {
         at: Vec::new(),
         plots: columns
@@ -947,16 +972,21 @@ fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series 
                 mean: Vec::new(),
                 min: Vec::new(),
                 max: Vec::new(),
+                gaps: Vec::new(),
             })
             .collect(),
     };
-    for (bucket, broken) in buckets.into_iter().zip(breaks) {
-        if broken {
+    for bucket in buckets {
+        if bucket.broken.contains(&true) {
+            let gap = series.at.len();
             series.at.push(seconds_f(bucket.at - width));
-            for plot in &mut series.plots {
+            for (plot, broken) in series.plots.iter_mut().zip(&bucket.broken) {
                 plot.mean.push(None);
                 plot.min.push(None);
                 plot.max.push(None);
+                if *broken {
+                    plot.gaps.push(gap);
+                }
             }
         }
         series.at.push(seconds_f(bucket.at));
@@ -1342,6 +1372,7 @@ mod tests {
         // Ten buckets either side, and one break between.
         assert_eq!(series.at.len(), 21);
         assert_eq!(plot.mean.iter().filter(|v| v.is_none()).count(), 1);
+        assert_eq!(plot.gaps, [10]);
         assert_eq!(plot.min[0], Some(0.0));
         assert_eq!(plot.max[0], Some(9.0));
         assert_eq!(plot.mean[0], Some(4.5));
