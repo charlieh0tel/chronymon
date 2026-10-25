@@ -79,9 +79,10 @@ paired: an NMEA receiver whose time of day numbers a PPS's pulses.
     refclock SHM 0 refid NMEA poll 6 offset 43e-3 delay 10e-3 noselect
     refclock PHC /dev/ptp2:extpps:pin=0 refid PPS poll 2 lock NMEA
 
-Beside the PPS its offsets are noise, so the Sources page starts with
-its lines hidden, `?show=NMEA` or its name in a chart's title showing
-them, and the kiosk leaves it out.  An NMEA no refclock is locked to
+Beside the PPS its offsets are noise, so the Sources page says "PPS
+locked to it" beside its name and starts with its lines hidden,
+`?show=NMEA` or its name in a chart's title showing them, and the
+kiosk leaves it out.  An NMEA no refclock is locked to
 is a source like any other, `noselect` or not.  chronymond reads the
 pairing from `chrony.conf`, its `include` and `confdir` files too
 (`CHRONYMOND_CHRONY_CONFIG`), when it starts and whenever chronyd
