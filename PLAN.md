@@ -262,7 +262,10 @@ Pages:
    Sources, Journal; then Distribution.  Done: `chronymon-http`,
    `chronymon-log`'s reader, `chronymon-web` with all five pages
    (Live, Sources and each source's own, Journal, Distribution),
-   checked in headless Chrome against synthetic data
+   tested in Chromium by `make test-web` (Playwright, also in CI:
+   every page against a synthetic database and against none, failing
+   on any page error), first checked by hand in headless Chrome
+   against synthetic data
    (`cargo run -p chronymon-web --example synthetic`) and against the
    daemon writing in a container, with chronyd stopped and restarted
    under it.

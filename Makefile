@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: all build hooks ci fmt fmt-check clippy test
+.PHONY: all build hooks ci fmt fmt-check clippy test web-deps test-web
 
 all: build
 
@@ -27,3 +27,16 @@ clippy:
 
 test:
 	$(CARGO) test --workspace
+
+WEB_TESTS := crates/chronymon-web/tests/browser
+
+# Playwright and its Chromium into the test directory, once, for running
+# the browser tests natively.  Without Node, test-web runs them in
+# Playwright's container instead and needs none of this.
+web-deps:
+	cd $(WEB_TESTS) && npm ci --no-fund --no-audit && npm run install-browser
+
+# The web pages in a browser: the real server, serving a synthetic
+# database and none.  See tools/test-web.
+test-web:
+	tools/test-web

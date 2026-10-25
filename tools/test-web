@@ -1,0 +1,55 @@
+#!/bin/bash
+# The browser tests for chronymon-web's pages: build the server and the
+# synthetic data, serve a synthetic database and a path with none, and
+# run crates/chronymon-web/tests/browser against them.  With Node and
+# `make web-deps`, natively; without, in Playwright's container.
+#
+# Usage: tools/test-web [PLAYWRIGHT ARGS...]
+set -euo pipefail
+
+# The image's Playwright must match package.json's.
+PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.63.0-noble
+FULL_PORT=9983
+MISSING_PORT=9984
+# Hours of synthetic readings, longer than the 24 h windows tested.
+HOURS=48
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+tests="$repo/crates/chronymon-web/tests/browser"
+work="$repo/target/web-test"
+cargo=${CARGO:-cargo}
+
+cd "$repo"
+"$cargo" build -q -p chronymon-web --bins --examples
+mkdir -p "$work"
+rm -f "$work"/full.sqlite*
+target/debug/examples/synthetic "$work/full.sqlite" "$HOURS"
+
+pids=()
+cleanup() {
+    ((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT
+serve() {
+    target/debug/chronymon-web --listen "127.0.0.1:$1" --database "$2" 2>"$work/server-$1.log" &
+    pids+=($!)
+    for _ in $(seq 50); do
+        curl -fs "http://127.0.0.1:$1/api/about" >/dev/null && return 0
+        sleep 0.1
+    done
+    echo "chronymon-web on port $1 did not start: $(cat "$work/server-$1.log")" >&2
+    return 1
+}
+serve "$FULL_PORT" "$work/full.sqlite"
+serve "$MISSING_PORT" "$work/missing.sqlite"
+
+if command -v npx >/dev/null && [ -d "$tests/node_modules" ]; then
+    (cd "$tests" && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright test "$@")
+else
+    # The host's network, to reach the servers; the caller's uid, so
+    # node_modules and the results are the caller's.
+    docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+        -v "$tests:/tests" -w /tests "$PLAYWRIGHT_IMAGE" \
+        sh -c "npm ci --no-fund --no-audit --loglevel=error && npx playwright test $*"
+fi

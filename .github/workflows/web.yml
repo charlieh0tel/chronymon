@@ -1,0 +1,47 @@
+name: web
+
+# The browser tests for chronymon-web's pages, `make test-web`: the real
+# server, serving a synthetic database and none, in Chromium.
+#
+# Separate from ci.yml because that one is the shared definition every
+# repository calls, and this needs Node and a browser the others do not.
+# Narrowed to the files that can change what it tests.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.lock"
+      - "Makefile"
+      - "tools/test-web"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.lock"
+      - "Makefile"
+      - "tools/test-web"
+      - ".github/workflows/web.yml"
+
+jobs:
+  pages:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # The pins audit.yml and smartclock's web.yml carry; moved by hand.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/chronymon-web/tests/browser/package-lock.json
+      # Playwright's Chromium into the test directory, as `make web-deps`
+      # does, with the system libraries it needs on a bare runner.  The
+      # compiler is the one rust-toolchain.toml names, which rustup
+      # installs on the first cargo call.
+      - run: npm ci --no-fund --no-audit
+        working-directory: crates/chronymon-web/tests/browser
+      - run: PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install --with-deps chromium
+        working-directory: crates/chronymon-web/tests/browser
+      - run: make test-web

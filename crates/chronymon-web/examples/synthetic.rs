@@ -2,7 +2,10 @@
 //! daemon's own writer, so the web view can be looked at without a
 //! chronyd: a clock disciplined by a PPS refclock and two NTP servers,
 //! its frequency following the day's temperature, with an outage, a
-//! restart and a step along the way.
+//! restart and a step along the way; and chronyd's logs as the daemon
+//! reads them: refclock and tempcomp samples throughout, and tracking
+//! for some hours before the daemon started, for the charts to fill
+//! from.
 //!
 //!     cargo run -p chronymon-web --example synthetic -- DATABASE [HOURS]
 //!
@@ -29,6 +32,10 @@ use chronymon_control::report::SourceMode;
 use chronymon_control::report::SourceState;
 use chronymon_control::report::SourceStats;
 use chronymon_control::report::Tracking;
+use chronymon_log::chrony_log::Line;
+use chronymon_log::chrony_log::RefclockLine;
+use chronymon_log::chrony_log::TempcompLine;
+use chronymon_log::chrony_log::TrackingLine;
 use chronymon_log::writer::ChronydState;
 use chronymon_log::writer::Log;
 use jiff::Timestamp;
@@ -45,6 +52,11 @@ const DAY: f64 = 86_400.0;
 const OUTAGE_AT: f64 = 0.4;
 const OUTAGE_FOR: i64 = 1800;
 const STEP_AT: f64 = 0.7;
+/// Hours of `tracking.log` from before the daemon's first poll.
+const LOG_ONLY_HOURS: i64 = 6;
+/// Degrees of the tempcomp sensor's daily swing about its mean.
+const TEMPERATURE_MEAN: f64 = 41.0;
+const TEMPERATURE_SWING: f64 = 4.0;
 
 /// A small, seeded generator: the same database every run.
 struct Noise(u64);
@@ -148,6 +160,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
             Some("synthetic"),
         )?;
+        for second in (start - LOG_ONLY_HOURS * 3600..start).step_by(UPDATE_EVERY as usize) {
+            let phase = (second as f64 % DAY) / DAY * TAU;
+            batch.log_line(&Line::Tracking(TrackingLine {
+                at: at(second).expect("in range"),
+                reference: "PPS".to_owned(),
+                stratum: 1,
+                frequency: -12.4 + 0.35 * phase.sin() + noise.normal(0.002),
+                skew: 0.004 + noise.uniform() * 0.002,
+                offset: noise.normal(3e-7),
+                leap: 'N',
+                combined_sources: 1,
+                offset_sd: 3e-7,
+                remaining_correction: noise.normal(1e-7),
+                root_delay: 1e-9,
+                root_dispersion: 1.5e-5 + noise.uniform() * 5e-6,
+                max_error: 2e-5,
+            }))?;
+        }
         let mut offset = 0.0_f64;
         let mut valid = vec![0_u32; feeds.len()];
         let mut down = false;
@@ -177,6 +207,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             let phase = (second as f64 % DAY) / DAY * TAU;
             let frequency = -12.4 + 0.35 * phase.sin() + noise.normal(0.002);
+            let temperature = TEMPERATURE_MEAN + TEMPERATURE_SWING * phase.sin();
+            batch.log_line(&Line::Tempcomp(TempcompLine {
+                at: when,
+                temperature: temperature + noise.normal(0.05),
+                compensation: (temperature - TEMPERATURE_MEAN) * 0.08,
+            }))?;
+            for (reference, bias, jitter) in [("PPS", 0.0, 2e-8), ("NMEA", 0.043, 2e-3)] {
+                let cooked = bias + noise.normal(jitter) + offset;
+                batch.log_line(&Line::Refclock(RefclockLine {
+                    at: when,
+                    reference: reference.to_owned(),
+                    driver_polls: Some(0),
+                    leap: 'N',
+                    pulse: Some(reference == "PPS"),
+                    raw_offset: Some(cooked + noise.normal(jitter)),
+                    cooked_offset: cooked,
+                    dispersion: jitter,
+                }))?;
+            }
             offset = 0.6 * offset + noise.normal(3e-7);
             let stepped = (step..step + UPDATE_EVERY).contains(&second);
             if stepped {

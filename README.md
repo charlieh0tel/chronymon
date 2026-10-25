@@ -38,8 +38,12 @@ readings and serve that:
 
 ## Building
 
-    make hooks   # once per clone
-    make ci      # fmt, clippy, tests
+    make hooks     # once per clone
+    make ci        # fmt, clippy, tests
+    make test-web  # every page in Chromium, against a synthetic database
+
+`make test-web` runs Playwright natively after `make web-deps`, or
+with no Node installed, in Playwright's container (Docker).
 
 ## License
 
