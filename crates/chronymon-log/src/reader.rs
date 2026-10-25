@@ -19,6 +19,7 @@
 //! day does to send and draw.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -306,6 +307,8 @@ pub struct Series {
 /// three are `None` in the bucket that marks a gap.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plot {
+    /// The column's table.
+    pub table: &'static str,
     /// The column.
     pub column: &'static str,
     /// Each bucket's mean.
@@ -625,7 +628,7 @@ impl Reader {
     }
 
     /// Bucketed series of `columns`, all of `table`, over `window`, for
-    /// one source where the table is per source and `source_id` says.
+    /// one source where the table is per source and `source` says.
     ///
     /// One query for every column, so their buckets are one grid: two
     /// queries a moment apart would bucket from different ends.
@@ -636,24 +639,84 @@ impl Reader {
         columns: &[Column],
         window: Window,
     ) -> Result<Series> {
-        let columns: Vec<&'static str> = columns
+        let columns: Vec<Column> = columns
             .iter()
+            .copied()
             .filter(|c| c.table == table)
-            .map(|c| c.name)
             .collect();
+        let buckets = self.buckets(table, source, &columns, window)?;
+        Ok(assemble(&columns, buckets, window))
+    }
+
+    /// `columns` of `table`, and in the buckets where it has no rows
+    /// `fill_columns` of `fill`, on one grid over `window`: the
+    /// protocol's tracking, say, and where the daemon was not running,
+    /// tracking.log's.  The plots are `columns`' and then
+    /// `fill_columns`', each `None` where the other table's are drawn.
+    pub fn filled(
+        &self,
+        table: Table,
+        columns: &[Column],
+        fill: Table,
+        fill_columns: &[Column],
+        window: Window,
+    ) -> Result<Series> {
+        let columns: Vec<Column> = columns
+            .iter()
+            .copied()
+            .filter(|c| c.table == table)
+            .collect();
+        let fill_columns: Vec<Column> = fill_columns
+            .iter()
+            .copied()
+            .filter(|c| c.table == fill)
+            .collect();
+        let primary = self.buckets(table, None, &columns, window)?;
+        let taken: HashSet<i64> = primary.iter().map(|b| b.index).collect();
+        let mut merged: Vec<Bucket> = primary
+            .into_iter()
+            .map(|mut b| {
+                b.values.extend(vec![[None; 3]; fill_columns.len()]);
+                b
+            })
+            .collect();
+        merged.extend(
+            self.buckets(fill, None, &fill_columns, window)?
+                .into_iter()
+                .filter(|b| !taken.contains(&b.index))
+                .map(|b| Bucket {
+                    values: vec![[None; 3]; columns.len()]
+                        .into_iter()
+                        .chain(b.values)
+                        .collect(),
+                    ..b
+                }),
+        );
+        merged.sort_by_key(|b| b.index);
+        let all: Vec<Column> = columns.into_iter().chain(fill_columns).collect();
+        Ok(assemble(&all, merged, window))
+    }
+
+    /// The buckets of `columns` of `table` over `window`, in order.
+    fn buckets(
+        &self,
+        table: Table,
+        source: Option<&Key>,
+        columns: &[Column],
+        window: Window,
+    ) -> Result<Vec<Bucket>> {
         let (from, to, points) = window.stored();
         let time = table.time();
-        let aggregates = columns
+        let aggregates: String = columns
             .iter()
-            .map(|c| format!("AVG({c}), MIN({c}), MAX({c})"))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .map(|c| format!(", AVG({0}), MIN({0}), MAX({0})", c.name))
+            .collect();
         let filter = source_filter(table, 4);
         let sql = format!(
             // Divided by the span plus one, so a row exactly at `to`
             // falls in the last bucket rather than one past it.
             "SELECT CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
-                    AVG({time}), {aggregates}
+                    AVG({time}){aggregates}
              FROM {}
              WHERE {time} >= ?1 AND {time} <= ?2 {filter}
              GROUP BY bucket ORDER BY bucket",
@@ -669,39 +732,13 @@ impl Reader {
                     Ok([row.get(base)?, row.get(base + 1)?, row.get(base + 2)?])
                 })
                 .collect::<rusqlite::Result<Vec<[Option<f64>; 3]>>>()?;
-            buckets.push((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?, values));
+            buckets.push(Bucket {
+                index: row.get(0)?,
+                at: row.get(1)?,
+                values,
+            });
         }
-        let width = (to - from + 1) as f64 / points as f64;
-        let breaks = gaps(&buckets.iter().map(|b| b.0).collect::<Vec<_>>());
-        let mut series = Series {
-            at: Vec::new(),
-            plots: columns
-                .iter()
-                .map(|column| Plot {
-                    column,
-                    mean: Vec::new(),
-                    min: Vec::new(),
-                    max: Vec::new(),
-                })
-                .collect(),
-        };
-        for ((_, at, values), broken) in buckets.into_iter().zip(breaks) {
-            if broken {
-                series.at.push(seconds_f(at - width));
-                for plot in &mut series.plots {
-                    plot.mean.push(None);
-                    plot.min.push(None);
-                    plot.max.push(None);
-                }
-            }
-            series.at.push(seconds_f(at));
-            for (plot, [mean, min, max]) in series.plots.iter_mut().zip(values) {
-                plot.mean.push(mean);
-                plot.min.push(min);
-                plot.max.push(max);
-            }
-        }
-        Ok(series)
+        Ok(buckets)
     }
 
     /// One column of every source of a table keyed by the daemon's
@@ -852,6 +889,52 @@ impl Reader {
     }
 }
 
+/// One bucket of a series: its index on the window's grid, its rows'
+/// mean time in unix nanoseconds, and each column's mean, min and max.
+struct Bucket {
+    index: i64,
+    at: f64,
+    values: Vec<[Option<f64>; 3]>,
+}
+
+/// `buckets`, of `columns` over `window`, as a series, with a break
+/// before each gap.
+fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series {
+    let (from, to, points) = window.stored();
+    let width = (to - from + 1) as f64 / points as f64;
+    let breaks = gaps(&buckets.iter().map(|b| b.index).collect::<Vec<_>>());
+    let mut series = Series {
+        at: Vec::new(),
+        plots: columns
+            .iter()
+            .map(|column| Plot {
+                table: column.table.name(),
+                column: column.name,
+                mean: Vec::new(),
+                min: Vec::new(),
+                max: Vec::new(),
+            })
+            .collect(),
+    };
+    for (bucket, broken) in buckets.into_iter().zip(breaks) {
+        if broken {
+            series.at.push(seconds_f(bucket.at - width));
+            for plot in &mut series.plots {
+                plot.mean.push(None);
+                plot.min.push(None);
+                plot.max.push(None);
+            }
+        }
+        series.at.push(seconds_f(bucket.at));
+        for (plot, [mean, min, max]) in series.plots.iter_mut().zip(bucket.values) {
+            plot.mean.push(mean);
+            plot.min.push(min);
+            plot.max.push(max);
+        }
+    }
+    series
+}
+
 /// The clause choosing one source's rows, by parameter `n`, or every
 /// row when it is NULL.  Bound whatever the table, since SQLite refuses
 /// a parameter a statement does not use, so a table without sources
@@ -919,6 +1002,7 @@ mod tests {
     use super::*;
     use crate::chrony_log::Line;
     use crate::chrony_log::RefclockLine;
+    use crate::chrony_log::TrackingLine;
     use crate::writer::ChronydState;
     use crate::writer::Log;
 
@@ -1044,6 +1128,55 @@ mod tests {
             std::env::temp_dir().join(format!("chronymon-missing-{}.sqlite", std::process::id()));
         assert!(Reader::open(&path).is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_log_fills_where_the_protocol_has_no_rows() {
+        let mut db = Database::new("filled");
+        db.log
+            .write(|batch| {
+                // The protocol for the first 50 s, the log from 40 s on:
+                // they overlap, and only the protocol is drawn there.
+                for second in 0..50 {
+                    batch.tracking(at(second), &tracking(second, 1.0))?;
+                }
+                for second in 40..100 {
+                    batch.log_line(&Line::Tracking(TrackingLine {
+                        at: at(second),
+                        reference: "PPS".to_owned(),
+                        stratum: 1,
+                        frequency: 2.0,
+                        skew: 0.01,
+                        offset: 1e-6,
+                        leap: 'N',
+                        combined_sources: 1,
+                        offset_sd: 1e-7,
+                        remaining_correction: 0.0,
+                        root_delay: 1e-9,
+                        root_dispersion: 1e-5,
+                        max_error: 1e-5,
+                    }))?;
+                }
+                Ok(())
+            })
+            .expect("written");
+        let series = db
+            .reader()
+            .filled(
+                Table::Tracking,
+                &[column(Table::Tracking, "frequency")],
+                Table::LogTracking,
+                &[column(Table::LogTracking, "frequency")],
+                window(0, 99, 100),
+            )
+            .expect("a series");
+        let [reported, logged] = [&series.plots[0], &series.plots[1]];
+        assert_eq!((reported.table, logged.table), ("tracking", "log_tracking"));
+        assert_eq!(series.at.len(), 100);
+        assert!(reported.mean[..50].iter().all(|v| *v == Some(1.0)));
+        assert!(reported.mean[50..].iter().all(Option::is_none));
+        assert!(logged.mean[..50].iter().all(Option::is_none));
+        assert!(logged.mean[50..].iter().all(|v| *v == Some(2.0)));
     }
 
     #[test]
