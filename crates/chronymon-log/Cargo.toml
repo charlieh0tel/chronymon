@@ -1,0 +1,19 @@
+[package]
+name = "chronymon-log"
+description = "chronymon's SQLite database: schema, migration, writer and readers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chronymon = { version = "0.1.0", path = "../chronymon" }
+chronymon-control = { version = "0.1.0", path = "../chronymon-control" }
+jiff = "0.2.38"
+rusqlite = { version = "0.41.0", features = ["bundled"] }
+thiserror = "2.0.21"
+
+[lints]
+workspace = true

@@ -4,6 +4,8 @@
 members = [
     "crates/chronymon",
     "crates/chronymon-control",
+    "crates/chronymon-log",
+    "crates/chronymond",
 ]
 resolver = "3"
 

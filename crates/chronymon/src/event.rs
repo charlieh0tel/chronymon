@@ -8,12 +8,25 @@ pub enum EventKind {
     DaemonStart,
     /// chronymond stopped.
     DaemonStop,
+    /// chronymond's last run ended without stopping, on a boot that is
+    /// still running: chronymond itself crashed or was killed.
+    DaemonCrash,
+    /// The host booted.
+    Boot,
+    /// The host began shutting down or powering off.
+    Shutdown,
+    /// The host's last boot ended without a shutdown: a kernel crash,
+    /// a power loss or a hard reset.
+    HostCrash,
     /// chronyd stopped answering on its socket.
     ChronydDown,
     /// chronyd answered again after being down.
     ChronydUp,
     /// chronyd restarted: its PID changed.
     ChronydRestart,
+    /// chronyd died without cleaning up: its PID file names a process
+    /// that is gone.
+    ChronydCrash,
     /// The clock was stepped: the correction jumped past chronyd's
     /// `makestep` threshold.
     Step,
@@ -31,12 +44,17 @@ pub enum EventKind {
 
 impl EventKind {
     /// Every kind, for tests and for a reader decoding the stored name.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 16] = [
         Self::DaemonStart,
         Self::DaemonStop,
+        Self::DaemonCrash,
+        Self::Boot,
+        Self::Shutdown,
+        Self::HostCrash,
         Self::ChronydDown,
         Self::ChronydUp,
         Self::ChronydRestart,
+        Self::ChronydCrash,
         Self::Step,
         Self::ReferenceChange,
         Self::LeapChange,
@@ -50,9 +68,14 @@ impl EventKind {
         match self {
             Self::DaemonStart => "daemon_start",
             Self::DaemonStop => "daemon_stop",
+            Self::DaemonCrash => "daemon_crash",
+            Self::Boot => "boot",
+            Self::Shutdown => "shutdown",
+            Self::HostCrash => "host_crash",
             Self::ChronydDown => "chronyd_down",
             Self::ChronydUp => "chronyd_up",
             Self::ChronydRestart => "chronyd_restart",
+            Self::ChronydCrash => "chronyd_crash",
             Self::Step => "step",
             Self::ReferenceChange => "reference_change",
             Self::LeapChange => "leap_change",

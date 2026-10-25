@@ -132,11 +132,11 @@ The smartclock layout, so the two read the same:
 
 | Crate | Kind | Role |
 | - | - | - |
-| `chronymon` | lib | the data model: reports, samples, events, units, newtypes |
+| `chronymon` | lib | the data model: units, event kinds |
 | `chronymon-control` | lib | the control protocol client: request and reply encoding, the Unix socket transport, typed errors; synchronous |
 | `chronymon-log` | lib | the SQLite schema, `migrate()`, writer and readers; the chrony log parser |
-| `chronymond` | bin | collectors, event detection, the one writer, a Unix socket for live state |
-| `chronymon-web` | bin | the browser view: reads the database directly (WAL), asks the daemon for live state |
+| `chronymond` | bin | the poll, change detection, event detection, the one writer |
+| `chronymon-web` | bin | the browser view: reads the database directly (WAL), live state from its `status` row |
 
 - One writer, any number of readers, as smartclock's log does.  The
   web view needs no daemon to show history, and says so in the strip
@@ -210,6 +210,13 @@ Pages:
    `_chrony`.
 2. **Daemon, protocol ingest.**  Schema 1 and `migrate()`, collectors,
    change detection, events, the status row the web view reads.
+   Done: rows only on change (a clock update, a new sample, a changed
+   regression or selection, a new valid NTP packet), so an idle second
+   writes the status row alone; every event above, checked in a
+   container against chronyd stopped, restarted and killed.  No socket
+   of the daemon's own: the web view reads live state from the
+   `status` row, written every poll, which leaves one path for data
+   and nothing for the daemon to serve.
 3. **Web.**  Copy in smartclock's HTTP crate and web assets; Live,
    Sources, Journal; then Distribution.
 4. **Log ingest.**  Backfill, rotated and `.gz` files, header-based
