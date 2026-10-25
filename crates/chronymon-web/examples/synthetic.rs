@@ -250,6 +250,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
             Some("synthetic"),
         )?;
+        // A placeholder for a name not resolved yet, as the daemon once
+        // stored one (`IPADDR_ID` 1, in hex) and its removal: never shown.
+        let placeholder = batch.source(
+            at(start).expect("in range"),
+            Address::ReferenceId(1),
+            ReferenceId(0),
+            SourceMode::Client,
+            None,
+        )?;
+        batch.event(
+            at(start).expect("in range"),
+            EventKind::SourceRemoved,
+            Some(placeholder),
+            Some("00000001"),
+        )?;
         for second in (start - LOG_ONLY_HOURS * 3600..start).step_by(UPDATE_EVERY as usize) {
             let phase = (second as f64 % DAY) / DAY * TAU;
             let frequency = -12.4 + 0.35 * phase.sin() + noise.normal(0.002);

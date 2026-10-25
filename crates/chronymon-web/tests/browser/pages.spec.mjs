@@ -164,6 +164,15 @@ test("Sources: a row per source, overlays, and a link to each", async ({ page })
   await expect(charts(page).first()).toBeVisible();
 });
 
+test("Sources: a placeholder for a name not resolved yet is never shown", async ({ page }) => {
+  await page.goto("/sources?last=all");
+  await expect(page.locator("#sources tbody tr")).toHaveCount(5);
+  await expect(page.locator("#sources")).not.toContainText("00000001");
+  await page.goto("/journal?last=all");
+  await expect(page.locator("#events")).toContainText("ntp3.example.com");
+  await expect(page.locator("#events")).not.toContainText("00000001");
+});
+
 test("Sources: a source with no sample shows none, not its last", async ({ page }) => {
   await page.goto("/sources?last=86400");
   const nmea = page.locator("#sources tbody tr", { hasText: "NMEA" });

@@ -20,11 +20,9 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::net::IpAddr;
 use std::path::Path;
 
 use chronymon::event::EventKind;
-use chronymon_control::report::Address;
 use chronymon_control::report::SourceMode;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
@@ -625,15 +623,18 @@ impl Reader {
     /// latest list; and when chronyd has no sources left, so that none
     /// is newer, each one's removal says so.
     pub fn sources(&self) -> Result<Vec<Source>> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, address, mode, name, first_seen, last_seen,
-                 last_seen < (SELECT MAX(last_seen) FROM source)
+        let sql = format!(
+            "WITH listed AS (SELECT * FROM source WHERE id NOT IN ({}))
+             SELECT id, address, mode, name, first_seen, last_seen,
+                 last_seen < (SELECT MAX(last_seen) FROM listed)
                  OR COALESCE((SELECT kind FROM event
-                     WHERE source_id = source.id AND kind IN (?1, ?2)
+                     WHERE source_id = listed.id AND kind IN (?1, ?2)
                      ORDER BY at DESC, rowid DESC LIMIT 1) = ?2, 0) AS removed
-             FROM source
+             FROM listed
              ORDER BY removed, last_seen DESC, id",
-        )?;
+            placeholders()
+        );
+        let mut statement = self.connection.prepare(&sql)?;
         let rows = statement
             .query_map(
                 params![
@@ -643,7 +644,7 @@ impl Reader {
                 |row| {
                     Ok(Source {
                         id: row.get(0)?,
-                        address: shown_address(row.get(1)?, &row.get::<_, String>(2)?),
+                        address: row.get(1)?,
                         mode: row.get(2)?,
                         name: row.get(3)?,
                         first_seen: row.get(4)?,
@@ -984,9 +985,10 @@ impl Reader {
             "SELECT source_id, CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
                     AVG({column}), AVG({time})
              FROM {}
-             WHERE {time} >= ?1 AND {time} <= ?2
+             WHERE {time} >= ?1 AND {time} <= ?2 AND source_id NOT IN ({})
              GROUP BY source_id, bucket ORDER BY source_id, bucket",
-            table.name()
+            table.name(),
+            placeholders()
         );
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement
@@ -1111,12 +1113,16 @@ impl Reader {
             points: MIN_POINTS,
         };
         let (from, to, _) = window.stored();
-        let mut statement = self.connection.prepare(
+        let sql = format!(
             "SELECT at, kind, source_id, detail FROM (
                  SELECT rowid, at, kind, source_id, detail FROM event
-                 WHERE at >= ?1 AND at <= ?2 ORDER BY at DESC, rowid DESC LIMIT ?3
+                 WHERE at >= ?1 AND at <= ?2
+                     AND (source_id IS NULL OR source_id NOT IN ({}))
+                 ORDER BY at DESC, rowid DESC LIMIT ?3
              ) ORDER BY at, rowid",
-        )?;
+            placeholders()
+        );
+        let mut statement = self.connection.prepare(&sql)?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         Ok(statement
             .query_map(params![from, to, limit], |row| {
@@ -1295,9 +1301,27 @@ fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series 
 /// gets a clause that is always true.
 fn source_filter(table: Table, n: usize) -> String {
     match table.key() {
+        Some(key) if table.by_id() => format!(
+            "AND (?{n} IS NULL OR {key} = ?{n}) AND {key} NOT IN ({})",
+            placeholders()
+        ),
         Some(key) => format!("AND (?{n} IS NULL OR {key} = ?{n})"),
         None => format!("AND (?{n} IS NULL OR ?{n} IS NOT NULL)"),
     }
+}
+
+/// The IDs of the sources that are placeholders for names not resolved
+/// yet, which chronyc's `sources` leaves out without `-a`.  The daemon
+/// once recorded them (`IPADDR_ID`, `ntp_sources.c`), as eight hex
+/// digits, as a refclock's reference ID is, and now leaves them out
+/// too; an older database's are left out of everything read here.  An
+/// NTP source's address has a `.` or a `:`; theirs have neither.
+fn placeholders() -> String {
+    format!(
+        "SELECT id FROM source WHERE mode <> '{}'
+             AND instr(address, '.') = 0 AND instr(address, ':') = 0",
+        text::mode(SourceMode::Refclock)
+    )
 }
 
 /// `path` as the path of a `file:` URI: the characters a URI gives a
@@ -1328,20 +1352,6 @@ fn gaps(buckets: &[i64]) -> Vec<bool> {
 }
 
 /// Unix nanoseconds as seconds.
-/// A source's stored address, but an NTP source's whose name was not
-/// resolved yet as chronyd prints it: the daemon once recorded these
-/// placeholders, in eight hex digits as a refclock's reference ID is,
-/// and now leaves them out ([`Address::Unresolved`]).
-fn shown_address(address: String, mode: &str) -> String {
-    if mode == text::mode(SourceMode::Refclock) || address.parse::<IpAddr>().is_ok() {
-        return address;
-    }
-    match u32::from_str_radix(&address, 16) {
-        Ok(id) => Address::Unresolved(id).to_string(),
-        Err(_) => address,
-    }
-}
-
 fn seconds(stored: i64) -> f64 {
     stored as f64 / NANOSECONDS
 }
@@ -1959,13 +1969,11 @@ mod tests {
     fn the_latest_report_and_removed_sources() {
         let mut db = Database::new("report");
         let pps = Address::ReferenceId(u32::from_be_bytes(*b"PPS\0"));
-        let placeholder = Address::ReferenceId(1);
-        let (refclock, server, gone, unresolved) = db
+        let (refclock, server, gone) = db
             .log
             .write(|batch| {
                 let source =
                     |at, address, mode| batch.source(at, address, ReferenceId(1), mode, None);
-                let unresolved = source(at(0), placeholder, SourceMode::Client)?;
                 let gone = source(at(0), sample(OTHER, 0.0).address, SourceMode::Client)?;
                 let refclock = source(at(64), pps, SourceMode::Refclock)?;
                 let server = source(at(64), sample(SERVER, 0.0).address, SourceMode::Client)?;
@@ -1981,21 +1989,12 @@ mod tests {
                 };
                 batch.source_report(at(64), refclock, &none)?;
                 batch.source_report(at(64), server, &sample(SERVER, 2e-6))?;
-                batch.event(at(1), EventKind::SourceRemoved, Some(unresolved), None)?;
-                Ok((refclock, server, gone, unresolved))
+                Ok((refclock, server, gone))
             })
             .expect("written");
         let sources = db.reader().sources().expect("sources");
         let order: Vec<(i64, bool)> = sources.iter().map(|s| (s.id, s.removed)).collect();
-        assert_eq!(
-            order,
-            [
-                (refclock, false),
-                (server, false),
-                (unresolved, true),
-                (gone, true)
-            ]
-        );
+        assert_eq!(order, [(refclock, false), (server, false), (gone, true)]);
         let (state, values) = sources[0].report.clone().expect("a report");
         assert_eq!(state, "nonselectable");
         assert!(values.contains(&("reachability", 0.0)));
@@ -2005,8 +2004,80 @@ mod tests {
         );
         let (_, values) = sources[1].report.clone().expect("a report");
         assert!(values.contains(&("latest_measurement", 2e-6)));
-        assert_eq!(sources[2].address, "ID#0000000001");
         assert_eq!(sources[0].address, pps.to_string());
+    }
+
+    #[test]
+    fn placeholders_an_older_daemon_recorded_are_left_out() {
+        let mut db = Database::new("placeholders");
+        let server = db
+            .log
+            .write(|batch| {
+                // As the daemon once stored `IPADDR_ID` 1: eight hex
+                // digits, an NTP source's mode.
+                let placeholder = batch.source(
+                    at(9),
+                    Address::ReferenceId(1),
+                    ReferenceId(0),
+                    SourceMode::Client,
+                    None,
+                )?;
+                let server = batch.source(
+                    at(0),
+                    sample(SERVER, 0.0).address,
+                    ReferenceId(1),
+                    SourceMode::Client,
+                    None,
+                )?;
+                for (id, address) in [(placeholder, OTHER), (server, SERVER)] {
+                    batch.source_sample(at(0), id, &sample(address, 1e-6))?;
+                }
+                batch.event(at(1), EventKind::SourceRemoved, Some(placeholder), None)?;
+                batch.event(at(2), EventKind::Step, None, None)?;
+                Ok(server)
+            })
+            .expect("written");
+        let reader = db.reader();
+        let sources = reader.sources().expect("sources");
+        // The only one, and current, though the placeholder was seen later.
+        assert_eq!(
+            sources
+                .iter()
+                .map(|s| (s.id, s.removed))
+                .collect::<Vec<_>>(),
+            [(server, false)]
+        );
+        let overlay = reader
+            .overlay(
+                column(Table::SourceSample, "latest_measurement"),
+                window(0, 10, 16),
+            )
+            .expect("an overlay");
+        assert_eq!(
+            overlay
+                .lines
+                .iter()
+                .map(|l| l.source_id)
+                .collect::<Vec<_>>(),
+            [server]
+        );
+        let events = reader
+            .events(START as f64, (START + 10) as f64, 10)
+            .expect("events");
+        assert_eq!(
+            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            ["step"]
+        );
+        let (values, _) = reader
+            .values(
+                column(Table::SourceSample, "latest_measurement"),
+                None,
+                START as f64,
+                (START + 10) as f64,
+                10,
+            )
+            .expect("values");
+        assert_eq!(values.len(), 1);
     }
 
     #[test]

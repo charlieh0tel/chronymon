@@ -46,7 +46,8 @@ beside it, as chronyc does.  No access, no start.
    `pool` start under placeholder addresses (`IPADDR_ID`,
    `NSR_AddSourceByName`; `ID#0000000001` in the log) until resolved;
    chronyc hides them without `-a` (`client.c`), and the daemon skips
-   them.  An older database's, stored in hex, show as `ID#`.
+   them.  An older database's, stored in hex with no `.` or `:`, are
+   left out of everything the web view lists, events included.
 
 2. **Log files**, backfilled from rotations, `.gz` included:
    `refclocks.log` and `tempcomp.log`, which hold what the protocol
