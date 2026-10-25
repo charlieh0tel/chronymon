@@ -143,7 +143,7 @@ async function load(signal) {
     ...chartsOf(TEMPCOMP, temperature.plots).map((d) => ({ ...d, x: temperature.at })),
     ...filledCharts("tracking", frequency, { frequency: "frequency" }).map((d) => ({ ...d, x: frequency.at })),
   ];
-  drawStack(stack, { x: [], drawn }, "no temperature readings in this range");
+  drawStack(stack, { x: [], span: spanOf([temperature, frequency]), drawn }, "no temperature readings in this range");
   drawScatter(temperature, frequency, pointsFor(temperature.to - temperature.from));
 }
 

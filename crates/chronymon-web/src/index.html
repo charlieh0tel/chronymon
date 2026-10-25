@@ -143,7 +143,8 @@ async function load(signal) {
   }
   const fill = { table: "log_tracking", columns: columns.map((c) => FILLS[c]).filter(Boolean) };
   const got = await readHistory(signal, TABLE, columns, null, fill.columns.length ? fill : null);
-  drawStack(stack, { x: got.at, drawn: filledCharts(TABLE, got, FILLS) }, "no clock updates in this range");
+  drawStack(stack, { x: got.at, span: spanOf([got]), drawn: filledCharts(TABLE, got, FILLS) },
+    "no clock updates in this range");
 }
 
 pickers();

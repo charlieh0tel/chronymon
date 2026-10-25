@@ -190,6 +190,11 @@ ticks at zero, the threshold and its decades.
 Pages: Live, Sources and each source's own, Refclocks, Temperature,
 Journal, Distribution, Kiosk.
 
+- A page's charts read their tables over one range and are drawn over
+  it, not fitted to their own times: fitted, one source's measurements
+  spanning hours above its selection spanning minutes put one time at
+  two places, and readings that stopped short of now hid that they had.
+
 - Sources chronyd has removed stay listed, last and dimmed, their
   history a link away.  Removed: missing from the daemon's latest read
   (`last_seen` older than the newest), or its last event its removal.

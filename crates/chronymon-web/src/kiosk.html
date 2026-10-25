@@ -468,7 +468,8 @@ async function load(signal) {
   offsets.heading = esc(offsets.title) + `<span class="muted">: each source in its color` +
     (current(sources).some(noselect) ? ", noselect ones left out" : "") + "</span>";
   const drawn = [...filledCharts("tracking", clock, KIOSK_FILLS), offsets];
-  drawStack(stack, { x: clock.at, drawn }, "no clock updates in this range");
+  drawStack(stack, { x: clock.at, span: spanOf([clock, overlay]), drawn }, "no clock updates in this range");
+
 }
 
 // Paint what the last load kept, before anything is read: a player

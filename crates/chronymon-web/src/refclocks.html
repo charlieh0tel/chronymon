@@ -83,7 +83,8 @@ async function load(signal) {
   const { from, to } = rangeBounds();
   const events = await eventsFor(signal, from, to);
   stack.marks = events.marks;
-  const reads = await Promise.all(refclocks.map((r) => readHistory(signal, TABLE, COLUMNS, r.name)));
+  const reads = await readTogether(refclocks.map((r) => (bounds) =>
+    readHistory(signal, TABLE, COLUMNS, r.name, null, bounds)));
   // A chart per refclock and column, each against its own times: the
   // refclocks are sampled at their own moments.
   const drawn = refclocks.flatMap((r, n) =>
@@ -93,7 +94,7 @@ async function load(signal) {
       title: `${r.name}: ${label(d.column)}`,
       lines: d.lines.map((l) => ({ ...l, name: r.name })),
     })));
-  drawStack(stack, { x: [], drawn }, "no refclock samples in this range");
+  drawStack(stack, { x: [], span: spanOf(reads), drawn }, "no refclock samples in this range");
 }
 
 rangeControl($("ranges"), soon);

@@ -378,6 +378,10 @@ const stackChartHeight = (height, n, count, scale = 1) =>
 //                  the range
 //   font, scale    optional: the axes' font, as uPlot takes it, and how
 //                  many times their own size its room is
+//   span()         the time axis's `{ from, to }`, the read's: each
+//                  chart fitted to its own times would put one time at
+//                  different places down the stack, and drop a stretch
+//                  missing at either end
 function stackOptions(stack) {
   const scale = stack.scale ?? 1;
   const font = stack.font ? { font: stack.font } : {};
@@ -398,7 +402,7 @@ function stackOptions(stack) {
       },
     ],
     scales: {
-      x: { time: true },
+      x: { time: true, range: () => [stack.span().from, stack.span().to] },
       ...(stack.fitted.range || stack.fitted.scale
         ? { y: { ...stack.fitted.scale, ...(stack.fitted.range ? { range: stack.fitted.range } : {}) } }
         : {}),
@@ -488,24 +492,44 @@ function overlayQuery([table, column], bounds) {
   return "/api/overlay?" + q;
 }
 
-// The range's bounds, and for `all` the extent `first` gave: how far
-// back the database goes is only knowable once it has been asked, so
-// `all` costs a second request.
-// `bounds`, when given, are used as they are, as a second read on the
-// grid of a first one must be.
-async function readHistory(signal, table, columns, source, fill, bounds) {
-  if (bounds) return ask(historyQuery(table, columns, bounds, source, fill), signal, HISTORY_TIMEOUT);
-  bounds = rangeBounds();
-  let got = await ask(historyQuery(table, columns, bounds, source, fill), signal, HISTORY_TIMEOUT);
-  if (range.last === "all" && got.first != null && got.last > got.first) {
-    const all = { from: got.first, to: got.last, seconds: got.last - got.first };
-    got = await ask(historyQuery(table, columns, all, source, fill), signal, HISTORY_TIMEOUT);
+// Bounds both ends of which the server chooses: the latest hour.
+const OPEN_BOUNDS = { from: null, to: null, seconds: null };
+
+// Reads over the range, `read(bounds)` each, for charts that share a
+// time axis: each over the same bounds.  For `all`, first over the
+// server's latest hour, which is cheap and says each table's extent,
+// then over the extent of them all: how far back the database goes is
+// only knowable once it has been asked.
+async function readTogether(reads) {
+  if (range.last !== "all") {
+    const bounds = rangeBounds();
+    return Promise.all(reads.map((read) => read(bounds)));
   }
-  return got;
+  const probe = await Promise.all(reads.map((read) => read(OPEN_BOUNDS)));
+  const first = Math.min(...probe.map((got) => got.first ?? Infinity));
+  const last = Math.max(...probe.map((got) => got.last ?? -Infinity));
+  if (!(last > first)) return probe;
+  const all = { from: first, to: last, seconds: last - first };
+  return Promise.all(reads.map((read) => read(all)));
+}
+
+// `/api/history`, as `historyQuery` asks it, over the range.  `bounds`,
+// when given, are used as they are, as a second read on the grid of a
+// first one must be.
+async function readHistory(signal, table, columns, source, fill, bounds) {
+  const read = (b) => ask(historyQuery(table, columns, b, source, fill), signal, HISTORY_TIMEOUT);
+  return bounds ? read(bounds) : (await readTogether([read]))[0];
 }
 
 // A read's own bounds, for a second read on its grid.
 const boundsOf = (got) => ({ from: got.from, to: got.to, seconds: got.to - got.from });
+
+// The time axis of charts drawn from `reads`: the bounds the server read
+// them over.
+const spanOf = (reads) => ({
+  from: Math.min(...reads.map((got) => got.from)),
+  to: Math.max(...reads.map((got) => got.to)),
+});
 
 // How a line from chronyd's log is drawn beside the protocol's: dimmer
 // and dashed, since it is to the second and four significant digits.
@@ -661,9 +685,10 @@ function heldAxis(held) {
   };
 }
 
-// Draw the stack `read` -- `{ x, drawn }` -- into `container`, and
-// answer its charts.  A drawing with an `x` of its own is plotted
-// against that rather than the stack's.  `style` is
+// Draw the stack `read` -- `{ x, span, drawn }`, `span` its time axis as
+// `spanOf` gives it -- into `container`, and answer its charts.  A
+// drawing with an `x` of its own is plotted against that rather than
+// the stack's.  `style` is
 //   height(count)  each chart's height, given how many there are
 //   sync           the cursor's sync key
 //   hooks          uPlot's, as `stackOptions` takes them
@@ -677,7 +702,7 @@ function stackCharts(container, read, style) {
     const several = drawing.lines.length > 1;
     const host = document.createElement("div");
     container.appendChild(host);
-    const held = { fit: fits[n], ySize };
+    const held = { fit: fits[n], ySize, span: read.span };
     const opts = stackOptions({
       width: container.clientWidth || 800,
       height: stackChartHeight(height, n, read.drawn.length, scale),
@@ -700,6 +725,7 @@ function stackCharts(container, read, style) {
       ],
       fitted: heldAxis(held),
       ySize: () => held.ySize,
+      span: () => held.span,
       // Only the bottom chart carries the time labels.  Repeating them
       // under every plot costs the height that makes the stack worth
       // having, and says the axes might differ when the whole point is
@@ -761,6 +787,7 @@ function restack(container, charts, read, style) {
       const widened = held.ySize !== ySize;
       held.fit = fits[n];
       held.ySize = ySize;
+      held.span = read.span;
       c.setData(stackData(read, read.drawn[n]));
       const size = {
         width: container.clientWidth || c.width,
@@ -882,7 +909,7 @@ function markTip(chart, text) {
 //   sync                 the cursor's sync key
 //   charts, marks        the charts drawn and the events marked
 //   height, font, scale  optional, as `stackCharts` takes them
-// `read` is `{ x, drawn }`; `why` what to say when there is nothing.
+// `read` is `{ x, span, drawn }`; `why` what to say when there is nothing.
 function drawStack(view, read, why) {
   read.drawn = read.drawn.filter(drawsAnything);
   if (!read.drawn.length) {
