@@ -55,7 +55,7 @@ struct Cli {
     #[arg(long, env = "CHRONYMOND_INTERVAL", default_value_t = 1.0)]
     interval: f64,
 
-    /// chronyd's configuration, for its `makestep` threshold.
+    /// chronyd's configuration, for its `makestep`.
     #[arg(
         long,
         env = "CHRONYMOND_CHRONY_CONFIG",
@@ -135,11 +135,12 @@ fn run(cli: &Cli) -> Result<()> {
     };
     let mut log =
         Log::open(&cli.database).with_context(|| format!("opening {}", cli.database.display()))?;
-    let step_threshold = config::step_threshold(&cli.chrony_config);
+    let make_step = config::make_step(&cli.chrony_config);
     eprintln!(
-        "chronymond: version {}, {} every {interval:?}, steps above {step_threshold}",
+        "chronymond: version {}, {} every {interval:?}, {}",
         env!("CARGO_PKG_VERSION"),
-        cli.socket.display()
+        cli.socket.display(),
+        make_step.map_or_else(|| "no makestep".to_owned(), |m| m.to_string())
     );
 
     let (stop, stopped) = mpsc::channel();
@@ -174,7 +175,7 @@ fn run(cli: &Cli) -> Result<()> {
     );
     let mut logs_read = Instant::now();
 
-    let mut collector = Collector::new(step_threshold);
+    let mut collector = Collector::new(make_step);
     let mut state = None;
     let mut next = Instant::now();
     loop {

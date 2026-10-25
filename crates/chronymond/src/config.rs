@@ -1,32 +1,58 @@
-//! What chronymond needs from chronyd's configuration: its `makestep`
-//! threshold, which decides when a correction is a step.
+//! What chronymond needs from chronyd's configuration: its `makestep`,
+//! which decides when a correction is a step.
 //!
 //! Read from the main file and the directories its `confdir` and
 //! `sourcedir` directives name, as chronyd reads them (`chrony.conf`
 //! documentation, 4.3 to 4.9); `include` is followed too.  The last
 //! `makestep` wins, as in chronyd.
 
+use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
 use chronymon::units::Seconds;
 
-/// The threshold assumed when chronyd's configuration sets none.
-pub(crate) const DEFAULT_STEP_THRESHOLD: Seconds = Seconds::new(1.0);
+/// The correction recorded as a large offset when chronyd's
+/// configuration has no `makestep` threshold to go by.
+pub(crate) const DEFAULT_LARGE_OFFSET: Seconds = Seconds::new(1.0);
 
 /// How deep `include`s are followed, against a loop.
 const MAX_DEPTH: usize = 8;
 
-/// The `makestep` threshold in the configuration at `path`, or
-/// [`DEFAULT_STEP_THRESHOLD`].
-pub(crate) fn step_threshold(path: &Path) -> Seconds {
-    let mut threshold = None;
-    read(path, 0, &mut threshold);
-    threshold.unwrap_or(DEFAULT_STEP_THRESHOLD)
+/// A `makestep` directive: chronyd steps the clock when an update's
+/// correction is past `threshold`, in its first `limit` updates, or in
+/// any if `limit` is negative (`is_step_limit_reached`, `reference.c`,
+/// 4.3 to 4.9).  Without one chronyd never steps: `make_step_limit`
+/// is 0 (`conf.c`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MakeStep {
+    pub(crate) threshold: Seconds,
+    pub(crate) limit: i32,
 }
 
-fn read(path: &Path, depth: usize, threshold: &mut Option<Seconds>) {
+impl MakeStep {
+    /// Whether chronyd may step on its `update`th clock update since it
+    /// started, counted from 1; `None` when the count is not known.
+    pub(crate) fn steps_on(self, update: Option<u32>) -> bool {
+        self.limit < 0 || update.is_some_and(|n| i64::from(n) <= i64::from(self.limit))
+    }
+}
+
+impl fmt::Display for MakeStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "makestep {} {}", self.threshold.get(), self.limit)
+    }
+}
+
+/// The `makestep` in the configuration at `path`, if any.
+pub(crate) fn make_step(path: &Path) -> Option<MakeStep> {
+    let mut make_step = None;
+    read(path, 0, &mut make_step);
+    make_step
+}
+
+fn read(path: &Path, depth: usize, make_step: &mut Option<MakeStep>) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -37,20 +63,29 @@ fn read(path: &Path, depth: usize, threshold: &mut Option<Seconds>) {
         let line = line.split(['#', ';', '!', '%']).next().unwrap_or("");
         let mut words = line.split_whitespace();
         match words.next() {
+            // chronyd refuses to start on any other form
+            // (`parse_makestep`, `conf.c`).
             Some("makestep") => {
-                if let Some(value) = words.next().and_then(|word| word.parse::<f64>().ok()) {
-                    *threshold = Some(Seconds::new(value));
+                if let (Some(Ok(threshold)), Some(Ok(limit)), None) = (
+                    words.next().map(str::parse::<f64>),
+                    words.next().map(str::parse::<i32>),
+                    words.next(),
+                ) {
+                    *make_step = Some(MakeStep {
+                        threshold: Seconds::new(threshold),
+                        limit,
+                    });
                 }
             }
             Some("include") => {
                 for file in words.flat_map(glob) {
-                    read(&file, depth + 1, threshold);
+                    read(&file, depth + 1, make_step);
                 }
             }
             Some("confdir" | "sourcedir") => {
                 for directory in words {
                     for file in glob(&format!("{directory}/*.conf")) {
-                        read(&file, depth + 1, threshold);
+                        read(&file, depth + 1, make_step);
                     }
                 }
             }
@@ -90,6 +125,11 @@ fn glob(pattern: &str) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    const FIRST_THREE: MakeStep = MakeStep {
+        threshold: Seconds::new(1.0),
+        limit: 3,
+    };
+
     #[test]
     fn finds_makestep_through_confdir() {
         let directory =
@@ -105,13 +145,33 @@ mod tests {
             ),
         )
         .expect("written");
-        assert_eq!(step_threshold(&main), Seconds::new(1.0));
+        assert_eq!(make_step(&main), Some(FIRST_THREE));
         fs::write(conf_d.join("local.conf"), "makestep 0.1 -1\n").expect("written");
-        assert_eq!(step_threshold(&main), Seconds::new(0.1));
-        assert_eq!(
-            step_threshold(&directory.join("missing.conf")),
-            DEFAULT_STEP_THRESHOLD
-        );
+        let unlimited = MakeStep {
+            threshold: Seconds::new(0.1),
+            limit: -1,
+        };
+        assert_eq!(make_step(&main), Some(unlimited));
+        assert_eq!(make_step(&directory.join("missing.conf")), None);
         fs::remove_dir_all(&directory).expect("removed");
+    }
+
+    #[test]
+    fn steps_only_within_the_limit() {
+        assert!(FIRST_THREE.steps_on(Some(1)));
+        assert!(FIRST_THREE.steps_on(Some(3)));
+        assert!(!FIRST_THREE.steps_on(Some(4)));
+        assert!(!FIRST_THREE.steps_on(None));
+        let never = MakeStep {
+            limit: 0,
+            ..FIRST_THREE
+        };
+        assert!(!never.steps_on(Some(1)));
+        let always = MakeStep {
+            limit: -1,
+            ..FIRST_THREE
+        };
+        assert!(always.steps_on(Some(1000)));
+        assert!(always.steps_on(None));
     }
 }

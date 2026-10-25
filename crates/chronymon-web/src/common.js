@@ -306,6 +306,7 @@ const EVENTS = {
   chronyd_restart: ["#fbbf24", "chronyd restarted"],
   chronyd_crash: ["#f87171", "chronyd crashed"],
   step: ["#f87171", "clock stepped"],
+  large_offset: ["#fbbf24", "large offset"],
   reference_change: ["#fbbf24", "reference changed"],
   leap_change: ["#fbbf24", "leap status changed"],
   source_added: ["#a78bfa", "source added"],

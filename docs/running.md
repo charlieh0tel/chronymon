@@ -77,11 +77,13 @@ and the polling, go on.
 
 ## Events
 
-The journal records, besides chronyd's own changes (steps, reference
-and leap changes, sources added and removed):
+The journal records, besides chronyd's own changes (reference and leap
+changes, sources added and removed):
 
 | Event | Means |
 | - | - |
+| `step` | an update's offset past chronyd's `makestep` threshold, within its update limit: stepped |
+| `large_offset` | the same past the limit, or with no `makestep`: slewed (threshold 1 s without one) |
 | `chronyd_down`, `chronyd_up` | chronyd stopped or started answering |
 | `chronyd_restart` | chronyd's PID changed |
 | `chronyd_crash` | chronyd's PID file names a process that is gone |

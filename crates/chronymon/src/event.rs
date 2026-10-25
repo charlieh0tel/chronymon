@@ -27,9 +27,13 @@ pub enum EventKind {
     /// chronyd died without cleaning up: its PID file names a process
     /// that is gone.
     ChronydCrash,
-    /// The clock was stepped: the correction jumped past chronyd's
-    /// `makestep` threshold.
+    /// The clock was stepped: an update's correction was past chronyd's
+    /// `makestep` threshold, within its update limit.
     Step,
+    /// An update's correction was past chronyd's `makestep` threshold
+    /// (1 s without one), but slewed: past the update limit, or with no
+    /// `makestep` at all.
+    LargeOffset,
     /// The clock's reference changed to another source.
     ReferenceChange,
     /// The clock's leap status changed.
@@ -44,7 +48,7 @@ pub enum EventKind {
 
 impl EventKind {
     /// Every kind, for tests and for a reader decoding the stored name.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::DaemonStart,
         Self::DaemonStop,
         Self::DaemonCrash,
@@ -56,6 +60,7 @@ impl EventKind {
         Self::ChronydRestart,
         Self::ChronydCrash,
         Self::Step,
+        Self::LargeOffset,
         Self::ReferenceChange,
         Self::LeapChange,
         Self::SourceAdded,
@@ -77,6 +82,7 @@ impl EventKind {
             Self::ChronydRestart => "chronyd_restart",
             Self::ChronydCrash => "chronyd_crash",
             Self::Step => "step",
+            Self::LargeOffset => "large_offset",
             Self::ReferenceChange => "reference_change",
             Self::LeapChange => "leap_change",
             Self::SourceAdded => "source_added",
