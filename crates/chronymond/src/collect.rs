@@ -331,8 +331,7 @@ impl Collector {
             batch.event(at, EventKind::ReferenceChange, None, Some(&detail))?;
         }
         if before.leap != tracking.leap {
-            let detail = format!("{:?} to {:?}", before.leap, tracking.leap);
-            batch.event(at, EventKind::LeapChange, None, Some(&detail))?;
+            batch.leap_change(at, before.leap, tracking.leap)?;
         }
         Ok(())
     }

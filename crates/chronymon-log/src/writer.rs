@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use chronymon::event::EventKind;
 use chronymon_control::report::Address;
+use chronymon_control::report::Leap;
 use chronymon_control::report::NtpData;
 use chronymon_control::report::ReferenceId;
 use chronymon_control::report::SelectData;
@@ -644,13 +645,18 @@ impl Batch<'_> {
         )?;
         Ok(())
     }
+
+    /// chronyd's leap status changing from `before` to `now`.
+    pub fn leap_change(&self, at: Timestamp, before: Leap, now: Leap) -> Result<()> {
+        let detail = text::leap_change(before, now);
+        self.event(at, EventKind::LeapChange, None, Some(&detail))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use chronymon::units::Ppm;
     use chronymon::units::Seconds;
-    use chronymon_control::report::Leap;
     use chronymon_control::report::SourceState;
 
     use super::*;
