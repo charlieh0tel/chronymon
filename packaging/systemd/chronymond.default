@@ -1,0 +1,24 @@
+# Settings for chronymond.  See `chronymond --help`.  Every line is
+# commented out and shows the built-in default; uncomment one only to
+# change it.
+
+# chronyd's control socket.
+#CHRONYMOND_SOCKET=/run/chrony/chronyd.sock
+
+# The database.  The web view reads the same file.
+#CHRONYMOND_DATABASE=/var/lib/chronymon/chronymon.sqlite
+
+# Seconds between polls of chronyd.
+#CHRONYMOND_INTERVAL=1
+
+# chronyd's configuration, read for its makestep threshold, which
+# decides when a correction is recorded as a step.
+#CHRONYMOND_CHRONY_CONFIG=/etc/chrony/chrony.conf
+
+# chronyd's log directory, and seconds between reads of it.  chronyd
+# writes logs only as its `log` directive asks.
+#CHRONYMOND_CHRONY_LOGS=/var/log/chrony
+#CHRONYMOND_LOG_INTERVAL=10
+
+# chronyd's PID file, which tells a restart from a crash.
+#CHRONYMOND_PID_FILE=/run/chrony/chronyd.pid

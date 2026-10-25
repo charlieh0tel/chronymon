@@ -266,7 +266,12 @@ Pages:
 5. **Packaging.**  One Debian package, `chronymon`, amd64 and arm64,
    released through deb-workflows (`rust-build-deb.yml`): both
    binaries, their systemd units and `/etc/default` files, and a
-   `chronymon` system user and group (sysusers.d) for the web view.
+   `chronymon` system user and group for the web view (`adduser` in
+   `postinst`, as smartclock does).  Done: installed under systemd in
+   a container, both services start and run sandboxed, chronymond as
+   `_chrony` reading chronyd's socket and logs, chronymon-web reading
+   its database read-only.  A tag also triggers the APT repository's
+   rebuild.
 6. **Later, maybe.**  A kiosk page, smartclock-sensord's ambient
    readings, a Prometheus exporter.
 
@@ -332,6 +337,13 @@ Pages:
   then made WAL files the daemon could not open.
 - Polled every second by default, set in `/etc/default/chronymond`.
 - Web on 127.0.0.1:8323 by default; one package for amd64 and arm64.
+- The logs fill the charts only where the control protocol has no
+  rows -- before the daemon ran, while it was down -- drawn as lower
+  precision (times to the second, four significant digits); otherwise
+  they feed the pages only they can: refclocks, tempcomp, every NTP
+  packet.
+- The package enables and starts both services; releases also
+  trigger the APT repository's rebuild, as smartclock's do.
 - Timestamps stored as integer nanoseconds since the epoch, as
   smartclock's schema does: chrony's reference times are in
   nanoseconds, and 64 bits run to 2262.

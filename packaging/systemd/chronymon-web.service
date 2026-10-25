@@ -1,0 +1,35 @@
+[Unit]
+Description=Browser view of chronyd's tracking and source statistics
+Documentation=https://github.com/charlieh0tel/chronymon
+
+[Service]
+Type=exec
+EnvironmentFile=-/etc/default/chronymon-web
+ExecStart=/usr/bin/chronymon-web
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2
+
+# Its own user, not chronyd's: what serves the network must not be
+# able to steer the clock through chronyd's socket.  It reads the
+# daemon's database through group chronymon, read-only.
+User=chronymon
+Group=chronymon
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

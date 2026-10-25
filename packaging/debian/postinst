@@ -1,0 +1,23 @@
+#!/bin/sh
+# Creates the web view's account and group.  The daemon runs as
+# chronyd's _chrony, which the chrony package makes.
+set -e
+
+case "$1" in
+configure)
+    if ! getent passwd chronymon >/dev/null; then
+        adduser --system --group --no-create-home \
+            --home /var/lib/chronymon \
+            --gecos "chronymon web view" \
+            chronymon
+    fi
+    # StateDirectory= makes this only when the daemon first starts;
+    # made here, with the same owner and mode, the web view can start
+    # first.
+    install -d -o _chrony -g chronymon -m 2750 /var/lib/chronymon
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

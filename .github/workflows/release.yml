@@ -1,0 +1,30 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # The whole workspace built once per architecture, and chronymond's
+  # [package.metadata.deb] packaged: the chronymon package, both
+  # programs.  No toolchain input: rust-build-deb reads
+  # rust-toolchain.toml.
+  deb:
+    uses: charlieh0tel/deb-workflows/.github/workflows/rust-build-deb.yml@v1
+    permissions:
+      contents: write
+    with:
+      packages: "chronymond"
+
+  trigger-apt-repo:
+    needs: deb
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      # workflow_dispatch, not repository_dispatch: the token then needs
+      # Actions: write on apt-repo instead of Contents: write, which could
+      # push a commit to the workflow that runs with the GPG signing key.
+      - name: Trigger APT repo rebuild
+        env:
+          GH_TOKEN: ${{ secrets.APT_REPO_TOKEN }}
+        run: gh workflow run update-repo.yml -R charlieh0tel/apt-repo

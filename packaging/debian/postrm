@@ -1,0 +1,14 @@
+#!/bin/sh
+# Leaves the database alone on remove; purge takes it.  The chronymon
+# user and group stay, as current Debian tooling leaves system users.
+set -e
+
+case "$1" in
+purge)
+    rm -rf /var/lib/chronymon
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

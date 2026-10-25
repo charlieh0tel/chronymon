@@ -1,0 +1,11 @@
+# Settings for chronymon-web.  See `chronymon-web --help`.  Every line
+# is commented out and shows the built-in default; uncomment one only
+# to change it.
+
+# The address to serve on.  127.0.0.1 serves this host alone;
+# 0.0.0.0:8323 serves the network.  The view is read-only and asks for
+# no password: open it only where everyone who can reach it may see it.
+#CHRONYMON_WEB_LISTEN=127.0.0.1:8323
+
+# The database chronymond writes.
+#CHRONYMON_WEB_DATABASE=/var/lib/chronymon/chronymon.sqlite

@@ -23,3 +23,34 @@ workspace = true
 
 [dev-dependencies]
 rusqlite = { version = "0.41.0", features = ["bundled"] }
+
+# One package carries both programs, built from one workspace build by
+# deb-workflows' rust-build-deb (packages: chronymond).
+[package.metadata.deb]
+name = "chronymon"
+maintainer = "Christopher Hoover <ch@murgatroid.com>"
+copyright = "2026, Christopher Hoover"
+extended-description = """\
+A daemon that records chronyd's tracking, its sources' samples and \
+statistics, and what happens to chronyd and the host -- restarts, \
+steps, boots, crashes -- into SQLite, and a browser view that charts \
+it live.  It reads chronyd's control socket and its log files."""
+section = "net"
+priority = "optional"
+depends = "$auto, adduser, chrony (>= 4.3)"
+assets = [
+    ["target/release/chronymond", "usr/bin/", "755"],
+    ["target/release/chronymon-web", "usr/bin/", "755"],
+    ["../../packaging/systemd/chronymond.default", "etc/default/chronymond", "644"],
+    ["../../packaging/systemd/chronymon-web.default", "etc/default/chronymon-web", "644"],
+    ["../../README.md", "usr/share/doc/chronymon/README.md", "644"],
+]
+conf-files = ["/etc/default/chronymond", "/etc/default/chronymon-web"]
+maintainer-scripts = "../../packaging/debian/"
+changelog = "../../packaging/debian/changelog"
+# Both enabled: neither needs settings to run, and the web view serves
+# this host alone until told otherwise.
+systemd-units = [
+    { unit-name = "chronymond", unit-scripts = "../../packaging/systemd", enable = true, start = true },
+    { unit-name = "chronymon-web", unit-scripts = "../../packaging/systemd", enable = true, start = true },
+]

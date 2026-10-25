@@ -5,3 +5,4 @@
 *.sqlite-shm
 /.claude
 /tmp
+/apu-0
