@@ -755,6 +755,7 @@ const stackShape = (drawing, fitted) =>
     drawing.lines.map((l) => [l.column, l.name, l.color]),
     drawing.heading ?? null,
     Boolean(drawing.envelope),
+    drawing.shaded !== false,
     Boolean(fitted.range),
     Boolean(fitted.axis.splits),
     Boolean(fitted.axis.filter),
@@ -787,6 +788,9 @@ function heldAxis(held) {
 //   font, scale    optional, as `stackOptions` takes them
 //   toggles        optional: whether the names in the titles hide and
 //                  show their lines
+//   bands          optional: the bands behind each chart's lines, as
+//                  `drawBands` takes them, a function, read as drawn;
+//                  none behind a drawing's whose `shaded` is false
 function stackCharts(container, read, style) {
   const scale = style.scale ?? 1;
   const height = style.height(read.drawn.length);
@@ -840,6 +844,8 @@ function stackCharts(container, read, style) {
     const chart = ranged(new uPlot(opts, stackData(read, drawing), host));
     chart.chronymonShape = stackShape(drawing, fits[n]);
     chart.chronymonAxis = held;
+    // Set before uPlot first draws, which it does in a microtask.
+    chart.chronymonBands = drawing.shaded === false || !style.bands ? () => [] : style.bands;
     // Which lines this chart draws, and from which series, so a shared
     // readout can label them without reaching back into the request
     // that built it.
@@ -1051,8 +1057,8 @@ function markTip(chart, text) {
 //   read, why, toggling  kept by drawStack: the last drawn, to draw it
 //                        again, and whether its titles toggle lines
 // `read` is `{ x, span, drawn, bands }`, `bands` optional, as
-// `notSynchronizedBands` gives them; `why` what to say when there is
-// nothing.
+// `notSynchronizedBands` gives them, behind every chart but a drawing's
+// whose `shaded` is false; `why` what to say when there is nothing.
 function drawStack(view, read, why) {
   read.drawn = read.drawn.filter(drawsAnything);
   if (!read.drawn.length) {
@@ -1061,28 +1067,28 @@ function drawStack(view, read, why) {
   }
   view.read = read;
   view.why = why;
-  // The read drawn now, not the one a chart kept was made for.
-  const bands = () => view.read?.bands ?? [];
   if (view.toggles) toggleLines(view);
   update($(view.note), "textContent", "");
   const readout = () => {
     if (!view.readout) return;
-    const mark = view.charts.map((c) => markAt(c, view.marks, bands())).find((m) => m != null);
+    const mark = view.charts.map((c) => markAt(c, view.marks, c.chronymonBands())).find((m) => m != null);
     showHtml($(view.readout), readoutHtml(view.charts, mark));
     const under = view.charts.find((c) => c.over.matches(":hover"));
-    markTip(under, under ? markAt(under, view.marks, bands()) : null);
+    markTip(under, under ? markAt(under, view.marks, under.chronymonBands()) : null);
   };
   view.charts = restack($(view.container), view.charts, read, {
     height: view.height ?? plotHeight,
     sync: view.sync.key,
     hooks: {
       setCursor: [readout],
-      drawClear: [(u) => drawBands(u, bands())],
+      drawClear: [(u) => drawBands(u, u.chronymonBands?.() ?? [])],
       draw: [(u) => drawMarks(u, view.marks)],
     },
     font: view.font,
     scale: view.scale,
     toggles: view.toggles,
+    // The read drawn now, not the one a chart kept was made for.
+    bands: () => view.read?.bands ?? [],
   });
   readout();
 }

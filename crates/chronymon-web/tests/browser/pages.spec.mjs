@@ -289,13 +289,21 @@ test("Live: chronyd unsynchronized or on its local reference is a gap, shaded an
   expect(await page.evaluate(() => stack.read.bands)).toEqual([]);
 });
 
-test("Kiosk: chronyd unsynchronized or on its local reference is shaded on its charts", async ({ page }) => {
+test("Kiosk: chronyd unsynchronized or on its local reference is shaded on its clock's charts only", async ({ page }) => {
   const { lost, local, regained } = await notSynchronized(page);
   await page.setViewportSize(KIOSK_VIEWPORT);
   await page.goto(`/kiosk?from=${Math.floor(lost - 1800)}&to=${Math.ceil(regained + 1800)}`);
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
-  expect(await page.evaluate(() => stack.read.bands.map((b) => [b.from, b.to]))).toEqual([[lost, local], [local, regained]]);
+  // Each chart's title and the bands drawn behind it.
+  const shaded = await page.evaluate(() => stack.charts.map((c) => [
+    c.root.querySelector(".u-title").textContent.split(",")[0],
+    c.chronymonBands().map((b) => [b.from, b.to]),
+  ]));
+  const both = [[lost, local], [local, regained]];
+  // Not the sources' offsets, which go on while chronyd is not
+  // synchronized to one.
+  expect(shaded).toEqual([["Last offset", both], ["Frequency", both], ["Skew", both], ["Offset", []]]);
 });
 
 test("Live: the range buttons move the window and the address", async ({ page }) => {

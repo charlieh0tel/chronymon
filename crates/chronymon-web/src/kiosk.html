@@ -473,6 +473,9 @@ async function load(signal) {
     (id) => names.get(id) ?? `source ${id}`);
   offsets.heading = esc(offsets.title) + `<span class="muted">: each source in its color` +
     esc(leftOut(current(sources))) + "</span>";
+  // Not chronyd's clock: its sources' offsets go on while it is not
+  // synchronized to one.
+  offsets.shaded = false;
   const drawn = [...filledCharts("tracking", clock, KIOSK_FILLS), offsets];
   drawStack(stack, { x: clock.at, span: spanOf([clock, overlay]), drawn, bands: notSynchronizedBands(clock) },
     "no clock updates in this range");
