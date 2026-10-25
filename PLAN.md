@@ -291,7 +291,8 @@ Pages:
    its database read-only.  A tag also triggers the APT repository's
    rebuild.
 6. **Later, maybe.**  A kiosk page, smartclock-sensord's ambient
-   readings, a Prometheus exporter.
+   readings, a Prometheus exporter, every packet from
+   `measurements.log` on the Sources page.
 
 ## Adversarial review
 
@@ -360,6 +361,12 @@ Pages:
   precision (times to the second, four significant digits); otherwise
   they feed the pages only they can: refclocks, tempcomp, every NTP
   packet.
+- No events inferred from the logs: the journal holds what the daemon
+  saw, not what a backfill guesses (a NUL run left by a crash, a
+  banner where chronyd reopened its logs).
+- The status strip reads only the daemon's `status` row, also when
+  the database holds nothing but logs: with the daemon installed, it
+  is always running.
 - The package enables and starts both services; releases also
   trigger the APT repository's rebuild, as smartclock's do.
 - Timestamps stored as integer nanoseconds since the epoch, as
