@@ -122,8 +122,16 @@ fn source(query: &str, table: Table) -> Result<Option<Key>> {
 
 /// The window a request names, or the last hour `table` holds, and the
 /// table's extent, which the page needs for `all`.
-fn window(reader: &Reader, table: Table, query: &str) -> Result<(Window, Value)> {
-    let extent = reader.extent(table)?;
+fn window(reader: &Reader, tables: &[Table], query: &str) -> Result<(Window, Value)> {
+    // The tables' extents together: a filled series spans both.
+    let extent = tables
+        .iter()
+        .try_fold(None, |held: Option<(f64, f64)>, table| {
+            Ok::<_, anyhow::Error>(match (held, reader.extent(*table)?) {
+                (Some((a, b)), Some((c, d))) => Some((a.min(c), b.max(d))),
+                (one, other) => one.or(other),
+            })
+        })?;
     let to = number(query, "to").unwrap_or_else(|| extent.map_or_else(now, |(_, last)| last));
     let from = number(query, "from").unwrap_or(to - DEFAULT_WINDOW);
     if from > to {
@@ -197,8 +205,40 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
     }))
 }
 
+/// The table and columns a request fills from, `fill=` and
+/// `fill_columns=`, if it names one.
+fn fill(query: &str) -> Result<Option<(Table, Vec<Column>)>> {
+    let Some(name) = value(query, "fill") else {
+        return Ok(None);
+    };
+    let fill =
+        Table::from_name(&name).ok_or_else(|| anyhow!("{name} is not a table this serves"))?;
+    let columns = value(query, "fill_columns")
+        .ok_or_else(|| anyhow!("which columns of {name}?"))?
+        .split(',')
+        .filter(|c| !c.is_empty())
+        .map(|c| column(fill, c))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some((fill, columns)))
+}
+
+/// `/api/keys?table=`: the sources a log table names, by name, with
+/// their rows and the span of them.
+pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
+    let reader = open(path)?;
+    let table = table(query)?;
+    Ok(Value::Array(
+        reader
+            .keys(table)?
+            .into_iter()
+            .map(|n| json!({ "name": n.name, "rows": n.rows, "first": n.first, "last": n.last }))
+            .collect(),
+    ))
+}
+
 /// `/api/history?table=&columns=a,b&from=&to=&points=&source=`: one
-/// table's columns, bucketed on one grid.
+/// table's columns, bucketed on one grid; with `fill=&fill_columns=`,
+/// another table's in the buckets where the first has no rows.
 pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
     let reader = open(path)?;
     let table = table(query)?;
@@ -211,12 +251,30 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
     if columns.is_empty() {
         bail!("no columns asked for");
     }
-    let (window, bounds) = window(&reader, table, query)?;
-    let series = reader.series(table, source(query, table)?.as_ref(), &columns, window)?;
+    let fill = fill(query)?;
+    let tables: Vec<Table> = [Some(table), fill.as_ref().map(|f| f.0)]
+        .into_iter()
+        .flatten()
+        .collect();
+    let (window, bounds) = window(&reader, &tables, query)?;
+    let series = match fill {
+        Some((fill, fill_columns)) => {
+            reader.filled(table, &columns, fill, &fill_columns, window)?
+        }
+        None => reader.series(table, source(query, table)?.as_ref(), &columns, window)?,
+    };
     let plots: Vec<Value> = series
         .plots
         .iter()
-        .map(|p| json!({ "column": p.column, "mean": p.mean, "min": p.min, "max": p.max }))
+        .map(|p| {
+            json!({
+                "table": p.table,
+                "column": p.column,
+                "mean": p.mean,
+                "min": p.min,
+                "max": p.max,
+            })
+        })
         .collect();
     Ok(with(json!({ "at": series.at, "plots": plots }), bounds))
 }
@@ -231,7 +289,7 @@ pub(crate) fn overlay(path: &Path, query: &str) -> Result<Value> {
     }
     let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
     let column = column(table, &name)?;
-    let (window, bounds) = window(&reader, table, query)?;
+    let (window, bounds) = window(&reader, &[table], query)?;
     let overlay = reader.overlay(column, window)?;
     let lines: Vec<Value> = overlay
         .lines
@@ -312,7 +370,7 @@ pub(crate) fn distribution(path: &Path, query: &str) -> Result<Value> {
     let table = table(query)?;
     let name = value(query, "column").ok_or_else(|| anyhow!("which column?"))?;
     let column = column(table, &name)?;
-    let (window, bounds) = window(&reader, table, query)?;
+    let (window, bounds) = window(&reader, &[table], query)?;
     let (values, truncated) = reader.values(
         column,
         source(query, table)?.as_ref(),

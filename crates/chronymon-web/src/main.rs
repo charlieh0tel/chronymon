@@ -24,6 +24,10 @@ const LIVE: &str = include_str!("index.html");
 const SOURCES: &str = include_str!("sources.html");
 /// One source's measurements and regression.
 const SOURCE: &str = include_str!("source.html");
+/// Each refclock's samples, from chronyd's log.
+const REFCLOCKS: &str = include_str!("refclocks.html");
+/// tempcomp's temperature and the clock's frequency against it.
+const TEMPERATURE: &str = include_str!("temperature.html");
 /// The events over a range.
 const JOURNAL: &str = include_str!("journal.html");
 /// Percentiles and histograms over a range.
@@ -109,6 +113,8 @@ fn main() -> Result<()> {
             "/" => Response::ok(HTML, LIVE.to_owned()),
             "/sources" => Response::ok(HTML, SOURCES.to_owned()),
             "/source" => Response::ok(HTML, SOURCE.to_owned()),
+            "/refclocks" => Response::ok(HTML, REFCLOCKS.to_owned()),
+            "/temperature" => Response::ok(HTML, TEMPERATURE.to_owned()),
             "/journal" => Response::ok(HTML, JOURNAL.to_owned()),
             "/distribution" => Response::ok(HTML, DISTRIBUTION.to_owned()),
             "/style.css" => Response::ok(CSS, STYLE.to_owned()),
@@ -120,6 +126,7 @@ fn main() -> Result<()> {
             "/api/overlay" => json(api::overlay(database, query)),
             "/api/sources" => json(api::sources(database)),
             "/api/events" => json(api::events(database, query)),
+            "/api/keys" => json(api::keys(database, query)),
             "/api/distribution" => json(api::distribution(database, query)),
             _ => Response::not_found(),
         }

@@ -1,0 +1,163 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chronymon: temperature</title>
+
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE"
+      crossorigin="anonymous">
+
+<link rel="stylesheet" href="/style.css">
+
+<div class="panel" id="status"><span class="muted">connecting...</span></div>
+
+<nav class="panel nav">
+  <a href="/">Live</a>
+  <a href="/sources">Sources</a>
+  <a href="/refclocks">Refclocks</a>
+  <a href="/temperature" aria-current="page">Temperature</a>
+  <a href="/journal">Journal</a>
+  <a href="/distribution">Distribution</a>
+</nav>
+
+<div class="panel">
+  <div class="controls">
+    <h2>Temperature, from tempcomp.log</h2>
+    <span class="grow"></span>
+    <span id="ranges"></span>
+  </div>
+  <div id="charts" class="stack"></div>
+  <div id="readout"></div>
+  <div id="note-tip"></div>
+  <div id="note"></div>
+</div>
+
+<div class="panel">
+  <h2>The clock's frequency against temperature</h2>
+  <div id="scatter"></div>
+  <div id="figures" class="muted"></div>
+</div>
+
+<footer id="colophon"></footer>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c"
+        crossorigin="anonymous"></script>
+<script src="/common.js"></script>
+<script src="/charts.js"></script>
+<script>
+"use strict";
+
+// A day: a temperature's effect is a day's cycle.
+readRange(86400);
+
+const TEMPCOMP = "tempcomp_sample";
+// The clock's frequency, from the protocol where the daemon was running
+// and from tracking.log where it was not.
+const FREQUENCY = { table: "tracking", columns: ["frequency"], fill: { table: "log_tracking", columns: ["frequency"] } };
+
+// Why there may be nothing: tempcomp's readings are only in chronyd's
+// log.
+const NOTHING =
+  "No temperature compensation is recorded: chronyd logs it only with 'tempcomp' configured and " +
+  "'log tempcomp' in chrony.conf, and chronymond reads it from its log directory.";
+
+const stack = {
+  container: "charts",
+  readout: "readout",
+  note: "note",
+  sync: haveUplot ? uPlot.sync("chronymon") : null,
+  charts: [],
+  marks: [],
+};
+
+let scatterChart = null;
+
+// The frequency as one series: the protocol's, or the log's where the
+// protocol has none.
+function frequencyValues(got) {
+  const reported = got.plots.find((p) => p.table === "tracking");
+  const logged = got.plots.find((p) => p.table === "log_tracking");
+  return reported.mean.map((v, i) => v ?? logged?.mean[i] ?? null);
+}
+
+function drawScatter(temperature, frequency, points) {
+  scatterChart?.destroy();
+  scatterChart = null;
+  $("scatter").innerHTML = "";
+  const pairs = pairsOn(
+    { read: temperature, values: temperature.plots[0].mean },
+    { read: frequency, values: frequencyValues(frequency) },
+    points,
+  );
+  if (pairs.length < MIN_PAIRS) {
+    showHtml($("figures"), "too few readings of both in this range to set against each other");
+    return;
+  }
+  const fit = leastSquares(pairs);
+  const r = pearson(pairs);
+  scatterChart = scatter(
+    $("scatter"),
+    pairs,
+    { name: columnName(key(TEMPCOMP, "temperature")) },
+    { name: columnName(key("tracking", "frequency")) },
+    $("scatter").clientWidth || 800,
+  );
+  // A compensation of zero throughout is tempcomp configured with no
+  // coefficients, or ones that cancel: worth saying, as the frequency
+  // then shows the clock's temperature uncorrected.
+  const compensation = temperature.plots.find((p) => p.column === "compensation");
+  const uncompensated = compensation.mean.every((v) => v == null || v === 0);
+  showHtml($("figures"),
+    `${pairs.length.toLocaleString()} buckets` +
+    (fit ? `; least squares ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
+    (r == null ? "" : `, r = ${r.toFixed(3)}`) +
+    ". A clock whose frequency follows its temperature is what tempcomp corrects for." +
+    (uncompensated ? " tempcomp applied no compensation in this range." : ""));
+}
+
+async function load(signal) {
+  // Whether there are any at all, from the table's extent.
+  const probe = await ask(`/api/history?table=${TEMPCOMP}&columns=temperature&points=16`, signal);
+  if (probe.first == null) {
+    clearStack(stack, NOTHING);
+    scatterChart?.destroy();
+    scatterChart = null;
+    $("scatter").innerHTML = "";
+    showHtml($("figures"), "");
+    return;
+  }
+  if (!haveUplot) {
+    clearStack(stack, NO_UPLOT);
+    return;
+  }
+  const { from, to } = rangeBounds();
+  const events = await eventsFor(signal, from, to);
+  stack.marks = events.marks;
+  const temperature = await readHistory(signal, TEMPCOMP, ["temperature", "compensation"]);
+  // On the temperature's grid, so the two pair by bucket.
+  const frequency = await readHistory(signal, FREQUENCY.table, FREQUENCY.columns, null, FREQUENCY.fill,
+    boundsOf(temperature));
+  const drawn = [
+    ...chartsOf(TEMPCOMP, temperature.plots).map((d) => ({ ...d, x: temperature.at })),
+    ...filledCharts("tracking", frequency, { frequency: "frequency" }).map((d) => ({ ...d, x: frequency.at })),
+  ];
+  drawStack(stack, { x: [], drawn }, "no temperature readings in this range");
+  drawScatter(temperature, frequency, pointsFor(temperature.to - temperature.from));
+}
+
+rangeControl($("ranges"), soon);
+addEventListener("resize", soon);
+content({
+  floor: 30,
+  clear(why) {
+    clearStack(stack, why);
+    scatterChart?.destroy();
+    scatterChart = null;
+    $("scatter").innerHTML = "";
+    showHtml($("figures"), "");
+  },
+  load,
+});
+</script>

@@ -19,7 +19,10 @@ environment (`CHRONYMOND_*`).
 
 `chronymon-web` serves the browser view from that database on
 `http://127.0.0.1:8323/`: the clock live, every source and each one's
-own page, the journal of events, and distributions over any range.
+own page, the refclocks and tempcomp's temperature from chronyd's
+logs, the journal of events, and distributions over any range.  Where
+the daemon was not running, the clock's charts are filled from
+`tracking.log`, dashed.
 It reads the database and nothing else, so it needs no access to
 chronyd, only to the database: run it as a user in the database's
 group, with no write access to its directory.  `--listen 0.0.0.0:8323`

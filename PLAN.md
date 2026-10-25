@@ -216,9 +216,23 @@ Pages:
   over the selected range.
 - **Journal**: events, each centering the charts on its time.  Events
   only; no notes written by hand.
-- **Refclocks**: offset and jitter of PPS and NMEA refclocks.
-- **Temperature**: tempcomp's temperature against frequency, and the
-  correction it applied.
+- **Refclocks**: for each refclock in `refclocks.log`, its cooked
+  offset on the asinh axis, the driver's raw offset, and dispersion.
+- **Temperature**: tempcomp's temperature and compensation over time,
+  the clock's frequency beside them, and a scatter of frequency
+  against temperature, paired by bucket, with its least-squares line
+  and r.  tempcomp reads its sensor file as it is, so the temperature
+  is in the sensor's unit (a thermal zone's millidegrees), and is
+  labeled so rather than converted on a guess.
+- Live, and the frequency on Temperature, draw `tracking.log` where the
+  protocol has no rows, at the bucket: the reader buckets both tables
+  on one grid and keeps the log's buckets only where `tracking` has
+  none, so the two never overlap.  The log's line is dashed and dimmer
+  and named "from chronyd's log" in the title and the readout.  Its
+  frequency and skew are ppm with the protocol's sign; its offset is
+  the update's, as the report's last offset is.
+- A page whose table is empty, or which the database predates, says
+  why: chronyd logs refclocks and tempcomp only when told to.
 
 ## Phases
 
@@ -262,7 +276,11 @@ Pages:
    by inode from where it was last read, a compressed rotation read
    whole once, a line read twice recognized by its contents (times to
    the second repeat, so the keys include the values).  Checked on
-   real 4.8 logs.  The pages are left.
+   real 4.8 logs.  Pages done: Refclocks, Temperature, and Live's
+   fill from `tracking.log`; checked in headless Chrome on a database
+   backfilled from five days of a real host's 4.6.1 logs (a PHC PPS
+   refclock locked to SHM NMEA, tempcomp from a thermal zone, 960,000
+   rows) and on one with no logs at all.
 5. **Packaging.**  One Debian package, `chronymon`, amd64 and arm64,
    released through deb-workflows (`rust-build-deb.yml`): both
    binaries, their systemd units and `/etc/default` files, and a

@@ -44,6 +44,30 @@ const LABELS = {
   "selection.score": ["Selection score", 1, "the selected source's is 1"],
   "selection.low_limit": ["Offset interval low, µs", 1e6],
   "selection.high_limit": ["Offset interval high, µs", 1e6],
+  // chronyd's logs.  tracking.log's frequency and skew are in ppm, with
+  // the same sign as the protocol's (both from LCL_ReadAbsoluteFrequency
+  // in reference.c); statistics.log's are fractions.
+  "log_tracking.frequency": ["Frequency, ppm", 1],
+  "log_tracking.skew": ["Skew, ppm", 1],
+  "log_tracking.offset": ["Offset, µs", 1e6],
+  "log_tracking.offset_sd": ["Offset standard deviation, µs", 1e6],
+  "log_tracking.remaining_correction": ["Remaining correction, µs", 1e6],
+  "log_tracking.root_delay": ["Root delay, ms", 1e3],
+  "log_tracking.root_dispersion": ["Root dispersion, ms", 1e3],
+  "log_tracking.max_error": ["Maximum error, ms", 1e3],
+  "log_statistics.residual_frequency": ["Frequency difference, ppm", 1e6],
+  "log_statistics.skew": ["Skew, ppm", 1e6],
+  "log_statistics.estimated_offset": ["Estimated offset, µs", 1e6],
+  "log_statistics.standard_deviation": ["Standard deviation, µs", 1e6],
+  "log_measurement.offset": ["Offset, µs", 1e6],
+  "log_measurement.peer_delay": ["Delay, ms", 1e3],
+  "refclock_sample.cooked_offset": ["Offset, µs", 1e6],
+  "refclock_sample.raw_offset": ["Raw offset, ms", 1e3],
+  "refclock_sample.dispersion": ["Dispersion, µs", 1e6],
+  // tempcomp reads its sensor file as it is, so the unit is the
+  // sensor's: a thermal zone gives millidegrees Celsius.
+  "tempcomp_sample.temperature": ["Temperature, as the sensor reads it", 1],
+  "tempcomp_sample.compensation": ["Compensation, ppm", 1],
 };
 
 // Hover text by `table.column`: what each is, from chronyc's
@@ -65,6 +89,15 @@ const HINTS = {
   "ntp_sample.offset": "The offset of the source's last valid packet (chronyc ntpdata).",
   "ntp_sample.peer_delay": "The round-trip delay of the source's last valid packet.",
   "ntp_sample.peer_dispersion": "The dispersion of the source's last valid packet.",
+  "refclock_sample.cooked_offset":
+    "The sample's offset after the refclock's offset and delay corrections (refclocks.log, Cooked).",
+  "refclock_sample.raw_offset":
+    "The offset the driver measured, before corrections; empty in a filtered sample (refclocks.log, Raw).",
+  "refclock_sample.dispersion": "The sample's dispersion (refclocks.log, Disp.).",
+  "tempcomp_sample.temperature":
+    "The value read from tempcomp's sensor file, in its own unit (tempcomp.log, Temp.).",
+  "tempcomp_sample.compensation":
+    "The frequency correction tempcomp applied for that temperature (tempcomp.log, Comp.).",
 };
 
 // Columns whose axis is linear near zero and logarithmic beyond: an
@@ -77,6 +110,7 @@ const ASINH_COLUMNS = new Set([
   "source_sample.original_latest_measurement",
   "source_stats.estimated_offset",
   "ntp_sample.offset",
+  "refclock_sample.cooked_offset",
 ]);
 
 const key = (table, column) => `${table}.${column}`;
@@ -204,7 +238,7 @@ function tickLabel(v, places) {
 // empty when there is nothing to fit.
 function yAxis(k, values, height) {
   if (ASINH_COLUMNS.has(k)) {
-    const asinh = asinhAxis(values);
+    const asinh = asinhAxis(values, height);
     if (asinh) return asinh;
   }
   return linearAxis(values, height);
@@ -263,12 +297,12 @@ const ASINH_REACH = 10;
 // are zero, the threshold, and decades of it beyond, on each side the
 // data reaches: uPlot's own asinh splits crowd the linear part with
 // grid lines.
-function asinhAxis(values) {
+function asinhAxis(values, height) {
   if (!values.length) return null;
   const threshold = linearThreshold(values);
   const lo = Math.min(...values), hi = Math.max(...values);
   if (Math.max(Math.abs(lo), Math.abs(hi)) <= ASINH_REACH * threshold) return null;
-  // The ticks out to the first at or beyond `reach`.
+  // The decades out to the first at or beyond `reach`.
   const out = (reach) => {
     const ticks = [];
     for (let t = threshold; ; t *= 10) {
@@ -277,11 +311,17 @@ function asinhAxis(values) {
     }
     return ticks;
   };
-  const ticks = [
-    ...(lo < 0 ? out(-lo).map((t) => -t).reverse() : []),
-    0,
-    ...(hi > 0 ? out(hi) : []),
-  ];
+  const above = hi > 0 ? out(hi) : [];
+  const below = lo < 0 ? out(-lo) : [];
+  // As many as the plot has room for: every second or third decade when
+  // a step of seconds shares an axis with nanoseconds, counted from the
+  // outermost, which each side keeps since the axis ends there.  Thinned,
+  // the threshold itself goes: compressed, it sits too near zero to
+  // label.
+  const every = Math.ceil((above.length + below.length) / Math.max(1, mostTicks(height) - 1));
+  const thin = (side) =>
+    side.filter((_, i) => (side.length - 1 - i) % every === 0 && (every === 1 || i > 0 || side.length === 1));
+  const ticks = [...thin(below).map((t) => -t).reverse(), 0, ...thin(above)];
   const format = (v) => (v == null ? null : v.toLocaleString(undefined, { maximumSignificantDigits: 3 }));
   const widest = Math.max(4, ...ticks.map((v) => format(v).length));
   return {
@@ -417,25 +457,71 @@ const ENVELOPE = "#0e7490";
 
 // `/api/history` for `columns` of `table` over the range, for `source`
 // when given.
-function historyQuery(table, columns, bounds, source) {
+// `fill`, when given, is `{ table, columns }`: chronyd's log, drawn in
+// the buckets where `table` has no rows.
+function historyQuery(table, columns, bounds, source, fill) {
   const q = new URLSearchParams({ table, columns: columns.join(","), points: pointsFor(bounds.seconds) });
   if (bounds.from) q.set("from", Math.round(bounds.from));
   if (bounds.to) q.set("to", Math.round(bounds.to));
   if (source != null) q.set("source", source);
+  if (fill) {
+    q.set("fill", fill.table);
+    q.set("fill_columns", fill.columns.join(","));
+  }
   return "/api/history?" + q;
 }
 
 // The range's bounds, and for `all` the extent `first` gave: how far
 // back the database goes is only knowable once it has been asked, so
 // `all` costs a second request.
-async function readHistory(signal, table, columns, source) {
-  const bounds = rangeBounds();
-  let got = await ask(historyQuery(table, columns, bounds, source), signal, HISTORY_TIMEOUT);
+// `bounds`, when given, are used as they are, as a second read on the
+// grid of a first one must be.
+async function readHistory(signal, table, columns, source, fill, bounds) {
+  if (bounds) return ask(historyQuery(table, columns, bounds, source, fill), signal, HISTORY_TIMEOUT);
+  bounds = rangeBounds();
+  let got = await ask(historyQuery(table, columns, bounds, source, fill), signal, HISTORY_TIMEOUT);
   if (range.last === "all" && got.first != null && got.last > got.first) {
     const all = { from: got.first, to: got.last, seconds: got.last - got.first };
-    got = await ask(historyQuery(table, columns, all, source), signal, HISTORY_TIMEOUT);
+    got = await ask(historyQuery(table, columns, all, source, fill), signal, HISTORY_TIMEOUT);
   }
   return got;
+}
+
+// A read's own bounds, for a second read on its grid.
+const boundsOf = (got) => ({ from: got.from, to: got.to, seconds: got.to - got.from });
+
+// How a line from chronyd's log is drawn beside the protocol's: dimmer
+// and dashed, since it is to the second and four significant digits.
+const LOGGED = "#7dd3fc80";
+const LOGGED_DASH = [5, 4];
+const LOGGED_NAME = "from chronyd's log";
+
+// The drawings of a filled read of `table`: a chart per column of
+// `table`, with the log's column `fills[column]` beside it as a second,
+// dashed line where it has anything to draw.
+function filledCharts(table, got, fills) {
+  return got.plots
+    .filter((p) => p.table === table)
+    .map((plot) => {
+      const k = key(table, plot.column);
+      const logged = got.plots.find((p) => p.table !== table && p.column === fills[plot.column]);
+      const lines = [{ column: k, values: scaled(plot.mean, k), color: TRACE, name: "reported" }];
+      if (logged && logged.mean.some((v) => v != null)) {
+        lines.push({
+          column: k,
+          values: scaled(logged.mean, k),
+          color: LOGGED,
+          dash: LOGGED_DASH,
+          name: LOGGED_NAME,
+        });
+      }
+      return {
+        column: k,
+        title: label(k),
+        envelope: { min: scaled(plot.min, k), max: scaled(plot.max, k) },
+        lines: lines.length > 1 ? lines : [{ ...lines[0], name: undefined }],
+      };
+    });
 }
 
 // The drawings of a stack from the server's plots of `table`: a chart
@@ -576,6 +662,7 @@ function stackCharts(container, read, style) {
           label: l.name ?? columnName(l.column),
           stroke: l.color,
           width: 1.5,
+          ...(l.dash ? { dash: l.dash } : {}),
           points: { show: false },
           spanGaps: false,
         })),
@@ -672,17 +759,17 @@ function readoutHtml(charts, mark) {
     v == null ? "--" : v.toLocaleString(undefined, { maximumSignificantDigits: 6 });
   const under = charts.find((c) => c.cursor.idx != null) ?? charts[0];
   const at = idx == null ? null : new Date(under.data[0][idx] * 1000);
-  // A line of a chart of several is named with its chart's measure too,
-  // or a stack of overlays reads as the same source names over again.
-  const name = (l, several) => {
+  // A named line is named with its chart's measure too, or a stack of
+  // overlays reads as the same source names over again.
+  const name = (l) => {
     const measure = columnName(l.column).split(",")[0];
-    return several && l.name ? `${measure}, ${l.name}` : l.name ?? columnName(l.column);
+    return l.name ? `${measure}, ${l.name}` : columnName(l.column);
   };
   const cells = charts.flatMap((c) =>
     c.chronymonLines.map((l) => {
       const v = c.cursor.idx == null ? null : c.data[l.series][c.cursor.idx];
       return `<span><span class="k"${l.color ? ` style="color:${l.color}"` : ""}>` +
-        `${esc(name(l, c.chronymonLines.length > 1))}</span> <span class="v">${esc(show(v))}</span></span>`;
+        `${esc(name(l))}</span> <span class="v">${esc(show(v))}</span></span>`;
     }));
   return `<span class="v">${at ? esc(at.toLocaleTimeString()) : "--:--:--"}</span>` +
     cells.join("") +
@@ -799,3 +886,107 @@ function clearStack(view, why) {
 const haveUplot = typeof uPlot !== "undefined";
 const NO_UPLOT =
   "The chart library did not load. It comes from a CDN, so this page needs internet access; the strip above does not.";
+
+// ------------------------------------------------------------- scatter
+//
+// One measure against another, a dot per bucket both have, with the
+// least-squares line: smartclock's correlation page's, cut down.
+
+// Fewest pairs a statistic is given for.
+const MIN_PAIRS = 3;
+
+// Pearson's r, or null for too few pairs or a series that never moves.
+function pearson(pairs) {
+  if (pairs.length < MIN_PAIRS) return null;
+  const n = pairs.length;
+  const mx = pairs.reduce((s, p) => s + p.x, 0) / n;
+  const my = pairs.reduce((s, p) => s + p.y, 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (const { x, y } of pairs) {
+    sxy += (x - mx) * (y - my);
+    sxx += (x - mx) ** 2;
+    syy += (y - my) ** 2;
+  }
+  return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : null;
+}
+
+// The least-squares line y = slope * x + intercept, or null.
+function leastSquares(pairs) {
+  if (pairs.length < MIN_PAIRS) return null;
+  const n = pairs.length;
+  const mx = pairs.reduce((s, p) => s + p.x, 0) / n;
+  const my = pairs.reduce((s, p) => s + p.y, 0) / n;
+  let sxy = 0, sxx = 0;
+  for (const { x, y } of pairs) {
+    sxy += (x - mx) * (y - my);
+    sxx += (x - mx) ** 2;
+  }
+  if (!(sxx > 0)) return null;
+  const slope = sxy / sxx;
+  return { slope, intercept: my - slope * mx };
+}
+
+// Each value's bucket on the grid of `got`, a read of `points` buckets:
+// the server reports a bucket's mean time, which differs between
+// tables, so two reads pair up only by bucket.
+const bucketOf = (got, points) => (t) => Math.floor(((t - got.from) * points) / (got.to - got.from + 1e-9));
+
+// Pairs `{ at, x, y }` of the buckets two reads on one grid both have.
+function pairsOn(xs, ys, points) {
+  const xBucket = bucketOf(xs.read, points), yBucket = bucketOf(ys.read, points);
+  const byBucket = new Map();
+  xs.read.at.forEach((t, i) => {
+    if (xs.values[i] != null) byBucket.set(xBucket(t), { at: t, x: xs.values[i] });
+  });
+  const pairs = [];
+  ys.read.at.forEach((t, i) => {
+    const x = byBucket.get(yBucket(t));
+    if (x && ys.values[i] != null) pairs.push({ ...x, y: ys.values[i] });
+  });
+  return pairs;
+}
+
+// A scatter series drawn as a dot per point, for uPlot's `paths`: its
+// mode 2 joins a series' points with a line unless given its own.
+const DOT_RADIUS = 2;
+function dots(u, seriesIdx) {
+  const [dx, dy] = u.data[seriesIdx];
+  const dot = new Path2D();
+  const r = DOT_RADIUS * devicePixelRatio;
+  for (let i = 0; i < dx.length; i++) {
+    const cx = u.valToPos(dx[i], "x", true), cy = u.valToPos(dy[i], "y", true);
+    dot.moveTo(cx + r, cy);
+    dot.arc(cx, cy, r, 0, 2 * Math.PI);
+  }
+  return { stroke: dot, fill: dot };
+}
+
+// The scatter's colors: the dots, and the fitted line over them.
+const DOT_COLOR = "#38bdf8";
+const FIT_COLOR = "#fbbf24";
+
+// A scatter of `pairs` in `host`, `x` and `y` each `{ name }`, with its
+// least-squares line; answers the chart.
+function scatter(host, pairs, x, y, width) {
+  const dx = pairs.map((p) => p.x), dy = pairs.map((p) => p.y);
+  const fit = leastSquares(pairs);
+  const lo = Math.min(...dx), hi = Math.max(...dx);
+  const line = fit ? [[lo, hi], [fit.slope * lo + fit.intercept, fit.slope * hi + fit.intercept]] : [[], []];
+  return new uPlot({
+    mode: 2,
+    width,
+    height: Math.round(Math.min(560, Math.max(300, width / 2.5))),
+    scales: { x: { time: false }, y: {} },
+    axes: [
+      { ...AXIS, label: x.name, labelSize: 28 },
+      { ...AXIS, label: y.name, labelSize: 28, size: 80 },
+    ],
+    series: [
+      {},
+      { label: "buckets", stroke: DOT_COLOR + "99", fill: DOT_COLOR + "99", paths: dots, points: { show: false } },
+      { label: "fit", stroke: FIT_COLOR, width: 1.5, points: { show: false } },
+    ],
+    legend: { show: false },
+    cursor: { drag: { x: false, y: false }, points: { show: false } },
+  }, [null, [dx, dy], line], host);
+}

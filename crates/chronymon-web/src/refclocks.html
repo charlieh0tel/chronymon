@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chronymon: refclocks</title>
+
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE"
+      crossorigin="anonymous">
+
+<link rel="stylesheet" href="/style.css">
+
+<div class="panel" id="status"><span class="muted">connecting...</span></div>
+
+<nav class="panel nav">
+  <a href="/">Live</a>
+  <a href="/sources">Sources</a>
+  <a href="/refclocks" aria-current="page">Refclocks</a>
+  <a href="/temperature">Temperature</a>
+  <a href="/journal">Journal</a>
+  <a href="/distribution">Distribution</a>
+</nav>
+
+<div class="panel">
+  <div class="controls">
+    <h2>Reference clocks, from refclocks.log</h2>
+    <span class="grow"></span>
+    <span id="ranges"></span>
+  </div>
+  <div id="refclocks" class="muted"></div>
+  <div id="charts" class="stack"></div>
+  <div id="readout"></div>
+  <div id="note-tip"></div>
+  <div id="note"></div>
+</div>
+
+<footer id="colophon"></footer>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c"
+        crossorigin="anonymous"></script>
+<script src="/common.js"></script>
+<script src="/charts.js"></script>
+<script>
+"use strict";
+
+readRange(3600);
+
+const TABLE = "refclock_sample";
+// Each refclock's charts: its offset after corrections, on the asinh
+// axis, the driver's own before them, and the sample's dispersion.
+const COLUMNS = ["cooked_offset", "raw_offset", "dispersion"];
+
+// Why there may be nothing: the control protocol says nothing of a
+// refclock's samples, so they are only in chronyd's log.
+const NOTHING =
+  "No refclock samples are recorded: chronyd logs them only with 'log refclocks' in chrony.conf, " +
+  "and chronymond reads them from its log directory.";
+
+const stack = {
+  container: "charts",
+  readout: "readout",
+  note: "note",
+  sync: haveUplot ? uPlot.sync("chronymon") : null,
+  charts: [],
+  marks: [],
+};
+
+async function load(signal) {
+  const refclocks = await ask(`/api/keys?table=${TABLE}`, signal);
+  showHtml($("refclocks"), refclocks.length
+    ? esc(refclocks.map((r) => `${r.name}: ${r.rows.toLocaleString()} samples, ` +
+        `${new Date(r.first * 1000).toLocaleString()} to ${new Date(r.last * 1000).toLocaleString()}`).join("; "))
+    : "");
+  if (!refclocks.length) {
+    clearStack(stack, NOTHING);
+    return;
+  }
+  if (!haveUplot) {
+    clearStack(stack, NO_UPLOT);
+    return;
+  }
+  const { from, to } = rangeBounds();
+  const events = await eventsFor(signal, from, to);
+  stack.marks = events.marks;
+  const reads = await Promise.all(refclocks.map((r) => readHistory(signal, TABLE, COLUMNS, r.name)));
+  // A chart per refclock and column, each against its own times: the
+  // refclocks are sampled at their own moments.
+  const drawn = refclocks.flatMap((r, n) =>
+    chartsOf(TABLE, reads[n].plots).map((d) => ({
+      ...d,
+      x: reads[n].at,
+      title: `${r.name}: ${label(d.column)}`,
+      lines: d.lines.map((l) => ({ ...l, name: r.name })),
+    })));
+  drawStack(stack, { x: [], drawn }, "no refclock samples in this range");
+}
+
+rangeControl($("ranges"), soon);
+addEventListener("resize", soon);
+content({
+  floor: 5,
+  clear(why) {
+    clearStack(stack, why);
+  },
+  load,
+});
+</script>

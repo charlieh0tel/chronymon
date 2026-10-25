@@ -15,6 +15,8 @@
 <nav class="panel nav">
   <a href="/" aria-current="page">Live</a>
   <a href="/sources">Sources</a>
+  <a href="/refclocks">Refclocks</a>
+  <a href="/temperature">Temperature</a>
   <a href="/journal">Journal</a>
   <a href="/distribution">Distribution</a>
 </nav>
@@ -63,6 +65,18 @@ const OFFERED = [
   ...DEFAULT_COLUMNS,
   "residual_frequency", "current_correction", "last_update_interval", "stratum",
 ];
+
+// tracking.log's column for each of the protocol's it has, drawn where
+// the protocol has no rows: before the daemon ran, and while it was
+// down.  The log's offset is the update's, as the report's last offset
+// is.
+const FILLS = {
+  last_offset: "offset",
+  frequency: "frequency",
+  skew: "skew",
+  root_delay: "root_delay",
+  root_dispersion: "root_dispersion",
+};
 
 let columns = (view.get("columns") ?? DEFAULT_COLUMNS.join(","))
   .split(",")
@@ -127,8 +141,9 @@ async function load(signal) {
     clearStack(stack, "nothing selected");
     return;
   }
-  const got = await readHistory(signal, TABLE, columns);
-  drawStack(stack, { x: got.at, drawn: chartsOf(TABLE, got.plots) }, "no clock updates in this range");
+  const fill = { table: "log_tracking", columns: columns.map((c) => FILLS[c]).filter(Boolean) };
+  const got = await readHistory(signal, TABLE, columns, null, fill.columns.length ? fill : null);
+  drawStack(stack, { x: got.at, drawn: filledCharts(TABLE, got, FILLS) }, "no clock updates in this range");
 }
 
 pickers();
