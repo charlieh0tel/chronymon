@@ -310,19 +310,22 @@ impl Collector {
         if before != Some(*tracking) {
             batch.tracking_report(at, tracking)?;
         }
+        let update = !never_updated(tracking) && before.is_some_and(|b| updated(&b, tracking));
         if never_updated(tracking) {
             self.updates = Some(0);
-        } else if before.is_some_and(|before| updated(&before, tracking)) {
+        } else if update {
             self.updates = self.updates.map(|n| n.saturating_add(1));
             self.record_correction(batch, at, tracking)?;
         }
-        if before.is_some_and(|before| before.reference_time == tracking.reference_time) {
-            return Ok(());
-        }
-        batch.tracking(at, tracking)?;
+        // History of updates, and of the first read: chronyd's last
+        // update, or that it is unsynchronized, which a repeat of the
+        // last row's reference time is not written again for.
         let Some(before) = before else {
-            return Ok(());
+            return batch.tracking(at, tracking);
         };
+        if update {
+            batch.tracking(at, tracking)?;
+        }
         if before.reference_id != tracking.reference_id {
             let detail = format!("{} to {}", before.address, tracking.address);
             batch.event(at, EventKind::ReferenceChange, None, Some(&detail))?;
@@ -449,7 +452,9 @@ fn never_updated(tracking: &Tracking) -> bool {
 
 /// Whether chronyd updated the clock between two reports.  Not the
 /// reference time, which also changes when chronyd loses or regains
-/// sync, or serves its local reference.
+/// sync, or serves its local reference, and which it moves on every
+/// slew or frequency change, tempcomp's included (`handle_slew`, chrony
+/// 4.8 `reference.c:175`).
 fn updated(before: &Tracking, now: &Tracking) -> bool {
     before.last_offset != now.last_offset || before.rms_offset != now.rms_offset
 }
@@ -1121,12 +1126,6 @@ pub(crate) mod tests {
         let mut collector = collector(&db, MAKE_STEP);
         // chronyd's while unsynchronized (`REF_GetReferenceParams`,
         // chrony 4.8 `reference.c:1216`).
-        let unsynchronized = Tracking {
-            reference_time: Timestamp::UNIX_EPOCH,
-            leap: Leap::Unsynchronized,
-            stratum: 0,
-            ..tracking(0, 0.0)
-        };
         let report = |db: &Database| -> (i64, String) {
             db.reader
                 .query_row(
@@ -1137,14 +1136,14 @@ pub(crate) mod tests {
                 .expect("a report")
         };
         let polls = [
-            (0, tracking(0, 0.0)),
-            (1, unsynchronized),
-            (2, tracking(2, 0.0)),
-            (3, unsynchronized),
+            (0, tracking(0, 1e-6)),
+            (1, unsynchronized(1e-6)),
+            (2, tracking(2, 2e-6)),
+            (3, unsynchronized(2e-6)),
             // Synchronized, then stepped back.
-            (4, tracking(100, 0.0)),
-            (5, tracking(50, 0.0)),
-            (6, tracking(50, 0.0)),
+            (4, tracking(100, 3e-6)),
+            (5, tracking(50, 4e-6)),
+            (6, tracking(50, 4e-6)),
         ];
         for (second, read) in polls {
             db.log
@@ -1163,7 +1162,75 @@ pub(crate) mod tests {
             );
             assert_eq!(report(&db), expected, "at {second}");
         }
-        assert_eq!(db.count("tracking"), 6);
+        // The first read and each update; not losing sync.
+        assert_eq!(db.count("tracking"), 4);
         assert_eq!(db.count("tracking_report"), 1);
+    }
+
+    /// chronyd's tracking while unsynchronized, its last update's offset
+    /// `last_offset` (`REF_GetReferenceParams`, chrony 4.8
+    /// `reference.c:1216`; `REF_SetUnsynchronised` keeps the offset).
+    fn unsynchronized(last_offset: f64) -> Tracking {
+        Tracking {
+            reference_time: Timestamp::UNIX_EPOCH,
+            reference_id: ReferenceId(0),
+            leap: Leap::Unsynchronized,
+            stratum: 0,
+            ..tracking(0, last_offset)
+        }
+    }
+
+    #[test]
+    fn a_history_row_is_an_update() {
+        let mut db = Database::new("tracking-updates");
+        let mut collector = collector(&db, MAKE_STEP);
+        let polls = [
+            (0, tracking(0, 1e-6)),
+            // A slew or a frequency change: the reference time moved, and
+            // nothing else.
+            (1, tracking(1, 1e-6)),
+            (2, unsynchronized(1e-6)),
+            (3, unsynchronized(1e-6)),
+            // Back, an update.
+            (4, tracking(4, 2e-6)),
+            (5, tracking(5, 2e-6)),
+            (6, tracking(6, 3e-6)),
+        ];
+        for (second, read) in polls {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(read, vec![]),
+                        Process::Running(100),
+                    )
+                })
+                .expect("recorded");
+        }
+        let mut statement = db
+            .reader
+            .prepare("SELECT at, reference_time FROM tracking ORDER BY rowid")
+            .expect("a query");
+        let rows: Vec<(i64, i64)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("rows")
+            .map(|row| row.expect("a row"))
+            .collect();
+        let stored = |second| to_stored(at(second)).expect("in range");
+        assert_eq!(
+            rows,
+            [0, 4, 6].map(|second| (stored(second), stored(second)))
+        );
+        // Losing and regaining sync are events, though no row is.
+        assert_eq!(
+            db.events(),
+            [
+                "reference_change",
+                "leap_change",
+                "reference_change",
+                "leap_change"
+            ]
+        );
     }
 }

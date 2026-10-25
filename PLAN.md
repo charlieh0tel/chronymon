@@ -32,7 +32,7 @@ beside it, as chronyc does.  No access, no start.
 
    | Report | New row when |
    | - | - |
-   | `tracking` | its reference time differs from the last row's; `tracking_report`, one row, replaced when anything changes |
+   | `tracking` | chronyd updates the clock: its last offset or their RMS changes, not the reference time alone, which it moves on every slew (`handle_slew`, 4.8 `reference.c:175`); and the first read.  `tracking_report`, one row, replaced when anything changes |
    | `sources` | its last-sample age resets; `source_report`, one row per source, replaced when anything else changes |
    | `sourcestats` | its regression changes: not the estimated offset and its error alone, which chronyd extrapolates to the report's time (`SST_DoSourcestatsReport`, 4.8 `sourcestats.c:1019`), so they change every poll |
    | `ntpdata` | its valid-sample counter increments |
@@ -97,7 +97,8 @@ From chrony 4.2 to 4.9's source and `chrony-candm` 0.1.3's,
 Derived at poll: chronyd restart (`chronyd.pid` changing, or the
 socket refusing then answering), a step, a large offset, reference
 change, source added or removed, leap change, the daemon's start and
-stop.
+stop.  Reference and leap changes between any two polls, a `tracking`
+row or not: losing sync is no update.
 
 chronyd's configuration (`chrony.conf`, its `include` and `confdir`
 files, as `conf.c` reads them) gives `makestep` and the refclocks'

@@ -215,10 +215,12 @@ pub(crate) const TABLES: &str = r"
         last_update_interval REAL    NOT NULL
     ) STRICT;
 
-    -- `tracking`, one row per clock update: per change of its reference
-    -- time from the row before, so the second of two times
-    -- unsynchronized, both at reference time 0, is kept, and a restart's
-    -- first read of an update already recorded is not.
+    -- `tracking`, one row per clock update: its last offset or their
+    -- RMS changing, not its reference time alone, which chronyd moves
+    -- on every slew (`handle_slew`, chrony 4.8 `reference.c:175`); and
+    -- the daemon's first read, unless of the last row's reference time,
+    -- an update already recorded.  An older database's rows are per
+    -- change of the reference time, losing sync included.
     CREATE TABLE IF NOT EXISTS tracking (
         at                   INTEGER NOT NULL,
         -- 0 while chronyd is unsynchronized (`REF_GetReferenceParams`,
