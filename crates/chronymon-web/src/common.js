@@ -78,14 +78,16 @@ class Superseded extends Error {}
 // lifecycle hands the page, aborted when the page moves on; anything
 // arriving after that throws Superseded rather than being drawn.  A
 // failure the server could describe comes back as 200 with `error` in
-// it, and throws with that message.
+// it, a request it refused as 400 with the same, and throws with that
+// message.
 async function ask(url, signal, timeout = QUICK_TIMEOUT) {
   let body;
   try {
     const r = await fetch(url, {
       signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
     });
-    if (!r.ok) throw new Error(`the server answered ${r.status}`);
+    const said = r.ok ? null : await r.json().then((b) => b?.error, () => null);
+    if (!r.ok) throw new Error(said ?? `the server answered ${r.status}`);
     body = await r.json();
   } catch (e) {
     if (signal.aborted) throw new Superseded();

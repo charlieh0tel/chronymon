@@ -118,13 +118,20 @@ fn about(cli: &Cli) -> Value {
 
 /// Wrap a result as JSON, reporting a failure as data rather than as an
 /// HTTP error: the page can then say what went wrong in the place the
-/// value would have been, instead of silently showing nothing.
+/// value would have been, instead of silently showing nothing.  A
+/// request refused is a 400, with the same body.
 fn json(result: Result<Value>) -> Response {
-    let value = match result {
-        Ok(value) => value,
-        Err(e) => json!({ "error": format!("{e:#}") }),
-    };
-    Response::ok(JSON, value.to_string())
+    match result {
+        Ok(value) => Response::ok(JSON, value.to_string()),
+        Err(e) => {
+            let body = json!({ "error": format!("{e:#}") }).to_string();
+            if e.downcast_ref::<api::Refused>().is_some() {
+                Response::bad_request(JSON, body)
+            } else {
+                Response::ok(JSON, body)
+            }
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -172,7 +179,10 @@ mod tests {
     use super::INLINED;
     use super::KIOSK;
     use super::STYLE;
+    use super::api;
     use super::inlined;
+    use super::json;
+    use std::path::Path;
 
     /// The kiosk is served whole: every file it would ask this server
     /// for is in it, and nothing an inlined file says ends its element
@@ -188,5 +198,18 @@ mod tests {
         for text in [STYLE, COMMON, CHARTS] {
             assert!(served.contains(text));
         }
+    }
+
+    /// A request refused is a 400, and a database that is not there is
+    /// said in a 200, both with why in the body.
+    #[test]
+    fn a_refused_request_is_a_400() {
+        let nowhere = Path::new("/nonexistent/chronymon.sqlite");
+        let refused = json(api::history(nowhere, "columns=skew,skew"));
+        assert_eq!(refused.status, "400 Bad Request");
+        assert!(refused.body.contains("skew is in columns= twice"));
+        let missing = json(api::history(nowhere, "columns=skew"));
+        assert_eq!(missing.status, "200 OK");
+        assert!(missing.body.contains("no database"));
     }
 }

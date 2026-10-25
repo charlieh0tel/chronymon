@@ -57,6 +57,15 @@ for (const { path, name } of PAGES) {
   });
 }
 
+test("API: a request too large is refused, saying why", async ({ page }) => {
+  const twice = await page.request.get(`/api/history?columns=${Array(600).fill("skew").join(",")}`);
+  expect(twice.status()).toBe(400);
+  expect((await twice.json()).error).toBe("skew is in columns= twice");
+  const points = await page.request.get("/api/overlay?table=ntp_sample&column=offset&points=5001");
+  expect(points.status()).toBe(400);
+  expect((await points.json()).error).toMatch(/^points=5001 is more than 5000$/);
+});
+
 test("Colophon: links to the repository and its issues", async ({ page }) => {
   await page.goto("/");
   const colophon = page.locator("#colophon");
