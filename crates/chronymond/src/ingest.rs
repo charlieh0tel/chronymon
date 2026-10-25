@@ -2,10 +2,12 @@
 //! chronymon knows in chronyd's log directory, rotated and compressed
 //! ones included, each from where it was last read.
 //!
-//! A file is followed by inode, which logrotate's renames keep: the
-//! `tracking.log` read yesterday is today's `tracking.log.1`, already
-//! read, and only what was appended since is new.  A compressed file
-//! is read whole, once.  Lines read twice -- a file compressed under a
+//! A file is followed by device and inode, which logrotate's renames
+//! keep: the `tracking.log` read yesterday is today's `tracking.log.1`,
+//! already read, and only what was appended since is new.  It is known
+//! for the same file by the bytes before where its reading stopped: a
+//! file truncated and written again, or a new one on a reused inode, is
+//! read from its start.  A compressed file is read whole, once.  Lines read twice -- a file compressed under a
 //! new inode -- are recognized by their contents and not written
 //! again.
 
@@ -18,6 +20,7 @@ use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Seek as _;
 use std::io::SeekFrom;
+use std::os::unix::fs::FileExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,7 +29,9 @@ use chronymon::event::EventKind;
 use chronymon_log::chrony_log::LogKind;
 use chronymon_log::chrony_log::ParseError;
 use chronymon_log::chrony_log::parse;
+use chronymon_log::writer::FileId;
 use chronymon_log::writer::Log;
+use chronymon_log::writer::LogFile;
 use flate2::read::MultiGzDecoder;
 use jiff::Timestamp;
 
@@ -120,6 +125,10 @@ fn rotation(name: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// How many bytes before a file's checkpoint are kept to know it by: a
+/// line or two, timestamps included.
+const FINGERPRINT_LENGTH: u64 = 512;
+
 /// Read what is new in one file.  An error leaves its checkpoint, and
 /// the database, as they were.
 fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> {
@@ -131,28 +140,42 @@ fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> 
         opened => opened?,
     };
     let metadata = file.metadata()?;
-    let (inode, length) = (metadata.ino(), metadata.len());
+    let id = FileId {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    let length = metadata.len();
     let compressed = path.extension().is_some_and(|extension| extension == "gz");
-    let known = log.write(|batch| batch.log_file(inode))?;
+    let known = log.write(|batch| batch.log_file(id))?;
+    // Still the file read, not one truncated and rewritten, or a new one
+    // on a reused inode: the bytes before its checkpoint are unchanged.
+    let known = match known {
+        Some(known)
+            if known.read <= length && fingerprint(&file, known.read)? == known.fingerprint =>
+        {
+            Some(known)
+        }
+        _ => None,
+    };
     let start = match known {
-        Some((was, _)) if was == length => return Ok(Scan::default()),
+        Some(known) if known.rejected || known.length == length => return Ok(Scan::default()),
         Some(_) if compressed => 0,
         // Grown since: read on from where the last read stopped.
-        Some((_, read)) if read <= length => read,
-        // Truncated, or new.
-        _ => 0,
+        Some(known) => known.read,
+        // Replaced, or new.
+        None => 0,
     };
-    let mut reader: Box<dyn io::BufRead> = if compressed {
-        Box::new(BufReader::new(MultiGzDecoder::new(file)))
+    let mut reader: Box<dyn io::BufRead + '_> = if compressed {
+        Box::new(BufReader::new(MultiGzDecoder::new(&file)))
     } else {
-        let mut file = file;
-        file.seek(SeekFrom::Start(start))?;
-        Box::new(BufReader::new(file))
+        (&file).seek(SeekFrom::Start(start))?;
+        Box::new(BufReader::new(&file))
     };
     let path_text = path.to_string_lossy();
     log.write(|batch| {
         let mut scan = Scan::default();
         let mut read = start;
+        let mut rejected = false;
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -168,7 +191,7 @@ fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> 
                 Err(ParseError::BadLine { .. }) => scan.bad_lines += 1,
                 Err(e @ ParseError::UnknownHeader { .. }) => {
                     // The layout has changed: nothing more of this file
-                    // can be read, and it is not to be tried again.
+                    // can be read, now or when it grows.
                     let detail = format!("{path_text}: {e}");
                     eprintln!("chronymond: {detail}");
                     batch.event(
@@ -177,18 +200,32 @@ fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> 
                         None,
                         Some(&detail),
                     )?;
-                    read = length;
+                    rejected = true;
                     break;
                 }
             }
         }
-        if compressed {
+        if compressed || rejected {
             read = length;
         }
-        batch.set_log_file(inode, &path_text, length.max(read), read)?;
+        let checkpoint = LogFile {
+            length: length.max(read),
+            read,
+            fingerprint: fingerprint(&file, read).map_err(io_error)?,
+            rejected,
+        };
+        batch.set_log_file(id, &path_text, &checkpoint)?;
         Ok(scan)
     })
     .map_err(Into::into)
+}
+
+/// The bytes of `file` just before `end`, up to [`FINGERPRINT_LENGTH`].
+fn fingerprint(file: &File, end: u64) -> io::Result<Vec<u8>> {
+    let start = end.saturating_sub(FINGERPRINT_LENGTH);
+    let mut bytes = vec![0; usize::try_from(end - start).unwrap_or(0)];
+    file.read_exact_at(&mut bytes, start)?;
+    Ok(bytes)
 }
 
 fn io_error(error: io::Error) -> chronymon_log::error::Error {
@@ -264,9 +301,44 @@ mod tests {
         .expect("written");
         assert_eq!(ingest.scan(&mut db.log).lines, 0);
         assert_eq!(db.events(), ["unsupported"]);
-        // And it is not reported again.
+        // And it is not reported again, nor read when it grows.
         ingest.scan(&mut db.log);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(logs.join("tempcomp.log"))
+            .expect("opened");
+        file.write_all(b"2026-10-25 05:39:34  4.1e+01  4.1e+00\n")
+            .expect("appended");
+        assert_eq!(ingest.scan(&mut db.log).lines, 0);
+        assert_eq!(db.count("tempcomp_sample"), 0);
         assert_eq!(db.events(), ["unsupported"]);
+    }
+
+    /// `tempcomp.log` lines, one a second over `seconds`, each as long
+    /// as the next.
+    fn tempcomp(seconds: std::ops::Range<u32>) -> String {
+        seconds
+            .map(|second| format!("2026-10-25 05:39:{second:02}  4.1500e+04  4.1459e+00\n"))
+            .collect()
+    }
+
+    #[test]
+    fn rereads_a_file_rewritten_in_place() {
+        let mut db = Database::new("ingest-rewritten");
+        let logs = db.directory().join("logs");
+        fs::create_dir_all(&logs).expect("a directory");
+        let mut ingest = Ingest::new(logs.clone());
+        let live = logs.join("tempcomp.log");
+        fs::write(&live, tempcomp(0..10)).expect("written");
+        assert_eq!(ingest.scan(&mut db.log).lines, 10);
+        // Truncated, then grown past where it was read to: the same
+        // inode, other lines.
+        fs::write(&live, tempcomp(20..32)).expect("written");
+        assert_eq!(ingest.scan(&mut db.log).lines, 12);
+        // Rewritten to the same length.
+        fs::write(&live, tempcomp(40..52)).expect("written");
+        assert_eq!(ingest.scan(&mut db.log).lines, 12);
+        assert_eq!(db.count("tempcomp_sample"), 34);
     }
 
     #[test]
