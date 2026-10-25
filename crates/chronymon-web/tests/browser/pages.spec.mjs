@@ -134,14 +134,69 @@ test("Live: a column unticked leaves its chart", async ({ page }) => {
   await expect(charts(page)).toHaveCount(before - 1);
 });
 
-test("Live: chronyd's log fills before the daemon ran", async ({ page }) => {
-  await page.goto("/?last=all");
+// The readout's value for `name`, as a number, or null for "--".
+const readoutValue = async (page, name) => {
+  const text = await page.locator("#readout > span", { hasText: name }).locator(".v").textContent();
+  return text === "--" ? null : Number(text.replace(/,/g, ""));
+};
+
+// The last `/api/history` the page read, as an address.
+const lastHistory = (page) => {
+  const read = { url: null };
+  page.on("request", (r) => {
+    if (r.url().includes("/api/history?")) read.url = new URL(r.url());
+  });
+  return read;
+};
+
+// The bucketed `column` of `table` alone, on the grid of `read`, the
+// page's history read.
+async function onGridOf(page, read, table, column) {
+  const q = new URLSearchParams(read.searchParams);
+  for (const k of ["fill", "fill_columns"]) q.delete(k);
+  q.set("table", table);
+  q.set("columns", column);
+  const got = await (await page.request.get(`/api/history?${q}`)).json();
+  return { at: got.at, mean: got.plots[0].mean };
+}
+
+const FREQUENCY = "Frequency, reported";
+const LOGGED_FREQUENCY = "Frequency, from chronyd's log";
+
+test("Live: chronyd's log fills before the daemon ran, with the log's values", async ({ page }) => {
+  const read = lastHistory(page);
+  await page.goto("/?last=all&columns=frequency");
   await expect(charts(page).first()).toBeVisible();
+  await page.waitForFunction(() => !running);
   const over = charts(page).first().locator(".u-over");
   const box = await over.boundingBox();
   // The far left of "all" is before the daemon's first poll.
   await page.mouse.move(box.x + 4, box.y + box.height / 2);
-  await expect(page.locator("#readout")).toContainText("from chronyd's log");
+  await expect(page.locator("#readout")).toContainText(LOGGED_FREQUENCY);
+  const at = await page.evaluate(() => stack.charts[0].data[0][stack.charts[0].cursor.idx]);
+  const log = await onGridOf(page, read.url, "log_tracking", "frequency");
+  const expected = log.mean[log.at.indexOf(at)];
+  expect(expected).toBeLessThan(-10);
+  expect(await readoutValue(page, LOGGED_FREQUENCY)).toBeCloseTo(expected, 3);
+  expect(await readoutValue(page, FREQUENCY)).toBeNull();
+});
+
+test("Live: where the daemon recorded, its rows are drawn, not the log's", async ({ page }) => {
+  // After the synthetic run's stop and start, chronyd's log goes on
+  // beside the daemon's rows.
+  const events = await (await page.request.get("/api/events?limit=500")).json();
+  const stop = events.find((e) => e.kind === "daemon_stop").at;
+  const start = events.find((e) => e.kind === "daemon_start" && e.at > stop).at;
+  const read = lastHistory(page);
+  await page.goto(`/?from=${Math.ceil(start + 600)}&to=${Math.ceil(start + 4200)}&columns=frequency`);
+  await expect(charts(page).first()).toBeVisible();
+  await page.waitForFunction(() => !running);
+  const log = await onGridOf(page, read.url, "log_tracking", "frequency");
+  expect(log.mean.filter((v) => v != null).length).toBeGreaterThan(10);
+  const box = await charts(page).first().locator(".u-over").boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page.locator("#readout")).not.toContainText(LOGGED_FREQUENCY);
+  expect(await readoutValue(page, "Frequency")).toBeLessThan(-10);
 });
 
 test("Live: the log fills only while the daemon was stopped, and a slow clock's line spans", async ({ page }) => {
