@@ -15,6 +15,13 @@ pub(crate) const fn leap(leap: Leap) -> &'static str {
     }
 }
 
+/// A leap change's detail: the statuses before and after by their
+/// `Debug` names, "Normal to Unsynchronized", as the daemon has always
+/// written it.
+pub(crate) fn leap_change(before: Leap, now: Leap) -> String {
+    format!("{before:?} to {now:?}")
+}
+
 pub(crate) const fn mode(mode: SourceMode) -> &'static str {
     match mode {
         SourceMode::Client => "client",
