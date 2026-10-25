@@ -253,6 +253,9 @@ impl Collector {
         tracking: &Tracking,
     ) -> chronymon_log::error::Result<()> {
         let before = self.tracking.replace(*tracking);
+        if before != Some(*tracking) {
+            batch.tracking_report(at, tracking)?;
+        }
         if before.is_some_and(|before| before.reference_time == tracking.reference_time) {
             return Ok(());
         }
@@ -791,5 +794,57 @@ pub(crate) mod tests {
             .query_row("SELECT at FROM source_report", [], |row| row.get(0))
             .expect("a report");
         assert_eq!(written, to_stored(at(0)).expect("in range"));
+    }
+
+    #[test]
+    fn tracking_is_reported_as_chronyd_last_said() {
+        let mut db = Database::new("tracking-report");
+        let mut collector = Collector::new(Seconds::new(1.0));
+        // chronyd's while unsynchronized (`REF_GetReferenceParams`,
+        // chrony 4.8 `reference.c:1216`).
+        let unsynchronized = Tracking {
+            reference_time: Timestamp::UNIX_EPOCH,
+            leap: Leap::Unsynchronized,
+            stratum: 0,
+            ..tracking(0, 0.0)
+        };
+        let report = |db: &Database| -> (i64, String) {
+            db.reader
+                .query_row(
+                    "SELECT reference_time, leap FROM tracking_report",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("a report")
+        };
+        let polls = [
+            (0, tracking(0, 0.0)),
+            (1, unsynchronized),
+            (2, tracking(2, 0.0)),
+            (3, unsynchronized),
+            // Synchronized, then stepped back.
+            (4, tracking(100, 0.0)),
+            (5, tracking(50, 0.0)),
+            (6, tracking(50, 0.0)),
+        ];
+        for (second, read) in polls {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(read, vec![]),
+                        Process::Running(100),
+                    )
+                })
+                .expect("recorded");
+            let expected = (
+                to_stored(read.reference_time).expect("in range"),
+                format!("{:?}", read.leap).to_lowercase(),
+            );
+            assert_eq!(report(&db), expected, "at {second}");
+        }
+        assert_eq!(db.count("tracking"), 6);
+        assert_eq!(db.count("tracking_report"), 1);
     }
 }

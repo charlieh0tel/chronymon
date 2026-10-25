@@ -427,6 +427,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             if updated {
                 batch.tracking(when, &tracking)?;
+                batch.tracking_report(when, &tracking)?;
             }
             for (n, f) in feeds.iter().enumerate() {
                 if removed[n].is_none() && f.removed.is_some() && !f.sampled(second, start, span) {

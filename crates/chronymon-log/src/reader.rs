@@ -57,6 +57,10 @@ const NANOSECONDS: f64 = 1e9;
 /// schema [`SOURCE_REPORT`](crate::schema::SOURCE_REPORT).
 const REPORT: &str = "source_report";
 
+/// The table of chronyd's latest `tracking` report, from schema
+/// [`TRACKING_REPORT`](crate::schema::TRACKING_REPORT).
+const TRACKING_REPORT: &str = "tracking_report";
+
 /// The latest time a window may reach, unix seconds: 2255, short of the
 /// 2262 at which 64 bits of nanoseconds run out, with room for the
 /// bucket arithmetic.
@@ -402,10 +406,11 @@ pub struct Status {
     pub chronyd_pid: Option<i64>,
 }
 
-/// The latest `tracking` row, by name, as the strip shows it.
+/// chronyd's latest `tracking` report, by name, as the strip shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tracking {
-    /// When the clock was last updated, unix nanoseconds.
+    /// When the clock was last updated, unix nanoseconds; 0 while
+    /// unsynchronized.
     pub reference_time: i64,
     /// The reference ID.
     pub reference_id: i64,
@@ -544,12 +549,25 @@ impl Reader {
             .optional()?)
     }
 
-    /// The newest clock update.
+    /// chronyd's latest `tracking` report: its `tracking_report` row,
+    /// else the last clock update recorded.  Not the latest reference
+    /// time, which is 0 while unsynchronized and goes back with a step.
     pub fn latest_tracking(&self) -> Result<Option<Tracking>> {
+        if self.has_table(TRACKING_REPORT)?
+            && let Some(report) = self.tracking_row(TRACKING_REPORT, "")?
+        {
+            return Ok(Some(report));
+        }
+        self.tracking_row(Table::Tracking.name(), "ORDER BY rowid DESC LIMIT 1")
+    }
+
+    /// The first row of `table`, `tracking` or `tracking_report`, in the
+    /// order `order` gives.
+    fn tracking_row(&self, table: &str, order: &str) -> Result<Option<Tracking>> {
         let columns = Table::Tracking.columns();
         let sql = format!(
             "SELECT reference_time, reference_id, reference_address, stratum, leap, {}
-             FROM tracking ORDER BY reference_time DESC LIMIT 1",
+             FROM {table} {order}",
             columns.join(", ")
         );
         Ok(self
@@ -572,18 +590,19 @@ impl Reader {
             .optional()?)
     }
 
-    /// The first and last times `table` holds, unix seconds.
+    /// The first and last times `table` holds, unix seconds, but 0:
+    /// tracking's while unsynchronized, which is no time.
     pub fn extent(&self, table: Table) -> Result<Option<(f64, f64)>> {
         if !self.exists(table)? {
             return Ok(None);
         }
-        let time = table.time();
-        let sql = format!("SELECT MIN({time}), MAX({time}) FROM {}", table.name());
-        let (first, last): (Option<i64>, Option<i64>) =
+        let end = |order| {
             self.connection
-                .query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(first
-            .zip(last)
+                .query_row(&extent_sql(table, order), [], |row| row.get::<_, i64>(0))
+                .optional()
+        };
+        Ok(end(Order::First)?
+            .zip(end(Order::Last)?)
             .map(|(first, last)| (seconds(first), seconds(last))))
     }
 
@@ -623,18 +642,7 @@ impl Reader {
     /// latest list; and when chronyd has no sources left, so that none
     /// is newer, each one's removal says so.
     pub fn sources(&self) -> Result<Vec<Source>> {
-        let sql = format!(
-            "WITH listed AS (SELECT * FROM source WHERE id NOT IN ({}))
-             SELECT id, address, mode, name, first_seen, last_seen,
-                 last_seen < (SELECT MAX(last_seen) FROM listed)
-                 OR COALESCE((SELECT kind FROM event
-                     WHERE source_id = listed.id AND kind IN (?1, ?2)
-                     ORDER BY at DESC, rowid DESC LIMIT 1) = ?2, 0) AS removed
-             FROM listed
-             ORDER BY removed, last_seen DESC, id",
-            placeholders()
-        );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare(&sources_sql())?;
         let rows = statement
             .query_map(
                 params![
@@ -715,15 +723,9 @@ impl Reader {
         source_id: i64,
     ) -> Result<Option<(String, Values)>> {
         let columns = table.columns();
-        let sql = format!(
-            "SELECT {label}, {} FROM {} WHERE source_id = ?1 ORDER BY {} DESC LIMIT 1",
-            columns.join(", "),
-            table.name(),
-            table.time()
-        );
         Ok(self
             .connection
-            .query_row(&sql, params![source_id], |row| {
+            .query_row(&latest_sql(table, label), params![source_id], |row| {
                 let values = columns
                     .iter()
                     .enumerate()
@@ -937,23 +939,9 @@ impl Reader {
             return Ok(Vec::new());
         }
         let (from, to, points) = window.stored();
-        let time = table.time();
-        let aggregates: String = columns
-            .iter()
-            .map(|c| format!(", AVG({0}), MIN({0}), MAX({0})", c.name))
-            .collect();
-        let filter = source_filter(table, 4);
-        let sql = format!(
-            // Divided by the span plus one, so a row exactly at `to`
-            // falls in the last bucket rather than one past it.
-            "SELECT CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
-                    AVG({time}){aggregates}
-             FROM {}
-             WHERE {time} >= ?1 AND {time} <= ?2 {filter}
-             GROUP BY bucket ORDER BY bucket",
-            table.name()
-        );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self
+            .connection
+            .prepare(&buckets_sql(table, source, columns))?;
         let mut rows = statement.query(params![from, to, points, Key::value(source)])?;
         let mut buckets = Vec::new();
         while let Some(row) = rows.next()? {
@@ -980,17 +968,7 @@ impl Reader {
         let table = column.table;
         let column = column.name;
         let (from, to, points) = window.stored();
-        let time = table.time();
-        let sql = format!(
-            "SELECT source_id, CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
-                    AVG({column}), AVG({time})
-             FROM {}
-             WHERE {time} >= ?1 AND {time} <= ?2 AND source_id NOT IN ({})
-             GROUP BY source_id, bucket ORDER BY source_id, bucket",
-            table.name(),
-            placeholders()
-        );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare(&overlay_sql(table, column))?;
         let rows = statement
             .query_map(params![from, to, points], |row| {
                 Ok((
@@ -1073,25 +1051,13 @@ impl Reader {
         if !self.exists(column.table)? {
             return Ok((Vec::new(), false));
         }
-        let table = column.table;
         let (from, to, _) = Window {
             from,
             to,
             points: MIN_POINTS,
         }
         .stored();
-        let time = table.time();
-        let filter = source_filter(table, 3);
-        let sql = format!(
-            // A refclock's filtered sample has no raw offset: NULL, and
-            // not a reading.
-            "SELECT {column} FROM {table} WHERE {time} >= ?1 AND {time} <= ?2 {filter}
-               AND {column} IS NOT NULL
-             ORDER BY {time} DESC LIMIT ?4",
-            column = column.name,
-            table = table.name()
-        );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare(&values_sql(column, source))?;
         let asked = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
         let mut values = statement
             .query_map(params![from, to, Key::value(source), asked], |row| {
@@ -1295,19 +1261,125 @@ fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series 
     series
 }
 
-/// The clause choosing one source's rows, by parameter `n`, or every
-/// row when it is NULL.  Bound whatever the table, since SQLite refuses
-/// a parameter a statement does not use, so a table without sources
-/// gets a clause that is always true.
-fn source_filter(table: Table, n: usize) -> String {
+/// The clause choosing `source`'s rows, by parameter `n`, or every
+/// row.  Written for one or the other, not as "`?n` is NULL or matches",
+/// which no index serves.  The parameter is bound whatever the table,
+/// since SQLite refuses one a statement does not use, so a table
+/// without sources gets a clause that is always true.
+fn source_filter(table: Table, n: usize, source: Option<&Key>) -> String {
+    let chosen = match (table.key(), source) {
+        (Some(key), Some(_)) => format!("AND {key} = ?{n}"),
+        (Some(_), None) => format!("AND ?{n} IS NULL"),
+        (None, _) => format!("AND (?{n} IS NULL OR ?{n} IS NOT NULL)"),
+    };
     match table.key() {
-        Some(key) if table.by_id() => format!(
-            "AND (?{n} IS NULL OR {key} = ?{n}) AND {key} NOT IN ({})",
-            placeholders()
-        ),
-        Some(key) => format!("AND (?{n} IS NULL OR {key} = ?{n})"),
-        None => format!("AND (?{n} IS NULL OR ?{n} IS NOT NULL)"),
+        Some(key) if table.by_id() => format!("{chosen} AND {key} NOT IN ({})", placeholders()),
+        _ => chosen,
     }
+}
+
+/// Which end of a table [`extent_sql`] finds.
+#[derive(Debug, Clone, Copy)]
+enum Order {
+    /// The earliest time.
+    First,
+    /// The latest.
+    Last,
+}
+
+/// The first or last time of `table`, but 0.  Each end a query of its
+/// own: SQLite reads `MIN` and `MAX` together by scanning every row,
+/// one of them alone from the index.
+fn extent_sql(table: Table, order: Order) -> String {
+    let direction = match order {
+        Order::First => "ASC",
+        Order::Last => "DESC",
+    };
+    let time = table.time();
+    format!(
+        "SELECT {time} FROM {} WHERE {time} > 0 ORDER BY {time} {direction} LIMIT 1",
+        table.name()
+    )
+}
+
+/// The newest row of `table` for source `?1`: the text column `label`,
+/// then [`Table::columns`].
+fn latest_sql(table: Table, label: &str) -> String {
+    format!(
+        "SELECT {label}, {} FROM {} WHERE source_id = ?1 ORDER BY {} DESC LIMIT 1",
+        table.columns().join(", "),
+        table.name(),
+        table.time()
+    )
+}
+
+/// Every source but placeholders, and whether removed, by the event
+/// kinds `?1`, added, and `?2`, removed.
+fn sources_sql() -> String {
+    format!(
+        "WITH listed AS (SELECT * FROM source WHERE id NOT IN ({}))
+         SELECT id, address, mode, name, first_seen, last_seen,
+             last_seen < (SELECT MAX(last_seen) FROM listed)
+             OR COALESCE((SELECT kind FROM event
+                 WHERE source_id = listed.id AND kind IN (?1, ?2)
+                 ORDER BY at DESC, rowid DESC LIMIT 1) = ?2, 0) AS removed
+         FROM listed
+         ORDER BY removed, last_seen DESC, id",
+        placeholders()
+    )
+}
+
+/// `columns` of `table` from `?1` to `?2`, unix nanoseconds, in `?3`
+/// buckets, for `source`, `?4`.
+fn buckets_sql(table: Table, source: Option<&Key>, columns: &[Column]) -> String {
+    let time = table.time();
+    let aggregates: String = columns
+        .iter()
+        .map(|c| format!(", AVG({0}), MIN({0}), MAX({0})", c.name))
+        .collect();
+    let filter = source_filter(table, 4, source);
+    format!(
+        // Divided by the span plus one, so a row exactly at `to` falls
+        // in the last bucket rather than one past it.
+        "SELECT CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
+                AVG({time}){aggregates}
+         FROM {}
+         WHERE {time} >= ?1 AND {time} <= ?2 {filter}
+         GROUP BY bucket ORDER BY bucket",
+        table.name()
+    )
+}
+
+/// `column` of every source of `table` from `?1` to `?2` in `?3`
+/// buckets.
+fn overlay_sql(table: Table, column: &str) -> String {
+    let time = table.time();
+    format!(
+        "SELECT source_id, CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
+                AVG({column}), AVG({time})
+         FROM {}
+         WHERE {time} >= ?1 AND {time} <= ?2 AND source_id NOT IN ({})
+         GROUP BY source_id, bucket ORDER BY source_id, bucket",
+        table.name(),
+        placeholders()
+    )
+}
+
+/// The newest `?4` values of `column` from `?1` to `?2`, for `source`,
+/// `?3`.
+fn values_sql(column: Column, source: Option<&Key>) -> String {
+    let table = column.table;
+    let time = table.time();
+    let filter = source_filter(table, 3, source);
+    format!(
+        // A refclock's filtered sample has no raw offset: NULL, and not
+        // a reading.
+        "SELECT {column} FROM {table} WHERE {time} >= ?1 AND {time} <= ?2 {filter}
+           AND {column} IS NOT NULL
+         ORDER BY {time} DESC LIMIT ?4",
+        column = column.name,
+        table = table.name()
+    )
 }
 
 /// The IDs of the sources that are placeholders for names not resolved
@@ -1401,6 +1473,11 @@ mod tests {
             std::fs::create_dir_all(&directory).expect("a directory");
             let log = Log::open(&directory.join("test.sqlite")).expect("a database");
             Self { directory, log }
+        }
+
+        /// A connection of its own, as an operator's `sqlite3`.
+        fn log_connection(&self) -> Connection {
+            Connection::open(self.directory.join("test.sqlite")).expect("a connection")
         }
 
         fn reader(&self) -> Reader {
@@ -2099,5 +2176,136 @@ mod tests {
             .expect("written");
         let sources = db.reader().sources().expect("sources");
         assert!(sources[0].removed);
+    }
+
+    /// chronyd's tracking: synchronized, its last update at second
+    /// `reference`, or unsynchronized, with no reference time.
+    fn reported(reference: Option<i64>) -> chronymon_control::report::Tracking {
+        match reference {
+            Some(second) => tracking(second, 1.0),
+            None => chronymon_control::report::Tracking {
+                reference_time: Timestamp::UNIX_EPOCH,
+                leap: Leap::Unsynchronized,
+                ..tracking(0, 1.0)
+            },
+        }
+    }
+
+    #[test]
+    fn the_latest_tracking_is_chronyds_latest() {
+        let mut db = Database::new("tracking-latest");
+        let latest = |db: &Database| {
+            db.reader()
+                .latest_tracking()
+                .expect("a read")
+                .map(|t| (t.reference_time, t.leap))
+        };
+        // Synchronized, then not, then again, then not again, then
+        // stepped back 50 s.
+        let polls = [
+            (0, Some(0)),
+            (10, None),
+            (20, Some(20)),
+            (30, None),
+            (40, Some(100)),
+            (41, Some(50)),
+        ];
+        for (second, reference) in polls {
+            let report = reported(reference);
+            db.log
+                .write(|batch| {
+                    batch.tracking(at(second), &report)?;
+                    batch.tracking_report(at(second), &report)
+                })
+                .expect("written");
+            let expected = reference.map_or((0, "unsynchronized".to_owned()), |r| {
+                ((START + r) * NS, "normal".to_owned())
+            });
+            assert_eq!(latest(&db), Some(expected), "at {second}");
+        }
+        // Every change kept, both times unsynchronized included, a
+        // repeat of the last not.
+        db.log
+            .write(|batch| batch.tracking(at(42), &reported(Some(50))))
+            .expect("written");
+        let rows: i64 = db
+            .log_connection()
+            .query_row("SELECT COUNT(*) FROM tracking", [], |row| row.get(0))
+            .expect("a count");
+        assert_eq!(rows, i64::try_from(polls.len()).expect("a count"));
+        // Unsynchronized is no time to chart.
+        assert_eq!(
+            db.reader().extent(Table::Tracking).expect("an extent"),
+            Some((START as f64, (START + 100) as f64))
+        );
+        // Without a report, an older database's, the last row written.
+        db.log_connection()
+            .execute_batch("DROP TABLE tracking_report")
+            .expect("dropped");
+        assert_eq!(latest(&db), Some(((START + 50) * NS, "normal".to_owned())));
+    }
+
+    /// The plan of `sql`, one line per step.
+    fn plan(reader: &Reader, sql: &str) -> Vec<String> {
+        let mut statement = reader
+            .connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("a plan");
+        let nulls = vec![Value::Null; statement.parameter_count()];
+        statement
+            .query_map(rusqlite::params_from_iter(nulls), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("a plan")
+            .collect::<rusqlite::Result<_>>()
+            .expect("a plan")
+    }
+
+    /// Whether `plan` reads every row of `table`.
+    fn scans(plan: &[String], table: &str) -> bool {
+        plan.iter().any(|step| {
+            *step == format!("SCAN {table}") || step.starts_with(&format!("SCAN {table} "))
+        })
+    }
+
+    #[test]
+    fn reads_by_index() {
+        let db = Database::new("plans");
+        let reader = db.reader();
+        let some = Key::Id(1);
+        for table in Table::ALL {
+            let name = table.name();
+            let columns: Vec<Column> = table
+                .columns()
+                .iter()
+                .filter_map(|c| table.column(c))
+                .collect();
+            let mut queries = vec![
+                extent_sql(table, Order::First),
+                extent_sql(table, Order::Last),
+                buckets_sql(table, None, &columns),
+                values_sql(columns[0], None),
+            ];
+            if table.per_source() {
+                queries.push(buckets_sql(table, Some(&some), &columns));
+                queries.push(values_sql(columns[0], Some(&some)));
+            }
+            if table.by_id() {
+                queries.push(latest_sql(table, "''"));
+                queries.push(overlay_sql(table, columns[0].name));
+            }
+            for sql in queries {
+                let plan = plan(&reader, &sql);
+                assert!(!scans(&plan, name), "{sql}: {plan:?}");
+                assert!(
+                    !plan
+                        .iter()
+                        .any(|step| step.contains("TEMP B-TREE FOR ORDER BY")),
+                    "{sql}: {plan:?}"
+                );
+            }
+        }
+        let plan = plan(&reader, &sources_sql());
+        assert!(!scans(&plan, "event"), "{plan:?}");
     }
 }

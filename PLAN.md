@@ -32,13 +32,18 @@ beside it, as chronyc does.  No access, no start.
 
    | Report | New row when |
    | - | - |
-   | `tracking` | its reference time changes |
+   | `tracking` | its reference time differs from the last row's; `tracking_report`, one row, replaced when anything changes |
    | `sources` | its last-sample age resets; `source_report`, one row per source, replaced when anything else changes |
    | `sourcestats` | any value changes (no timestamp of its own) |
    | `ntpdata` | its valid-sample counter increments |
    | `selectdata` | it changes |
    | `sourcename` | once per new source |
 
+   The strip reads `tracking_report`, not the latest reference time:
+   chronyd reports 0 while unsynchronized (`REF_GetReferenceParams`,
+   4.8 `reference.c:1216`), and a backward step moves it back, so the
+   latest is not the greatest.  Unsynchronized is no time on a chart's
+   axis, nor in a table's extent.
    The Sources table reads `source_report`, not the last sample row,
    so reach run down to 0, or no sample at all after a restart (age
    `(uint32_t)-1`, `SST_DoSourceReport`), shows as chronyd reports it,
@@ -128,6 +133,10 @@ The host's:
   `immutable` when there is no `-wal`) and never creates it.  It must
   not be able to make a `-wal` or `-shm`: one owned by the web view's
   user locks the daemon out.
+- Every query the web view makes is served by an index matching its
+  predicate and order (a test reads their plans): `source_sample` by
+  `sample_time`, which it is charted by, and an extent as two queries,
+  since SQLite scans for `MIN` and `MAX` together.
 
 About 20,000 rows a day for ten sources and tracking: raw retention
 is affordable.
