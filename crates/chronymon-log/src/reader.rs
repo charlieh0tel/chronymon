@@ -50,6 +50,11 @@ const GAP_SPACINGS: i64 = 3;
 /// Nanoseconds in a second.
 const NANOSECONDS: f64 = 1e9;
 
+/// The latest time a window may reach, unix seconds: 2255, short of the
+/// 2262 at which 64 bits of nanoseconds run out, with room for the
+/// bucket arithmetic.
+const LATEST: f64 = 9e9;
+
 /// A table the web view charts, and the columns of it that it may.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Table {
@@ -355,8 +360,10 @@ pub struct Window {
 
 impl Window {
     fn stored(self) -> (i64, i64, i64) {
-        // Rounded to whole nanoseconds, well inside an i64 until 2262.
-        let ns = |s: f64| (s * NANOSECONDS).round() as i64;
+        // Rounded to whole nanoseconds, and kept to the years an i64 of
+        // them holds: a request for "until the year 2286" would
+        // otherwise overflow the bucket arithmetic.
+        let ns = |s: f64| (s.clamp(0.0, LATEST) * NANOSECONDS).round() as i64;
         let points = i64::try_from(self.points.clamp(MIN_POINTS, MAX_POINTS)).unwrap_or(1);
         (ns(self.from), ns(self.to).max(ns(self.from)), points)
     }
@@ -476,6 +483,21 @@ impl Reader {
         Ok(Self { connection })
     }
 
+    /// Whether the database has `table`: one from before its schema
+    /// added the table reads as empty, not as an error, so the web view
+    /// shows what an older database holds until the daemon migrates it.
+    fn exists(&self, table: Table) -> Result<bool> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table.name()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     /// The daemon's last poll, if it has polled.
     pub fn status(&self) -> Result<Option<Status>> {
         Ok(self
@@ -525,6 +547,9 @@ impl Reader {
 
     /// The first and last times `table` holds, unix seconds.
     pub fn extent(&self, table: Table) -> Result<Option<(f64, f64)>> {
+        if !self.exists(table)? {
+            return Ok(None);
+        }
         let time = table.time();
         let sql = format!("SELECT MIN({time}), MAX({time}) FROM {}", table.name());
         let (first, last): (Option<i64>, Option<i64>) =
@@ -538,6 +563,9 @@ impl Reader {
     /// Every source a per-source log table names, by name, with its
     /// rows: the refclocks of `refclock_sample`, say.
     pub fn keys(&self, table: Table) -> Result<Vec<Named>> {
+        if !self.exists(table)? {
+            return Ok(Vec::new());
+        }
         let Some(key) = table.key().filter(|_| !table.by_id()) else {
             return Ok(Vec::new());
         };
@@ -705,6 +733,9 @@ impl Reader {
         columns: &[Column],
         window: Window,
     ) -> Result<Vec<Bucket>> {
+        if !self.exists(table)? {
+            return Ok(Vec::new());
+        }
         let (from, to, points) = window.stored();
         let time = table.time();
         let aggregates: String = columns
@@ -829,6 +860,9 @@ impl Reader {
         to: f64,
         limit: usize,
     ) -> Result<(Vec<f64>, bool)> {
+        if !self.exists(column.table)? {
+            return Ok((Vec::new(), false));
+        }
         let table = column.table;
         let (from, to, _) = Window {
             from,
@@ -1232,6 +1266,42 @@ mod tests {
             .values(raw, Some(&pps), START as f64, (START + 19) as f64, 100)
             .expect("values");
         assert_eq!(values.len(), 20);
+    }
+
+    #[test]
+    fn a_window_past_the_representable_is_clamped() {
+        let far = Window {
+            from: 0.0,
+            to: 1e10,
+            points: 16,
+        };
+        let (from, to, _) = far.stored();
+        assert_eq!(from, 0);
+        assert!(
+            to.checked_sub(from)
+                .and_then(|span| span.checked_add(1))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_table_the_database_predates_is_empty() {
+        let db = Database::new("older");
+        let reader = db.reader();
+        let connection = Connection::open(db.directory.join("test.sqlite")).expect("a connection");
+        connection
+            .execute_batch("DROP TABLE refclock_sample")
+            .expect("dropped");
+        assert!(reader.keys(Table::RefclockSample).expect("keys").is_empty());
+        assert_eq!(
+            reader.extent(Table::RefclockSample).expect("an extent"),
+            None
+        );
+        let cooked = column(Table::RefclockSample, "cooked_offset");
+        let series = reader
+            .series(Table::RefclockSample, None, &[cooked], window(0, 10, 16))
+            .expect("a series");
+        assert!(series.at.is_empty());
     }
 
     #[test]
