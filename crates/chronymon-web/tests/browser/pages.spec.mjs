@@ -51,6 +51,13 @@ for (const { path, name } of PAGES) {
   });
 }
 
+test("Colophon: links to the repository and its issues", async ({ page }) => {
+  await page.goto("/");
+  const colophon = page.locator("#colophon");
+  await expect(colophon.locator("a", { hasText: "github" })).toHaveAttribute("href", /github\.com\/[^/]+\/chronymon$/);
+  await expect(colophon.locator("a", { hasText: "issues" })).toHaveAttribute("href", /github\.com\/[^/]+\/chronymon\/issues$/);
+});
+
 test("Live: the strip reads the clock", async ({ page }) => {
   await page.goto("/");
   const strip = page.locator("#status");

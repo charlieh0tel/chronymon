@@ -451,8 +451,8 @@ function content(spec) {
 
 // ------------------------------------------------------------ colophon
 
-// Whose this is, under what license, and where its source is, from the
-// server's own package metadata.  Left empty if the server cannot say.
+// Whose this is, under what license, and where its source and issues
+// are, from the server's own package metadata.  Left empty if the server cannot say.
 async function colophon() {
   const about = await getJson("/api/about");
   if (about.error || !$("colophon")) return;
@@ -462,7 +462,8 @@ async function colophon() {
     esc(about.license),
     `chronymon-web ${esc(about.version)}`,
     esc(about.database),
-    link(about.repository, "source"),
+    link(about.repository, "github"),
+    link(`${about.repository}/issues`, "issues"),
   ].join(" · ");
 }
 
