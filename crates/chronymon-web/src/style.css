@@ -204,7 +204,7 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u));
 #kiosk-sources td { font-size: calc(20 * var(--u)); padding: calc(1 * var(--u)) calc(12 * var(--u)) calc(1 * var(--u)) 0;
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #kiosk-sources td:first-child { width: 1.5em; }
-#kiosk-sources td:nth-child(3) { width: 3.5em; }
+#kiosk-sources td:nth-child(3) { width: 2.5em; }
 #kiosk-sources td:last-child { width: 7em; text-align: right; padding-right: 0; }
 #kiosk-events { flex: 0 0 calc(196 * var(--u)); }
 #kiosk-events td { font-size: calc(17 * var(--u)); padding: calc(1 * var(--u)) calc(10 * var(--u)) calc(1 * var(--u)) 0;
