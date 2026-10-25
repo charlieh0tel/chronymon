@@ -4,7 +4,9 @@
 //! one with a long name, as many sources as a kiosk must hold, its
 //! frequency following the day's temperature, with an outage, a
 //! restart and a step along the way, a seventh server removed, and a
-//! `noselect` NMEA refclock whose samples stop; and chronyd's logs as
+//! `noselect` NMEA refclock whose samples stop, the PPS locked to it
+//! (`refclock ... lock NMEA`), as the daemon records chronyd's
+//! configuration; and chronyd's logs as
 //! the daemon reads them: refclock and tempcomp samples throughout,
 //! and tracking for some hours before the daemon started, for the
 //! charts to fill from.  Later, chronyd restarted with tracking.log on and a 64 s
@@ -41,6 +43,7 @@ use chronymon_log::chrony_log::Line;
 use chronymon_log::chrony_log::RefclockLine;
 use chronymon_log::chrony_log::TempcompLine;
 use chronymon_log::chrony_log::TrackingLine;
+use chronymon_log::schema::RefclockLock;
 use chronymon_log::writer::ChronydState;
 use chronymon_log::writer::Log;
 use jiff::Timestamp;
@@ -299,6 +302,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 )
             })
             .collect::<Result<_, _>>()?;
+        // The PPS's pulses numbered by the NMEA's time of day.
+        batch.refclock_locks(&[RefclockLock {
+            refclock: ReferenceId(feeds[0].reference_id),
+            locked_to: ReferenceId(feeds[1].reference_id),
+        }])?;
         batch.event(at(start).expect("in range"), EventKind::Boot, None, None)?;
         batch.event(
             at(start).expect("in range"),

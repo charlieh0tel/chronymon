@@ -28,6 +28,8 @@ use crate::schema::LOG_TABLES;
 use crate::schema::LOG_TABLES_ASIDE;
 use crate::schema::LOG_TABLES_BACK;
 use crate::schema::META;
+use crate::schema::REFCLOCK_LOCKS;
+use crate::schema::RefclockLock;
 use crate::schema::TABLES;
 use crate::schema::TRACKING_ASIDE;
 use crate::schema::TRACKING_BACK;
@@ -261,6 +263,13 @@ impl Batch<'_> {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    /// Record chronyd's refclocks locked to others, as its configuration
+    /// now says, in place of those recorded before.
+    pub fn refclock_locks(&self, locks: &[RefclockLock]) -> Result<()> {
+        let stored: Vec<String> = locks.iter().map(|lock| lock.stored()).collect();
+        self.set_meta(REFCLOCK_LOCKS, &stored.join("\n"))
     }
 
     /// Record the daemon's view of chronyd as of `at`.

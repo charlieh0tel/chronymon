@@ -25,7 +25,6 @@ use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
 use crate::collect::Collector;
-use crate::config::Config;
 use crate::ingest::Ingest;
 use crate::lifecycle::Host;
 
@@ -56,7 +55,8 @@ struct Cli {
     #[arg(long, env = "CHRONYMOND_INTERVAL", default_value_t = 1.0)]
     interval: f64,
 
-    /// chronyd's configuration, for its `makestep`.
+    /// chronyd's configuration, for its `makestep` and its refclocks'
+    /// locks; read again whenever chronyd restarts.
     #[arg(
         long,
         env = "CHRONYMOND_CHRONY_CONFIG",
@@ -149,12 +149,12 @@ fn run(cli: &Cli) -> Result<()> {
     };
     let mut log =
         Log::open(&cli.database).with_context(|| format!("opening {}", cli.database.display()))?;
-    let config = Config::read(&cli.chrony_config);
+    let mut collector = Collector::new(cli.chrony_config.clone());
     eprintln!(
         "chronymond: version {}, {} every {interval:?}, {}",
         env!("CARGO_PKG_VERSION"),
         cli.socket.display(),
-        config
+        collector.config()
     );
 
     let (stop, stopped) = mpsc::channel();
@@ -189,7 +189,6 @@ fn run(cli: &Cli) -> Result<()> {
     );
     let mut logs_read = Instant::now();
 
-    let mut collector = Collector::new(config);
     let mut state = None;
     let mut next = Instant::now();
     // Why the loop stopped, if not for a signal.

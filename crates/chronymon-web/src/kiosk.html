@@ -430,11 +430,17 @@ function drawEvents() {
   showHtml($("kiosk-event-rows"), drawn(fitting($("kiosk-events"), drawn(events.length))));
 }
 
-// A source chronyd never selects, its `noselect` option set: selection
-// state `N` (chronyc's selectdata, 4.3 to 4.9).  Left out of the offset
-// overlay, where a refclock kept only to be watched, as an NMEA
-// receiver tens of milliseconds off, would otherwise set the axis.
-const noselect = (s) => s.selection_state === "N";
+// A refclock another is locked to, as an NMEA receiver's time of day
+// numbers a PPS's pulses: beside the PPS its offsets, tens of
+// milliseconds off, are noise that would set the axis.  Left out of
+// the offset overlay; one no PPS is locked to is a source like any
+// other, and charted, `noselect` or not.
+const paired = (s) => Boolean(s.locked_by);
+
+// What the offset overlay's title says it leaves out: each paired
+// refclock, and the one locked to it.
+const leftOut = (list) => list.filter(paired)
+  .map((s) => `, ${sourceName(s)} left out, ${s.locked_by} locked to it`).join("");
 
 async function load(signal) {
   const { from, to } = rangeBounds();
@@ -457,16 +463,16 @@ async function load(signal) {
   const fill = { table: "log_tracking", columns: KIOSK_COLUMNS.map((c) => KIOSK_FILLS[c]) };
   const clock = await readHistory(signal, "tracking", KIOSK_COLUMNS, null, fill);
   const overlay = await ask(overlayQuery(KIOSK_OVERLAY, boundsOf(clock)), signal, HISTORY_TIMEOUT);
-  // The overlay's lines are the sources listed, less noselect ones, and
+  // The overlay's lines are the sources listed, less paired ones, and
   // the list, colored alike, is its legend: eight names or more in its
   // title would wrap onto the chart.
-  const charted = new Set(current(sources).filter((s) => !noselect(s)).map((s) => s.id));
+  const charted = new Set(current(sources).filter((s) => !paired(s)).map((s) => s.id));
   const names = new Map(sources.map((s) => [s.id, sourceName(s)]));
   const offsets = overlayChart(...KIOSK_OVERLAY,
     { ...overlay, lines: overlay.lines.filter((l) => charted.has(l.source_id)) },
     (id) => names.get(id) ?? `source ${id}`);
   offsets.heading = esc(offsets.title) + `<span class="muted">: each source in its color` +
-    (current(sources).some(noselect) ? ", noselect ones left out" : "") + "</span>";
+    esc(leftOut(current(sources))) + "</span>";
   const drawn = [...filledCharts("tracking", clock, KIOSK_FILLS), offsets];
   drawStack(stack, { x: clock.at, span: spanOf([clock, overlay]), drawn }, "no clock updates in this range");
 

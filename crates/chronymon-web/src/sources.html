@@ -51,9 +51,11 @@
 readRange(3600);
 
 // The charts, a line per source: what the sources measured, then what
-// chronyd's regression made of it.
+// chronyd's regression made of it.  The offset is each sample's as
+// `sources` reports it, which a refclock's are too, as the kiosk draws
+// it; the delay, each NTP packet's, which a refclock has none of.
 const OVERLAID = [
-  ["ntp_sample", "offset"],
+  ["source_sample", "latest_measurement"],
   ["ntp_sample", "peer_delay"],
   ["source_stats", "residual_frequency"],
   ["source_stats", "skew"],
@@ -68,7 +70,9 @@ const stack = {
   charts: [],
   marks: [],
   // NMEA's wander, milliseconds against the others' microseconds, sets
-  // every axis it is on: a source's name in a title hides it.
+  // every axis it is on: a source's name in a title hides it.  One a
+  // PPS is locked to starts hidden: beside the PPS its offsets are
+  // noise.
   toggles: true,
 };
 
@@ -120,6 +124,7 @@ async function load(signal) {
     return;
   }
   const names = new Map(sources.map((s) => [s.id, s.name || s.address]));
+  hideUnlessShown(sources.filter((s) => s.locked_by).map((s) => names.get(s.id)));
   const { from, to } = rangeBounds();
   const events = await eventsFor(signal, from, to);
   stack.marks = events.marks;

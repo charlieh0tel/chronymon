@@ -431,12 +431,30 @@ pub(crate) fn overlay(path: &Path, query: &str) -> Result<Value> {
 /// chronyd has removed last.
 pub(crate) fn sources(path: &Path) -> Result<Value> {
     read(path, |reader| {
-        let sources: Vec<Value> = reader
-            .sources()?
+        let listed = reader.sources()?;
+        // Each refclock another is locked to, by address, and the name
+        // of the one locked to it: its PPS, beside which its own offsets
+        // are noise.
+        let locked_by: HashMap<String, String> = reader
+            .refclock_locks()?
+            .into_iter()
+            .map(|lock| {
+                let refclock = lock.refclock.to_string();
+                let name = listed
+                    .iter()
+                    .find(|s| s.address == refclock)
+                    .and_then(|s| s.name.clone())
+                    .or_else(|| lock.refclock.text())
+                    .unwrap_or(refclock);
+                (lock.locked_to.to_string(), name)
+            })
+            .collect();
+        let sources: Vec<Value> = listed
             .into_iter()
             .map(|s| {
                 json!({
                     "id": s.id,
+                    "locked_by": locked_by.get(&s.address),
                     "address": s.address,
                     "mode": s.mode,
                     "name": s.name,
@@ -551,6 +569,14 @@ pub(crate) fn distribution(path: &Path, query: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+
+    use chronymon_control::report::Address;
+    use chronymon_control::report::ReferenceId;
+    use chronymon_control::report::SourceMode;
+    use chronymon_log::schema::RefclockLock;
+    use chronymon_log::writer::Log;
+
     use super::*;
 
     #[test]
@@ -575,6 +601,81 @@ mod tests {
 
     fn history_refusal(query: &str) -> Option<String> {
         refusal(history(Path::new(NOWHERE), query))
+    }
+
+    /// Each source's name and `locked_by`, from `/api/sources` of a
+    /// database of a PPS and an NMEA refclock and an NTP server, with
+    /// `locks` recorded, or none.
+    fn locked_by(name: &str, locks: Option<&[RefclockLock]>) -> Vec<(String, Value)> {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-api-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let mut log = Log::open(&path).expect("a database");
+        log.write(|batch| {
+            let at = Timestamp::UNIX_EPOCH;
+            for (id, mode) in [
+                (*b"PPS\0", SourceMode::Refclock),
+                (*b"NMEA", SourceMode::Refclock),
+                ([192, 0, 2, 1], SourceMode::Client),
+            ] {
+                let reference_id = ReferenceId(u32::from_be_bytes(id));
+                let address = match mode {
+                    SourceMode::Refclock => Address::ReferenceId(reference_id.0),
+                    _ => Address::Ip(IpAddr::from(id)),
+                };
+                batch.source(
+                    at,
+                    address,
+                    reference_id,
+                    mode,
+                    reference_id.text().as_deref(),
+                )?;
+            }
+            locks.map_or(Ok(()), |locks| batch.refclock_locks(locks))
+        })
+        .expect("written");
+        let answer = sources(&path).expect("sources");
+        std::fs::remove_dir_all(&directory).expect("removed");
+        answer
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap_or_default().to_owned(),
+                    s["locked_by"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_refclock_locked_to_is_marked_with_the_one_locked_to_it() {
+        let pps = ReferenceId(u32::from_be_bytes(*b"PPS\0"));
+        let nmea = ReferenceId(u32::from_be_bytes(*b"NMEA"));
+        let paired = [RefclockLock {
+            refclock: pps,
+            locked_to: nmea,
+        }];
+        let null = Value::Null;
+        assert_eq!(
+            locked_by("paired", Some(&paired)),
+            [
+                ("PPS".to_owned(), null.clone()),
+                ("NMEA".to_owned(), json!("PPS")),
+                (String::new(), null.clone()),
+            ]
+        );
+        // A lone NMEA, and a database no daemon has read a configuration
+        // into: none is.
+        for locks in [Some(&[][..]), None] {
+            assert!(
+                locked_by("lone", locks).iter().all(|(_, by)| by.is_null()),
+                "{locks:?}"
+            );
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 use chronymon::event::EventKind;
 use chronymon_control::client::Client;
@@ -163,7 +164,8 @@ struct Seen {
 /// changed.
 #[derive(Debug)]
 pub(crate) struct Collector {
-    /// chronyd's configuration, as last read.
+    /// chronyd's configuration file, and what it said when last read.
+    chrony_config: PathBuf,
     config: Config,
     /// chronyd's clock updates since it started, as far as seen; `None`
     /// when it was running before they could be counted.
@@ -183,9 +185,11 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
-    pub(crate) fn new(config: Config) -> Self {
+    /// A collector going by chronyd's configuration at `chrony_config`.
+    pub(crate) fn new(chrony_config: PathBuf) -> Self {
         Self {
-            config,
+            config: Config::read(&chrony_config),
+            chrony_config,
             updates: None,
             state: None,
             pid: None,
@@ -194,6 +198,22 @@ impl Collector {
             sources_read: false,
             names: HashMap::new(),
         }
+    }
+
+    /// chronyd's configuration, as last read.
+    pub(crate) fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Read chronyd's configuration again, as chronyd does on starting,
+    /// and record its refclocks' locks.
+    fn reread_config(&mut self, batch: &Batch<'_>) -> chronymon_log::error::Result<()> {
+        let config = Config::read(&self.chrony_config);
+        if config != self.config {
+            eprintln!("chronymond: chronyd's configuration now {config}");
+        }
+        self.config = config;
+        batch.refclock_locks(&self.config.locks())
     }
 
     /// Read every report, and the names of sources not named before.
@@ -233,10 +253,14 @@ impl Collector {
         };
         match read {
             Ok(snapshot) => {
+                // chronyd first seen, or perhaps started again: back, or
+                // another process.  Its configuration may have changed.
+                let mut started = self.state.is_none();
                 if self.state.is_some_and(|state| state != ChronydState::Up) {
                     batch.event(at, EventKind::ChronydUp, None, None)?;
                     // It may have restarted, and updated, unseen.
                     self.updates = None;
+                    started = true;
                 }
                 if let (Some(before), Some(now)) = (self.pid, pid)
                     && before != now
@@ -244,6 +268,10 @@ impl Collector {
                     let detail = format!("pid {before} to {now}");
                     batch.event(at, EventKind::ChronydRestart, None, Some(&detail))?;
                     self.updates = None;
+                    started = true;
+                }
+                if started {
+                    self.reread_config(batch)?;
                 }
                 self.state = Some(ChronydState::Up);
                 self.pid = pid.or(self.pid);
@@ -489,8 +517,6 @@ pub(crate) mod tests {
     use chronymon_log::writer::Log;
     use rusqlite::Connection;
 
-    use crate::config::MakeStep;
-
     use super::*;
 
     /// A database in a fresh temporary file, and a second connection to
@@ -556,14 +582,19 @@ pub(crate) mod tests {
     const SERVER: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
 
     /// Debian's and Ubuntu's `makestep`.
-    const MAKE_STEP: Option<MakeStep> = Some(MakeStep {
-        threshold: Seconds::new(1.0),
-        limit: 3,
-    });
+    const MAKE_STEP: &str = "makestep 1 3\n";
 
-    /// A configuration of `make_step` alone.
-    fn with(make_step: Option<MakeStep>) -> Config {
-        Config { make_step }
+    /// A collector going by `config`, chronyd's configuration, written
+    /// beside `db`'s database.
+    fn collector(db: &Database, config: &str) -> Collector {
+        let path = db.directory().join("chrony.conf");
+        std::fs::write(&path, config).expect("written");
+        Collector::new(path)
+    }
+
+    /// A collector with no configuration to read.
+    fn unconfigured() -> Collector {
+        Collector::new(PathBuf::new())
     }
 
     fn tracking(reference_second: i64, last_offset: f64) -> Tracking {
@@ -689,7 +720,7 @@ pub(crate) mod tests {
     #[test]
     fn writes_only_what_changed() {
         let mut db = Database::new("changes");
-        let mut collector = Collector::new(with(MAKE_STEP));
+        let mut collector = collector(&db, MAKE_STEP);
         let running = Process::Running(100);
         for (second, read) in [
             (0, snapshot(tracking(0, 1e-6), vec![source(5, 10)])),
@@ -719,7 +750,7 @@ pub(crate) mod tests {
     #[test]
     fn derives_events() {
         let mut db = Database::new("events");
-        let mut collector = Collector::new(with(MAKE_STEP));
+        let mut collector = collector(&db, MAKE_STEP);
         let polls = [
             (snapshot(fresh(), vec![]), Process::Running(100)),
             // A source appears.
@@ -765,10 +796,11 @@ pub(crate) mod tests {
     /// chronyd at the PID beside it, one poll a second.
     fn corrections(
         name: &str,
-        mut collector: Collector,
+        config: &str,
         polls: impl IntoIterator<Item = (Tracking, u32)>,
     ) -> Vec<String> {
         let mut db = Database::new(name);
+        let mut collector = collector(&db, config);
         for (second, (tracking, pid)) in (0..).zip(polls) {
             db.log
                 .write(|batch| {
@@ -808,12 +840,12 @@ pub(crate) mod tests {
             (tracking(7, 3.0), 200),
         ];
         assert_eq!(
-            corrections("makestep", Collector::new(with(MAKE_STEP)), polls),
+            corrections("makestep", MAKE_STEP, polls),
             ["step", "large_offset", "chronyd_restart", "step"]
         );
         // No makestep: chronyd never steps.
         assert_eq!(
-            corrections("no-makestep", Collector::new(Config::default()), polls),
+            corrections("no-makestep", "", polls),
             [
                 "large_offset",
                 "large_offset",
@@ -823,21 +855,51 @@ pub(crate) mod tests {
         );
         // Running before the daemon: its updates were not counted.
         assert_eq!(
-            corrections(
-                "unknown",
-                Collector::new(with(MAKE_STEP)),
-                polls[1..7].to_vec()
-            ),
+            corrections("unknown", MAKE_STEP, polls[1..7].to_vec()),
             ["large_offset"]
         );
-        let always = Some(MakeStep {
-            threshold: Seconds::new(1.0),
-            limit: -1,
-        });
         assert_eq!(
-            corrections("always", Collector::new(with(always)), polls[1..7].to_vec()),
+            corrections("always", "makestep 1 -1\n", polls[1..7].to_vec()),
             ["step"]
         );
+    }
+
+    #[test]
+    fn rereads_the_configuration_when_chronyd_restarts() {
+        let mut db = Database::new("config");
+        let mut collector = collector(&db, MAKE_STEP);
+        let locks = |db: &Database| -> Option<String> {
+            db.reader
+                .query_row(
+                    "SELECT value FROM meta WHERE key = 'refclock_locks'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok()
+        };
+        let mut poll = |db: &mut Database, second, read, pid| {
+            db.log
+                .write(|batch| collector.record(batch, at(second), read, Process::Running(pid)))
+                .expect("recorded");
+        };
+        poll(&mut db, 0, snapshot(fresh(), vec![]), 100);
+        assert_eq!(locks(&db).as_deref(), Some(""));
+        std::fs::write(
+            db.directory().join("chrony.conf"),
+            "refclock SHM 0 refid NMEA noselect\nrefclock PPS /dev/pps0 refid PPS lock NMEA\n",
+        )
+        .expect("written");
+        // Not read again while chronyd runs on, as chronyd does not.
+        poll(&mut db, 1, snapshot(fresh(), vec![]), 100);
+        assert_eq!(locks(&db).as_deref(), Some(""));
+        poll(&mut db, 2, snapshot(fresh(), vec![]), 200);
+        assert_eq!(locks(&db).as_deref(), Some("50505300 4E4D4541"));
+        // Nor while it is down; again when it is back.
+        std::fs::write(db.directory().join("chrony.conf"), MAKE_STEP).expect("written");
+        poll(&mut db, 3, down(), 200);
+        assert_eq!(locks(&db).as_deref(), Some("50505300 4E4D4541"));
+        poll(&mut db, 4, snapshot(fresh(), vec![]), 200);
+        assert_eq!(locks(&db).as_deref(), Some(""));
     }
 
     /// chronyd answering with `sources`, by index.
@@ -905,9 +967,7 @@ pub(crate) mod tests {
             sources: vec![placeholder, source(5, 10)],
             remove: None,
         };
-        let snapshot = Collector::new(with(MAKE_STEP))
-            .read(&mut fake)
-            .expect("a snapshot");
+        let snapshot = unconfigured().read(&mut fake).expect("a snapshot");
         let sources = snapshot.sources.expect("sources");
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].data.address, Address::Ip(SERVER));
@@ -931,7 +991,7 @@ pub(crate) mod tests {
         let addresses: Vec<IpAddr> = (1..=3)
             .map(|host| IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, host)))
             .collect();
-        let collector = Collector::new(with(MAKE_STEP));
+        let collector = unconfigured();
         // The source being read goes: the next one's reports take its
         // index.  Then one not yet read goes: the one after it is moved
         // past.
@@ -951,7 +1011,7 @@ pub(crate) mod tests {
     #[test]
     fn reports_reach_lost_and_samples_gone() {
         let mut db = Database::new("report");
-        let mut collector = Collector::new(with(MAKE_STEP));
+        let mut collector = collector(&db, MAKE_STEP);
         let unreached = |age, reachability| {
             let mut s = source(age, 10);
             s.data.reachability = reachability;
@@ -1005,7 +1065,7 @@ pub(crate) mod tests {
     #[test]
     fn a_report_waits_for_a_change() {
         let mut db = Database::new("report-age");
-        let mut collector = Collector::new(with(MAKE_STEP));
+        let mut collector = collector(&db, MAKE_STEP);
         for (second, age) in [(0, 5), (1, 6)] {
             db.log
                 .write(|batch| {
@@ -1028,7 +1088,7 @@ pub(crate) mod tests {
     #[test]
     fn extrapolation_is_not_a_new_regression() {
         let mut db = Database::new("extrapolated");
-        let mut collector = Collector::new(with(MAKE_STEP));
+        let mut collector = collector(&db, MAKE_STEP);
         for second in 0..4 {
             // One regression, its offset and error extrapolated a second
             // further each poll, as chronyd reports them; a new sample,
@@ -1058,7 +1118,7 @@ pub(crate) mod tests {
     #[test]
     fn tracking_is_reported_as_chronyd_last_said() {
         let mut db = Database::new("tracking-report");
-        let mut collector = Collector::new(with(MAKE_STEP));
+        let mut collector = collector(&db, MAKE_STEP);
         // chronyd's while unsynchronized (`REF_GetReferenceParams`,
         // chrony 4.8 `reference.c:1216`).
         let unsynchronized = Tracking {

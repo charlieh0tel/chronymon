@@ -99,6 +99,11 @@ socket refusing then answering), a step, a large offset, reference
 change, source added or removed, leap change, the daemon's start and
 stop.
 
+chronyd's configuration (`chrony.conf`, its `include` and `confdir`
+files, as `conf.c` reads them) gives `makestep` and the refclocks'
+`lock`s, read at start and again whenever chronyd starts, which is
+when chronyd reads it.
+
 A step or a large offset: an update's last offset past `makestep`'s
 threshold (1 s if none).  A step only as chronyd would make one: in
 its first `limit` updates, any if negative, none without `makestep`
@@ -200,8 +205,23 @@ Journal, Distribution, Kiosk.
   through, and the y axes refit to what is left: NMEA's milliseconds of
   wander otherwise flatten everything else.  Hidden by name, or address
   for one without, in the address (`?hide=NMEA,...`).  Not on the
-  kiosk, which has nothing to click and leaves `noselect` sources out,
+  kiosk, which has nothing to click and leaves paired refclocks out,
   nor a source's own page, which has one source.
+- **Paired refclocks**: one another is locked to (`refclock ... lock
+  NMEA`), its PPS's pulses numbered by its time of day.  Beside the PPS
+  its offsets are noise: with only an NMEA it is the source, with a
+  PPS locked to it not.  `/api/sources` names the refclock locked to it
+  (`locked_by`); Sources starts with its lines hidden, shown by its
+  name (`?show=NMEA`), and the kiosk leaves it out.  A lone NMEA,
+  `noselect` or not, is charted as any source.  The kiosk once left out
+  `noselect` sources instead, which hid a lone NMEA and kept a paired
+  one that was not `noselect`.
+- Sources' offset chart is each sample's as `sources` reports it
+  (`source_sample`, chronyc's Last sample: positive when the local
+  clock is ahead), as the kiosk's and the table's: a refclock has no
+  `ntpdata`, so `ntp_sample`'s offset, which was drawn first, left
+  refclocks out and has the opposite sign.  `refclocks.log` has them
+  too, but only where chronyd is told to log them.
 - Sources chronyd has removed stay listed, last and dimmed, their
   history a link away.  Removed: missing from the daemon's latest read
   (`last_seen` older than the newest), or its last event its removal.
@@ -219,9 +239,8 @@ Journal, Distribution, Kiosk.
   The host's time in UTC, as smartclock's shows its receiver's: the
   server's `now`, counted on between polls, stopped after 3 s without
   an answer; local time below, smaller, since the display's zone need
-  not be the host's.  The offset overlay leaves out `noselect` sources
-  (selectdata state `N`): a watched NMEA refclock tens of milliseconds
-  off set its axis.  Its legend is the source list, colored alike:
+  not be the host's.  The offset overlay leaves out paired refclocks, saying which: a
+  paired NMEA tens of milliseconds off set its axis.  Its legend is the source list, colored alike:
   eight names in its title wrapped onto the chart.  Events moved right,
   under the charts their marks are on, so eight sources leave them
   room; no colophon, as smartclock's has none.
@@ -274,6 +293,11 @@ Journal, Distribution, Kiosk.
   have: refclocks, tempcomp, every NTP packet.
 - The status strip reads only the `status` row, even when the
   database holds only logs.
+- The refclocks' locks are a `meta` row (`refclock_locks`), replaced
+  whenever the daemon reads chronyd's configuration: configuration, not
+  a time series, and no schema change.  So a pairing undone is undone
+  for all of history, and a database no daemon has read a
+  configuration into pairs nothing.
 - Timestamps are integer nanoseconds since the epoch, as smartclock's.
 - One Debian package, both services enabled; CI and release through
   deb-workflows; a release triggers the APT repository's rebuild.
