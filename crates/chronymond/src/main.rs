@@ -25,6 +25,7 @@ use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
 use crate::collect::Collector;
+use crate::ingest::Ingest;
 use crate::lifecycle::Host;
 
 mod collect;
@@ -162,7 +163,8 @@ fn run(cli: &Cli) -> Result<()> {
     log.write(|batch| lifecycle::start(batch, Timestamp::now(), &host))?;
 
     // The backfill: everything in chronyd's logs not yet recorded.
-    let backfill = ingest::scan(&mut log, &cli.chrony_logs)?;
+    let mut ingest = Ingest::new(cli.chrony_logs.clone());
+    let backfill = ingest.scan(&mut log);
     eprintln!(
         "chronymond: {} lines from {} log files in {}{}",
         backfill.lines,
@@ -206,7 +208,7 @@ fn run(cli: &Cli) -> Result<()> {
         let process = host::chronyd(&cli.pid_file);
         log.write(|batch| collector.record(batch, at, read, process))?;
         if logs_read.elapsed() >= log_interval {
-            let scan = ingest::scan(&mut log, &cli.chrony_logs)?;
+            let scan = ingest.scan(&mut log);
             if scan.bad_lines > 0 {
                 eprintln!("chronymond: logs:{}", bad_lines(scan.bad_lines));
             }
@@ -226,7 +228,7 @@ fn run(cli: &Cli) -> Result<()> {
         }
     }
     // What chronyd logged since the last read.
-    ingest::scan(&mut log, &cli.chrony_logs)?;
+    ingest.scan(&mut log);
     let system_stopping = host::system_stopping();
     log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
     eprintln!("chronymond: stopped");
