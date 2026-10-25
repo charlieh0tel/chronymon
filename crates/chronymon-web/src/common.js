@@ -99,6 +99,13 @@ async function ask(url, signal, timeout = QUICK_TIMEOUT) {
 
 // ------------------------------------------------------------- address
 
+// Put `bounds`' ends, unix seconds, on the query `q`, whole seconds
+// outward; an end left open is the server's to choose.
+function setBounds(q, bounds) {
+  if (bounds.from) q.set("from", Math.floor(bounds.from));
+  if (bounds.to) q.set("to", Math.ceil(bounds.to));
+}
+
 // Merge `params` into the address without touching the rest of it: a
 // null value removes the key.  Every control that is worth keeping on
 // a reload or a shared link -- the range, the columns, the source --
@@ -325,8 +332,7 @@ const eventText = (e) =>
 // color }`, and the events themselves.
 async function eventsFor(signal, from, to) {
   const q = new URLSearchParams({ limit: EVENT_ROWS });
-  if (from) q.set("from", Math.floor(from));
-  if (to) q.set("to", Math.ceil(to));
+  setBounds(q, { from, to });
   const events = await ask("/api/events?" + q, signal);
   return {
     events,

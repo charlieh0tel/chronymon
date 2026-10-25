@@ -436,13 +436,6 @@ function drawEvents() {
 // receiver tens of milliseconds off, would otherwise set the axis.
 const noselect = (s) => s.selection_state === "N";
 
-function overlayQuery([table, column], bounds) {
-  const q = new URLSearchParams({ table, column, points: pointsFor(bounds.seconds) });
-  if (bounds.from) q.set("from", Math.round(bounds.from));
-  if (bounds.to) q.set("to", Math.round(bounds.to));
-  return "/api/overlay?" + q;
-}
-
 async function load(signal) {
   const { from, to } = rangeBounds();
   const [listed, marked, latest] = await Promise.all([

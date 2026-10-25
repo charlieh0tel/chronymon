@@ -472,14 +472,20 @@ const ENVELOPE = "#0e7490";
 // where the daemon was not recording.
 function historyQuery(table, columns, bounds, source, fill) {
   const q = new URLSearchParams({ table, columns: columns.join(","), points: pointsFor(bounds.seconds) });
-  if (bounds.from) q.set("from", Math.round(bounds.from));
-  if (bounds.to) q.set("to", Math.round(bounds.to));
+  setBounds(q, bounds);
   if (source != null) q.set("source", source);
   if (fill) {
     q.set("fill", fill.table);
     q.set("fill_columns", fill.columns.join(","));
   }
   return "/api/history?" + q;
+}
+
+// `/api/overlay` for `[table, column]` of every source over `bounds`.
+function overlayQuery([table, column], bounds) {
+  const q = new URLSearchParams({ table, column, points: pointsFor(bounds.seconds) });
+  setBounds(q, bounds);
+  return "/api/overlay?" + q;
 }
 
 // The range's bounds, and for `all` the extent `first` gave: how far

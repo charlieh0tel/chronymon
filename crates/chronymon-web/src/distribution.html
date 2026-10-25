@@ -71,8 +71,7 @@ function pickers() {
 
 function distributionQuery(column, bounds) {
   const q = new URLSearchParams({ table: "tracking", column });
-  if (bounds.from) q.set("from", Math.round(bounds.from));
-  if (bounds.to) q.set("to", Math.round(bounds.to));
+  setBounds(q, bounds);
   return "/api/distribution?" + q;
 }
 
