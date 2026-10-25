@@ -9,9 +9,11 @@ import { routeCdn } from "./cdn.mjs";
 import { FULL } from "./playwright.config.mjs";
 
 const OUT = join(import.meta.dirname, "../../../../docs/images");
-// Desktop, as the README's readers mostly see the pages; what shows in
-// it is shot, not the whole page.
-const VIEWPORT = { width: 1400, height: 950 };
+// About as wide as GitHub shows a README, so the pictures show at their
+// own size, at twice the pixels for high-density screens; what shows
+// in it is shot, not the whole page.
+const VIEWPORT = { width: 960, height: 800 };
+const SCALE = 2;
 // How long a page is given after its charts appear, for the readout and
 // the strip to fill, in ms.
 const SETTLE = 1500;
@@ -44,7 +46,7 @@ const SHOTS = [
 
 const browser = await chromium.launch();
 try {
-  const page = await browser.newPage({ viewport: VIEWPORT });
+  const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: SCALE });
   await routeCdn(page);
   await page.route("**/api/status", async (route) => {
     const response = await route.fetch();
