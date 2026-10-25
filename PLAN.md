@@ -34,7 +34,7 @@ beside it, as chronyc does.  No access, no start.
    | - | - |
    | `tracking` | its reference time differs from the last row's; `tracking_report`, one row, replaced when anything changes |
    | `sources` | its last-sample age resets; `source_report`, one row per source, replaced when anything else changes |
-   | `sourcestats` | any value changes (no timestamp of its own) |
+   | `sourcestats` | its regression changes: not the estimated offset and its error alone, which chronyd extrapolates to the report's time (`SST_DoSourcestatsReport`, 4.8 `sourcestats.c:1019`), so they change every poll |
    | `ntpdata` | its valid-sample counter increments |
    | `selectdata` | it changes |
    | `sourcename` | once per new source |
@@ -143,8 +143,16 @@ The host's:
   `sample_time`, which it is charted by, and an extent as two queries,
   since SQLite scans for `MIN` and `MAX` together.
 
-About 20,000 rows a day for ten sources and tracking: raw retention
-is affordable.
+Rows a day, for ten NTP sources polled every 64 s, 1,350 samples
+each: a `source_sample`, `source_stats` and `ntp_sample` row per
+sample, about 40,000; `tracking`, up to one per selection, which
+chronyd runs on every source's sample, about 13,500; `selection`, up
+to a row per source per selection, since each sets every source's
+score and limits, up to 135,000.  Some 190,000 rows, a few hundred
+bytes each with their indexes: about 10 GB a year at worst, so raw
+retention is affordable.  A refclock polled every 16 s is four times
+an NTP source.  (`sourcestats` compared whole wrote a row every poll,
+864,000 a day for ten sources.)
 
 ## Web
 

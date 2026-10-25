@@ -307,7 +307,7 @@ impl Collector {
             if seen.is_none_or(|seen| new_sample(&seen.data, &source.data)) {
                 batch.source_sample(at, id, &source.data)?;
             }
-            if seen.is_none_or(|seen| seen.stats != source.stats) {
+            if seen.is_none_or(|seen| regression_changed(&seen.stats, &source.stats)) {
                 batch.source_stats(at, id, &source.stats)?;
             }
             if seen.is_none_or(|seen| selection_changed(&seen.selection, &source.selection)) {
@@ -361,6 +361,18 @@ impl Collector {
 fn selection_changed(before: &SelectData, now: &SelectData) -> bool {
     SelectData {
         last_sample_ago: now.last_sample_ago,
+        ..*before
+    } != *now
+}
+
+/// Whether chronyd's regression of a source changed: anything but the
+/// estimated offset and its error, which chronyd extrapolates to the
+/// time of the report (`SST_DoSourcestatsReport`, chrony 4.8
+/// `sourcestats.c:1019`), so that they change every poll.
+fn regression_changed(before: &SourceStats, now: &SourceStats) -> bool {
+    SourceStats {
+        estimated_offset: now.estimated_offset,
+        estimated_offset_error: now.estimated_offset_error,
         ..*before
     } != *now
 }
@@ -794,6 +806,36 @@ pub(crate) mod tests {
             .query_row("SELECT at FROM source_report", [], |row| row.get(0))
             .expect("a report");
         assert_eq!(written, to_stored(at(0)).expect("in range"));
+    }
+
+    #[test]
+    fn extrapolation_is_not_a_new_regression() {
+        let mut db = Database::new("extrapolated");
+        let mut collector = Collector::new(Seconds::new(1.0));
+        for second in 0..4 {
+            // One regression, its offset and error extrapolated a second
+            // further each poll, as chronyd reports them; a new sample,
+            // and a new regression, at the last.
+            let mut s = source(5 + second, 10);
+            let elapsed = second as f64;
+            s.stats.residual_frequency = Ppm::new(0.1);
+            s.stats.estimated_offset = Seconds::new(elapsed * 0.1e-6);
+            s.stats.estimated_offset_error = Seconds::new(1e-6 + elapsed * 0.01e-6);
+            if second == 3 {
+                s = source(0, 11);
+            }
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(i64::try_from(second).expect("a second")),
+                        snapshot(tracking(0, 0.0), vec![s]),
+                        Process::Running(100),
+                    )
+                })
+                .expect("recorded");
+        }
+        assert_eq!(db.count("source_stats"), 2);
     }
 
     #[test]

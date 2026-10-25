@@ -210,7 +210,11 @@ pub(crate) const TABLES: &str = r"
         ON source_sample(source_id, sample_time);
     CREATE INDEX IF NOT EXISTS source_sample_time ON source_sample(sample_time);
 
-    -- `sourcestats`, one row per change of chronyd's regression.
+    -- `sourcestats`, one row per change of chronyd's regression: not
+    -- of the estimated offset and its error alone, which chronyd
+    -- extrapolates to the time of the report (`SST_DoSourcestatsReport`,
+    -- chrony 4.8 `sourcestats.c:1019`), so they change every poll.
+    -- Those two are as of the poll that found the change.
     CREATE TABLE IF NOT EXISTS source_stats (
         at                     INTEGER NOT NULL,
         source_id              INTEGER NOT NULL REFERENCES source(id),
