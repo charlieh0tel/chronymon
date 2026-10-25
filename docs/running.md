@@ -121,4 +121,5 @@ changes, sources added and removed):
 | `unsupported` | a reply or log layout this version cannot read |
 
 Between a leap change to unsynchronized and one from it, the clock's
-charts on Live and the kiosk break their lines and shade the span.
+charts on Live and the kiosk break their lines and shade the span:
+not under 2 s, as chronyd reports a leap second as unsynchronized.

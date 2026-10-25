@@ -1038,7 +1038,8 @@ impl Reader {
     /// reports while unsynchronized (`REF_GetReferenceParams`, chrony
     /// 4.8 `reference.c:1216`), until the next update's reference time;
     /// from a leap change to unsynchronized until one from it; either
-    /// at the latest until `recording` ended.  A daemon writes a row
+    /// at the latest until `recording` ended; none shorter than
+    /// [`SHORTEST_UNSYNCHRONIZED`].  A daemon writes a row
     /// at reference time 0 only on its first read, an older one on each
     /// loss of sync; both write the leap change.
     fn unsynchronized_spans(
@@ -1110,7 +1111,11 @@ impl Reader {
         }
         Ok(spans
             .into_iter()
-            .filter(|(start, end)| end > start && *end > from && *start < to)
+            .filter(|(start, end)| {
+                (end - start) as f64 >= SHORTEST_UNSYNCHRONIZED * NANOSECONDS
+                    && *end > from
+                    && *start < to
+            })
             .map(|(start, end)| (start.max(from), end.min(to)))
             .collect())
     }
@@ -1515,6 +1520,12 @@ fn latest_sql(table: Table, label: &str) -> String {
         table.time()
     )
 }
+
+/// The shortest time unsynchronized that is one, in seconds:
+/// chronyd reports a leap second in progress as unsynchronized
+/// (`leap_in_progress`, chrony 4.8 `reference.c:1178`), a second at
+/// the daemon's one-second polls, which is no loss of sync.
+const SHORTEST_UNSYNCHRONIZED: f64 = 2.0;
 
 /// The leap statuses but unsynchronized.
 const SYNCHRONIZED: [Leap; 3] = [Leap::Normal, Leap::Insert, Leap::Delete];
@@ -2631,6 +2642,44 @@ mod tests {
             )
             .expect("a series");
         assert_eq!(between(&filled), gaps);
+    }
+
+    #[test]
+    fn a_leap_second_is_not_unsynchronized() {
+        let mut db = Database::new("leap-second");
+        db.log
+            .write(|batch| {
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                for second in (0..200).step_by(10) {
+                    batch.tracking(at(second), &tracking(second, 1.0))?;
+                }
+                // The inserted second, as chronyd reports it
+                // (`REF_GetReferenceParams`, chrony 4.8 `reference.c:1178`).
+                batch.leap_change(at(100), Leap::Insert, Leap::Unsynchronized)?;
+                batch.leap_change(at(101), Leap::Unsynchronized, Leap::Normal)?;
+                Ok(())
+            })
+            .expect("written");
+        let reader = db.reader();
+        assert!(
+            reader
+                .unsynchronized(window(0, 199, 100))
+                .expect("spans")
+                .is_empty()
+        );
+        let series = reader
+            .series(
+                Table::Tracking,
+                None,
+                &[column(Table::Tracking, "frequency")],
+                window(0, 199, 1000),
+            )
+            .expect("a series");
+        assert!(
+            series.plots[0].gaps.is_empty(),
+            "{:?}",
+            series.plots[0].gaps
+        );
     }
 
     /// The plan of `sql`, one line per step.

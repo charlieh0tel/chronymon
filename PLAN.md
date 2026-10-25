@@ -50,7 +50,8 @@ beside it, as chronyc does.  No access, no start.
    an older daemon's every loss of sync) until the next update; at the
    latest until the daemon stopped recording.  Leap changes are
    chronyd's report: unsynchronized during a leap second too
-   (`leap_in_progress`, 4.8 `reference.c:1178`).
+   (`leap_in_progress`, 4.8 `reference.c:1178`), so a span under 2 s
+   is none.
    The Sources table reads `source_report`, not the last sample row,
    so reach run down to 0, or no sample at all after a restart (age
    `(uint32_t)-1`, `SST_DoSourceReport`), shows as chronyd reports it,
