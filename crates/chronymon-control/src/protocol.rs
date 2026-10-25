@@ -182,8 +182,12 @@ pub(crate) struct ReplyHeader {
 
 impl ReplyHeader {
     /// The header of a datagram that is a reply, or `None` for anything
-    /// else, which a client ignores as chronyc does.
+    /// else, which a client ignores as chronyc does: one shorter than
+    /// the whole header included (`client.c`, chrony 4.3 to 4.9).
     pub(crate) fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < REPLY_HEADER_LENGTH {
+            return None;
+        }
         let mut reader = Reader::new(bytes);
         let [version, packet_type, reserved1, reserved2] = reader.take().ok()?;
         if version != PROTOCOL_VERSION
@@ -556,6 +560,27 @@ mod tests {
             &ntp[REQUEST_HEADER_LENGTH..REQUEST_HEADER_LENGTH + ADDRESS_LENGTH],
             &address_bytes(IpAddr::from([192, 0, 2, 1]))
         );
+    }
+
+    #[test]
+    fn a_reply_shorter_than_its_header_is_ignored() {
+        let mut header = vec![PROTOCOL_VERSION, PACKET_TYPE_REPLY, 0, 0];
+        header.extend_from_slice(&command::TRACKING.to_be_bytes());
+        header.extend_from_slice(&reply::TRACKING.0.to_be_bytes());
+        header.extend_from_slice(&STATUS_SUCCESS.to_be_bytes());
+        header.extend_from_slice(&[0; 6]);
+        header.extend_from_slice(&7u32.to_be_bytes());
+        header.extend_from_slice(&[0; 8]);
+        assert_eq!(header.len(), REPLY_HEADER_LENGTH);
+        for length in 0..REPLY_HEADER_LENGTH {
+            assert_eq!(
+                ReplyHeader::parse(&header[..length]),
+                None,
+                "{length} bytes"
+            );
+        }
+        let parsed = ReplyHeader::parse(&header).expect("a header");
+        assert_eq!((parsed.command, parsed.sequence), (command::TRACKING, 7));
     }
 
     #[test]
