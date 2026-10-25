@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: all build hooks ci fmt fmt-check clippy test web-deps test-web
+.PHONY: all build hooks ci fmt fmt-check clippy test web-deps test-web screenshots
 
 all: build
 
@@ -40,3 +40,7 @@ web-deps:
 # database and none.  See tools/with-web.
 test-web:
 	tools/with-web npx playwright test
+
+# The README's screenshots, of the synthetic database, into docs/images.
+screenshots:
+	tools/with-web node screenshots.mjs

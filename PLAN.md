@@ -264,7 +264,8 @@ Pages:
    (Live, Sources and each source's own, Journal, Distribution),
    tested in Chromium by `make test-web` (Playwright, also in CI:
    every page against a synthetic database and against none, failing
-   on any page error), first checked by hand in headless Chrome
+   on any page error; `make screenshots` shoots the README's pictures
+   the same way), first checked by hand in headless Chrome
    against synthetic data
    (`cargo run -p chronymon-web --example synthetic`) and against the
    daemon writing in a container, with chronyd stopped and restarted
