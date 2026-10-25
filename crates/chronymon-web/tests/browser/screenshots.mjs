@@ -22,13 +22,17 @@ const CURSOR = 0.6;
 // the strip would turn stale partway through the shots.
 const POLL_AGE = 1;
 
+// Seconds of readings each page shows: six hours, quiet, after the
+// synthetic run's step.
+const LAST = 21600;
+
 // File, path, and what shows the page is drawn.
 const SHOTS = [
-  ["web-live.png", "/?last=86400", "#charts .uplot"],
-  ["web-sources.png", "/sources?last=86400", "#charts .uplot"],
-  ["web-refclocks.png", "/refclocks?last=86400", "#charts .uplot"],
-  ["web-temperature.png", "/temperature?last=86400", "#scatter .uplot"],
-  ["web-distribution.png", "/distribution?last=86400", "#figures .uplot"],
+  ["web-live.png", `/?last=${LAST}`, "#charts .uplot"],
+  ["web-sources.png", `/sources?last=${LAST}`, "#charts .uplot"],
+  ["web-refclocks.png", `/refclocks?last=${LAST}`, "#charts .uplot"],
+  ["web-temperature.png", `/temperature?last=${LAST}`, "#scatter .uplot"],
+  ["web-distribution.png", `/distribution?last=${LAST}`, "#figures .uplot"],
 ];
 
 const browser = await chromium.launch();

@@ -6,13 +6,13 @@ sources into SQLite, and a browser view that charts it live.
 Early days: see `PLAN.md` for the design and the phases, and
 `RELEASING.md` for how a release is made.
 
-![The live page: a day of the clock's offset, frequency and skew, and the step the synthetic clock takes](docs/images/web-live.png)
+![The live page: six hours of the clock's offset, frequency and skew](docs/images/web-live.png)
 
 | Sources | Refclocks |
 | - | - |
-| ![The sources page: each source as last reported, and every source's offset, delay and frequency over a day](docs/images/web-sources.png) | ![The refclocks page: a day of each refclock's offsets from refclocks.log](docs/images/web-refclocks.png) |
+| ![The sources page: each source as last reported, and every source's offset, delay and frequency over six hours](docs/images/web-sources.png) | ![The refclocks page: six hours of each refclock's offsets from refclocks.log](docs/images/web-refclocks.png) |
 | **Temperature** | **Distribution** |
-| ![The temperature page: tempcomp's temperature and compensation over a day, and the clock's frequency](docs/images/web-temperature.png) | ![The distribution page: a histogram and percentiles of a day's offsets](docs/images/web-distribution.png) |
+| ![The temperature page: tempcomp's temperature and compensation over six hours, and the clock's frequency](docs/images/web-temperature.png) | ![The distribution page: a histogram and percentiles of six hours' offsets](docs/images/web-distribution.png) |
 
 Shown from the synthetic database below; `make screenshots` takes
 them again.
