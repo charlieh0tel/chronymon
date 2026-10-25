@@ -266,6 +266,57 @@ test("Sources: a row per source, overlays, and a link to each", async ({ page })
   await expect(charts(page).first()).toBeVisible();
 });
 
+// Each chart of the Sources page: whether it draws NMEA's line, and
+// shows it, its title's NMEA button, and its y axis's span.
+const nmeaCharts = (page) => page.evaluate(() => stack.charts.map((c) => {
+  const line = c.chronymonLines.find((l) => l.name === "NMEA");
+  const button = c.root.querySelector('.u-title button[data-line="NMEA"]');
+  return {
+    title: c.root.querySelector(".u-title").textContent,
+    drawn: Boolean(line),
+    shown: line ? c.series[line.series].show : null,
+    pressed: button?.getAttribute("aria-pressed") ?? null,
+    span: c.scales.y.max - c.scales.y.min,
+  };
+}));
+
+test("Sources: a source's name in a title hides its line on every chart, kept in the address", async ({ page }) => {
+  await page.goto("/sources?last=86400");
+  await expect(charts(page).first()).toBeVisible();
+  await page.waitForFunction(() => !running);
+  const before = await nmeaCharts(page);
+  const withNmea = before.filter((c) => c.drawn);
+  // The regression's charts: NMEA's frequency, skew and deviation.
+  expect(withNmea.length).toBeGreaterThan(1);
+  for (const c of withNmea) expect([c.shown, c.pressed]).toEqual([true, "true"]);
+  await page.locator('#charts .u-title button[data-line="NMEA"]').first().click();
+  await expect(page).toHaveURL(/[?&]hide=NMEA(&|$)/);
+  const hidden = async () => {
+    const after = await nmeaCharts(page);
+    for (const c of after.filter((c) => c.drawn)) expect([c.shown, c.pressed], c.title).toEqual([false, "false"]);
+    // Each axis NMEA's wander set is refitted to the rest, and the rest
+    // left as they were.
+    after.forEach((c, n) => {
+      if (before[n].drawn) expect(c.span, c.title).toBeLessThan(before[n].span / 3);
+      else expect(c.span, c.title).toBe(before[n].span);
+    });
+  };
+  await hidden();
+  await expect(page.locator("#readout")).not.toContainText("NMEA");
+  await page.reload();
+  await expect(charts(page).first()).toBeVisible();
+  await page.waitForFunction(() => !running);
+  await hidden();
+  // By keyboard, and the button keeps the focus.
+  const button = page.locator('#charts .u-title button[data-line="NMEA"]').last();
+  await button.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).not.toHaveURL(/hide=/);
+  expect(await page.evaluate(() => document.activeElement?.dataset.line)).toBe("NMEA");
+  const shown = await nmeaCharts(page);
+  shown.forEach((c, n) => expect(c, c.title).toEqual(before[n]));
+});
+
 test("Sources: a placeholder for a name not resolved yet is never shown", async ({ page }) => {
   await page.goto("/sources?last=all");
   await expect(page.locator("#sources tbody tr")).toHaveCount(SOURCES.length);

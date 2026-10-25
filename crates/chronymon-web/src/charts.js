@@ -625,22 +625,88 @@ function overlayChart(table, column, overlay, names) {
 const sourceColor = (id) => SOURCE_COLORS[(Number(id) - 1) % SOURCE_COLORS.length];
 
 // A multi-line chart's title, each line's own words in its color, so
-// the title says which line is which with the legend off.
-function groupTitle(drawing) {
+// the title says which line is which with the legend off.  On a stack
+// whose lines can be hidden, each name is a button that hides or shows
+// it, as `lineButton` draws it.
+function groupTitle(drawing, toggles) {
   const lines = drawing.lines;
   return (
     esc(drawing.title ?? label(lines[0].column)) +
     '<span class="muted">: </span>' +
     lines
-      .map((l) => `<span style="color:${l.color}">${esc(l.name ?? columnName(l.column))}</span>`)
+      .map((l) => toggles && l.name
+        ? lineButton(l)
+        : `<span style="color:${l.color}">${esc(l.name ?? columnName(l.column))}</span>`)
       .join('<span class="muted">, </span>')
   );
+}
+
+// ------------------------------------------------------------- hiding
+//
+// A stack's lines, a source each, hidden by name on every chart of it,
+// where the stack allows: one source wandering milliseconds, as an NMEA
+// receiver does, otherwise sets the axes of every chart it is on and
+// flattens the rest.  The names hidden ride in the address, `hide=`.
+
+// The address key, and the names hidden.
+const HIDE_KEY = "hide";
+const hiddenNames = new Set((new URLSearchParams(location.search).get(HIDE_KEY) ?? "").split(",").filter(Boolean));
+
+// Whether `line` is hidden, on a stack whose lines can be.
+const hiddenOn = (toggles) => (line) => Boolean(toggles && line.name && hiddenNames.has(line.name));
+
+// The words a line's name button says it does.
+const toggleWords = (name, hidden) => `${hidden ? "show" : "hide"} ${name} on every chart`;
+
+// A line's name, in its color, as a button pressed while it is shown.
+const lineButton = (l) => {
+  const hidden = hiddenNames.has(l.name);
+  return `<button type="button" class="line-name" data-line="${esc(l.name)}" style="color:${l.color}"` +
+    ` aria-pressed="${!hidden}" title="${esc(toggleWords(l.name, hidden))}">${esc(l.name)}</button>`;
+};
+
+// Bring `chart`'s lines and its title's buttons up to the names hidden.
+function showLines(chart, hidden) {
+  for (const l of chart.chronymonLines) {
+    const show = !hidden(l);
+    if (chart.series[l.series].show !== show) chart.setSeries(l.series, { show });
+  }
+  for (const button of chart.root.querySelectorAll(".u-title button[data-line]")) {
+    const name = button.dataset.line;
+    button.setAttribute("aria-pressed", String(!hiddenNames.has(name)));
+    button.title = toggleWords(name, hiddenNames.has(name));
+  }
+}
+
+// Let the names in `view`'s titles hide and show their lines, once: the
+// stack is drawn again from its last read, its y axes fitted to what is
+// left, and the button pressed keeps the focus.
+function toggleLines(view) {
+  if (view.toggling) return;
+  view.toggling = true;
+  $(view.container).addEventListener("click", (e) => {
+    const button = e.target.closest("button[data-line]");
+    if (!button || !view.read) return;
+    const name = button.dataset.line;
+    if (!hiddenNames.delete(name)) hiddenNames.add(name);
+    remember({ [HIDE_KEY]: hiddenNames.size ? [...hiddenNames].join(",") : null });
+    const at = view.charts.findIndex((c) => c.root.contains(button));
+    drawStack(view, view.read, view.why);
+    view.charts[at]?.root.querySelector(`button[data-line="${CSS.escape(name)}"]`)?.focus();
+  });
 }
 
 // Every value a drawing plots, its envelope's as well as its lines'.
 const drawingArrays = (d) => [
   ...(d.envelope ? [d.envelope.min, d.envelope.max] : []),
   ...d.lines.map((l) => l.values),
+];
+
+// The values a drawing's y axis is fitted to: those of the lines not
+// `hidden`.
+const fittedArrays = (d, hidden) => [
+  ...(d.envelope ? [d.envelope.min, d.envelope.max] : []),
+  ...d.lines.filter((l) => !hidden(l)).map((l) => l.values),
 ];
 
 // Whether a drawing has anything to plot.  One with no data has no y
@@ -650,10 +716,10 @@ const drawsAnything = (d) => drawingArrays(d).flat().some((v) => v != null && is
 // Each chart's y axis, fitted to what it draws.  The scale has to cover
 // the envelope, not just the lines: the min and max are drawn, and an
 // axis that ends below them would clip the very excursions they exist
-// to show.
-const stackFits = (read, height) =>
+// to show.  A line hidden is not fitted to.
+const stackFits = (read, height, hidden) =>
   read.drawn.map((chart) =>
-    yAxis(chart.column, drawingArrays(chart).flat().filter((v) => v != null && isFinite(v)), height));
+    yAxis(chart.column, fittedArrays(chart, hidden).flat().filter((v) => v != null && isFinite(v)), height));
 
 // What a chart of the stack is drawn as, less its data and its y axis's
 // range, ticks and width: its lines, and the kind of y axis.  Two reads
@@ -693,10 +759,13 @@ function heldAxis(held) {
 //   sync           the cursor's sync key
 //   hooks          uPlot's, as `stackOptions` takes them
 //   font, scale    optional, as `stackOptions` takes them
+//   toggles        optional: whether the names in the titles hide and
+//                  show their lines
 function stackCharts(container, read, style) {
   const scale = style.scale ?? 1;
   const height = style.height(read.drawn.length);
-  const fits = stackFits(read, height / scale);
+  const hidden = hiddenOn(style.toggles);
+  const fits = stackFits(read, height / scale, hidden);
   const ySize = stackWidth(fits) * scale;
   const charts = read.drawn.map((drawing, n) => {
     const several = drawing.lines.length > 1;
@@ -721,6 +790,7 @@ function stackCharts(container, read, style) {
           ...(l.dash ? { dash: l.dash } : {}),
           points: { show: false },
           spanGaps: false,
+          show: !hidden(l),
         })),
       ],
       fitted: heldAxis(held),
@@ -756,9 +826,9 @@ function stackCharts(container, read, style) {
     hint(chart, ...drawing.lines.map((l) => l.column));
     // uPlot's title is plain text, and with the legend off a chart of
     // several lines otherwise names them without saying which is which.
-    if (several || drawing.heading) {
+    if (several || drawing.heading || style.toggles) {
       const heading = chart.root.querySelector(".u-title");
-      if (heading) heading.innerHTML = drawing.heading ?? groupTitle(drawing);
+      if (heading) heading.innerHTML = drawing.heading ?? groupTitle(drawing, style.toggles);
     }
     return chart;
   });
@@ -777,7 +847,8 @@ const stackData = (read, drawing) => [drawing.x ?? read.x, ...drawingArrays(draw
 function restack(container, charts, read, style) {
   const scale = style.scale ?? 1;
   const height = style.height(read.drawn.length);
-  const fits = stackFits(read, height / scale);
+  const hidden = hiddenOn(style.toggles);
+  const fits = stackFits(read, height / scale, hidden);
   const ySize = stackWidth(fits) * scale;
   const kept = charts.length === read.drawn.length &&
     charts.every((c, n) => c.chronymonShape === stackShape(read.drawn[n], fits[n]));
@@ -789,6 +860,7 @@ function restack(container, charts, read, style) {
       held.ySize = ySize;
       held.span = read.span;
       c.setData(stackData(read, read.drawn[n]));
+      showLines(c, hidden);
       const size = {
         width: container.clientWidth || c.width,
         height: stackChartHeight(height, n, charts.length, scale),
@@ -812,8 +884,8 @@ function restack(container, charts, read, style) {
 // once, for a stack sharing one cursor: uPlot's legend is per chart.
 // The same cells are drawn whether or not anything is under the
 // pointer, with dashes for the values when nothing is, so the row does
-// not move what is below it.  `mark` is the text of an event near the
-// cursor, or null.
+// not move what is below it.  A line hidden has none.  `mark` is the
+// text of an event near the cursor, or null.
 function readoutHtml(charts, mark) {
   const idx = charts.map((c) => c.cursor.idx).find((i) => i != null);
   const show = (v) =>
@@ -827,7 +899,8 @@ function readoutHtml(charts, mark) {
     return l.name ? `${measure}, ${l.name}` : columnName(l.column);
   };
   const cells = charts.flatMap((c) =>
-    c.chronymonLines.map((l) => {
+    c.chronymonLines.filter((l) => c.series[l.series].show).map((l) => {
+
       const v = c.cursor.idx == null ? null : c.data[l.series][c.cursor.idx];
       return `<span><span class="k"${l.color ? ` style="color:${l.color}"` : ""}>` +
         `${esc(name(l))}</span> <span class="v">${esc(show(v))}</span></span>`;
@@ -909,6 +982,9 @@ function markTip(chart, text) {
 //   sync                 the cursor's sync key
 //   charts, marks        the charts drawn and the events marked
 //   height, font, scale  optional, as `stackCharts` takes them
+//   toggles              optional, as `stackCharts` takes it
+//   read, why, toggling  kept by drawStack: the last drawn, to draw it
+//                        again, and whether its titles toggle lines
 // `read` is `{ x, span, drawn }`; `why` what to say when there is nothing.
 function drawStack(view, read, why) {
   read.drawn = read.drawn.filter(drawsAnything);
@@ -916,6 +992,9 @@ function drawStack(view, read, why) {
     clearStack(view, why || "no readings in this range");
     return;
   }
+  view.read = read;
+  view.why = why;
+  if (view.toggles) toggleLines(view);
   update($(view.note), "textContent", "");
   const readout = () => {
     if (!view.readout) return;
@@ -933,6 +1012,7 @@ function drawStack(view, read, why) {
     },
     font: view.font,
     scale: view.scale,
+    toggles: view.toggles,
   });
   readout();
 }
@@ -941,6 +1021,7 @@ function drawStack(view, read, why) {
 function clearStack(view, why) {
   for (const c of view.charts) c.destroy();
   view.charts = [];
+  view.read = null;
   $(view.container).innerHTML = "";
   if (view.readout) showHtml($(view.readout), "");
   markTip(null, null);
