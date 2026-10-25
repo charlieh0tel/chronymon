@@ -207,6 +207,11 @@ Journal, Distribution, Kiosk.
   chronyd's state; it sends only reports and takes no network input.
   The web view, which does, runs as another user and reads through a
   group, so it cannot steer the clock.
+- **Indexes move.**  `sources`, `sourcestats` and `selectdata` are
+  asked by index, and chronyd renumbers after a removal
+  (`SRC_DestroyInstance`, `sources.c`): a poll whose reports name
+  another source than `sources` did keeps none of them; the next
+  reads them again.
 - **Snapshots, not streams.**  `ntpdata` keeps only the last sample;
   the logs are the full record.
 - **Copying from smartclock** drifts; factor the copies out before it

@@ -85,35 +85,57 @@ pub(crate) struct Snapshot {
 /// placeholders are replaced by the addresses the names resolve to,
 /// which are then sources of their own, and chronyc leaves them out
 /// too (`client.c`, chrony 4.3 to 4.9).
-fn read_sources(chronyd: &mut impl Chronyd) -> Result<Vec<Source>, Error> {
-    (0..chronyd.source_count()?)
-        .filter_map(|index| {
-            let data = match chronyd.source_data(index) {
-                Ok(data) => data,
-                Err(e) => return Some(Err(e)),
-            };
-            if let Address::Unresolved(_) = data.address {
-                return None;
-            }
-            Some(read_source(chronyd, index, data))
-        })
-        .collect()
+///
+/// `None` when the sources changed while being read.  Each report is
+/// asked for by index, and chronyd renumbers the sources after one it
+/// removes (`SRC_DestroyInstance`, `sources.c`, 4.3 to 4.9), so one
+/// source's reports could be filed under another's address: each
+/// report's address is checked against `sources`'.  A source moved
+/// past leaves the last index empty: `NoSuchSource`.
+fn read_sources(chronyd: &mut impl Chronyd) -> Result<Option<Vec<Source>>, Error> {
+    let mut sources = Vec::new();
+    for index in 0..chronyd.source_count()? {
+        let source = match chronyd.source_data(index) {
+            Ok(data) if matches!(data.address, Address::Unresolved(_)) => continue,
+            Ok(data) => read_source(chronyd, index, data),
+            Err(e) => Err(e),
+        };
+        match source {
+            Ok(Some(source)) => sources.push(source),
+            Ok(None) | Err(Error::Status(Status::NoSuchSource)) => return Ok(None),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Some(sources))
 }
 
-/// The rest of one source's reports, after `sources`.
-fn read_source(chronyd: &mut impl Chronyd, index: u32, data: SourceData) -> Result<Source, Error> {
+/// The rest of one source's reports, after `sources`; `None` when one
+/// is of another source.
+fn read_source(
+    chronyd: &mut impl Chronyd,
+    index: u32,
+    data: SourceData,
+) -> Result<Option<Source>, Error> {
     let ntp = match (data.mode, data.address) {
         (SourceMode::Client | SourceMode::Peer, Address::Ip(address)) => {
             Some(chronyd.ntp_data(address)?)
         }
         _ => None,
     };
-    Ok(Source {
+    let stats = chronyd.source_stats(index)?;
+    let selection = chronyd.select_data(index)?;
+    if stats.address != data.address
+        || selection.address != data.address
+        || ntp.is_some_and(|ntp| ntp.remote_address != data.address)
+    {
+        return Ok(None);
+    }
+    Ok(Some(Source {
         data,
-        stats: chronyd.source_stats(index)?,
-        selection: chronyd.select_data(index)?,
+        stats,
+        selection,
         ntp,
-    })
+    }))
 }
 
 /// What an error reading chronyd means for the status row.
@@ -171,12 +193,7 @@ impl Collector {
     /// Read every report, and the names of sources not named before.
     pub(crate) fn read(&self, chronyd: &mut impl Chronyd) -> Result<Snapshot, Error> {
         let tracking = chronyd.tracking()?;
-        let sources = match read_sources(chronyd) {
-            Ok(sources) => Some(sources),
-            // A source added or removed between the count and the index.
-            Err(Error::Status(Status::NoSuchSource)) => None,
-            Err(e) => return Err(e),
-        };
+        let sources = read_sources(chronyd)?;
         let mut names = HashMap::new();
         for source in sources.iter().flatten() {
             if let Address::Ip(ip) = source.data.address
@@ -670,6 +687,9 @@ pub(crate) mod tests {
     /// chronyd answering with `sources`, by index.
     struct Fake {
         sources: Vec<Source>,
+        /// Asked for `sourcestats` of the index first, chronyd removes
+        /// the source second, as a source going between two requests.
+        remove: Option<(u32, usize)>,
     }
 
     impl Fake {
@@ -692,6 +712,12 @@ pub(crate) mod tests {
             Ok(self.source(index)?.data)
         }
         fn source_stats(&mut self, index: u32) -> Result<SourceStats, Error> {
+            if let Some((at, removed)) = self.remove
+                && at == index
+            {
+                self.sources.remove(removed);
+                self.remove = None;
+            }
             let source = self.source(index)?;
             assert!(!matches!(source.data.address, Address::Unresolved(_)));
             Ok(source.stats)
@@ -709,8 +735,7 @@ pub(crate) mod tests {
                 .ok_or(Error::Status(Status::NoSuchSource))
         }
         fn source_name(&mut self, address: IpAddr) -> Result<String, Error> {
-            assert_eq!(address, SERVER);
-            Ok("ntp.example".to_owned())
+            Ok(format!("{address}.example"))
         }
     }
 
@@ -722,6 +747,7 @@ pub(crate) mod tests {
         placeholder.ntp = None;
         let mut fake = Fake {
             sources: vec![placeholder, source(5, 10)],
+            remove: None,
         };
         let snapshot = Collector::new(Seconds::new(1.0))
             .read(&mut fake)
@@ -730,6 +756,40 @@ pub(crate) mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].data.address, Address::Ip(SERVER));
         assert_eq!(snapshot.names.len(), 1);
+    }
+
+    /// A source like [`source`]'s at another address.
+    fn source_at(address: IpAddr) -> Source {
+        let mut source = source(5, 10);
+        source.data.address = Address::Ip(address);
+        source.stats.address = source.data.address;
+        source.selection.address = source.data.address;
+        if let Some(ntp) = &mut source.ntp {
+            ntp.remote_address = source.data.address;
+        }
+        source
+    }
+
+    #[test]
+    fn a_source_removed_while_read_discards_the_sources() {
+        let addresses: Vec<IpAddr> = (1..=3)
+            .map(|host| IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, host)))
+            .collect();
+        let collector = Collector::new(Seconds::new(1.0));
+        // The source being read goes: the next one's reports take its
+        // index.  Then one not yet read goes: the one after it is moved
+        // past.
+        for remove in [(0, 0), (0, 1)] {
+            let mut fake = Fake {
+                sources: addresses.iter().copied().map(source_at).collect(),
+                remove: Some(remove),
+            };
+            let snapshot = collector.read(&mut fake).expect("a snapshot");
+            assert!(snapshot.sources.is_none(), "{remove:?}");
+            // The next poll reads what is left.
+            let snapshot = collector.read(&mut fake).expect("a snapshot");
+            assert_eq!(snapshot.sources.expect("sources").len(), 2);
+        }
     }
 
     #[test]
@@ -756,6 +816,7 @@ pub(crate) mod tests {
         ] {
             let mut fake = Fake {
                 sources: vec![source],
+                remove: None,
             };
             let read = collector.read(&mut fake);
             db.log
