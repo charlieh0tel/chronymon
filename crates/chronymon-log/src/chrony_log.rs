@@ -261,7 +261,11 @@ pub enum ParseError {
 /// Read one line of a log of `kind`: `Ok(None)` for a rule, a header
 /// or a blank.
 pub fn parse(kind: LogKind, line: &str) -> Result<Option<Line>, ParseError> {
-    let trimmed = line.trim_end();
+    // A file grown but never written before a crash or power loss
+    // reads back as NULs where its last lines were, up to the banner
+    // chronyd writes on reopening it: what is lost is lost, and what
+    // follows is whole.
+    let trimmed = line.trim_start_matches('\0').trim_end();
     if trimmed.is_empty() || trimmed.bytes().all(|byte| byte == b'=') {
         return Ok(None);
     }
@@ -623,6 +627,16 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn reads_past_what_a_crash_left() {
+        let rule = "=".repeat(43);
+        assert_eq!(
+            parse(LogKind::Tempcomp, &format!("\0\0\0\0{rule}\n")),
+            Ok(None)
+        );
+        assert_eq!(parse(LogKind::Tempcomp, "\0\0\0\n"), Ok(None));
     }
 
     #[test]
