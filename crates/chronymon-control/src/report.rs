@@ -43,6 +43,14 @@ impl fmt::Display for Address {
 pub struct ReferenceId(pub u32);
 
 impl ReferenceId {
+    /// chronyd's local reference's, 127.127.1.1 (`NTP_REFID_LOCAL`,
+    /// chrony 4.8 `ntp.h:113`), which `tracking` reports while chronyd
+    /// serves it (`local` in `chrony.conf`), not synchronized to a
+    /// source: stratum `local`'s, the address unspecified, the leap
+    /// status normal and the reference time kept near now
+    /// (`REF_GetReferenceParams`, `reference.c:1184`).
+    pub const LOCAL: Self = Self(0x7F7F_0101);
+
     /// The ID as text when it is printable ASCII (`PPS`, `GPS`), as
     /// chronyc shows a refclock's.
     pub fn text(self) -> Option<String> {

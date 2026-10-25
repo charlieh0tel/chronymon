@@ -3,8 +3,9 @@
 //! chronyd: a clock disciplined by a PPS refclock and six NTP servers,
 //! one with a long name, as many sources as a kiosk must hold, its
 //! frequency following the day's temperature, with an outage, a
-//! restart, a step and a time unsynchronized along the way, a seventh
-//! server removed, and a `noselect` NMEA refclock whose samples stop,
+//! restart, a step and a time unsynchronized, then on the local
+//! reference, along the way, a seventh server removed, and a
+//! `noselect` NMEA refclock whose samples stop,
 //! the PPS locked to it (`refclock ... lock NMEA`), as the daemon
 //! records chronyd's configuration; and chronyd's logs as
 //! the daemon reads them: refclock and tempcomp samples throughout,
@@ -60,10 +61,14 @@ const DAY: f64 = 86_400.0;
 const OUTAGE_AT: f64 = 0.4;
 const OUTAGE_FOR: i64 = 1800;
 const STEP_AT: f64 = 0.7;
-/// When, likewise, chronyd loses sync, and for how long, in seconds:
-/// before the last six hours, which the README's screenshots show.
+/// When, likewise, chronyd loses sync, how long it is unsynchronized,
+/// and then on its local reference, in seconds: before the last six
+/// hours, which the README's screenshots show.
 const UNSYNCHRONIZED_AT: f64 = 0.6;
-const UNSYNCHRONIZED_FOR: i64 = 150 * UPDATE_EVERY;
+const UNSYNCHRONIZED_FOR: i64 = 50 * UPDATE_EVERY;
+const LOCAL_FOR: i64 = 100 * UPDATE_EVERY;
+/// `local`'s default stratum (chrony 4.8 `chrony.conf.adoc`).
+const LOCAL_STRATUM: u16 = 10;
 /// When, likewise, the removed server goes, and the NMEA refclock's
 /// samples stop: both within the last day.
 const REMOVED_AT: f64 = 0.85;
@@ -282,7 +287,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let outage = start + (span as f64 * OUTAGE_AT) as i64;
     let step = start + (span as f64 * STEP_AT) as i64;
     let lost = start + (span as f64 * UNSYNCHRONIZED_AT) as i64 / UPDATE_EVERY * UPDATE_EVERY;
-    let regained = lost + UNSYNCHRONIZED_FOR;
+    let local = lost + UNSYNCHRONIZED_FOR;
+    let regained = local + LOCAL_FOR;
     // On the grid of updates, so that the loop below meets them.
     let on_grid = |fraction: f64| {
         let after = (span as f64 * fraction) as i64;
@@ -416,15 +422,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 offset = 0.18;
                 batch.event(when, EventKind::Step, None, Some("0.18 s"))?;
             }
-            // As the daemon records it: a leap change each way, and no
-            // update between (`REF_SetUnsynchronised`, chrony 4.8
-            // `reference.c:1078`).
-            if second == lost {
-                batch.leap_change(when, Leap::Normal, Leap::Unsynchronized)?;
-            }
-            if second == regained {
-                batch.leap_change(when, Leap::Unsynchronized, Leap::Normal)?;
-            }
             let synchronized = !(lost..regained).contains(&second);
             let interval = if (slow..fast).contains(&second) {
                 SLOW_UPDATE_EVERY
@@ -449,6 +446,34 @@ fn main() -> Result<(), Box<dyn Error>> {
                 root_dispersion: Seconds::new(1.5e-5 + noise.uniform() * 5e-6),
                 last_update_interval: Seconds::new(interval as f64),
             };
+            // As the daemon records it: a leap change to unsynchronized
+            // and back, then on the local reference, a reference change
+            // each time, and no update between (`REF_SetUnsynchronised`,
+            // chrony 4.8 `reference.c:1078`; `REF_GetReferenceParams`,
+            // `reference.c:1184`).
+            let unsynchronized = Tracking {
+                reference_id: ReferenceId(0),
+                stratum: 0,
+                leap: Leap::Unsynchronized,
+                reference_time: Timestamp::UNIX_EPOCH,
+                ..tracking
+            };
+            let on_local = Tracking {
+                reference_id: ReferenceId::LOCAL,
+                stratum: LOCAL_STRATUM,
+                ..tracking
+            };
+            if second == lost {
+                batch.leap_change(when, Leap::Normal, Leap::Unsynchronized)?;
+                batch.reference_change(when, &tracking, &unsynchronized)?;
+            }
+            if second == local {
+                batch.leap_change(when, Leap::Unsynchronized, Leap::Normal)?;
+                batch.reference_change(when, &unsynchronized, &on_local)?;
+            }
+            if second == regained {
+                batch.reference_change(when, &on_local, &tracking)?;
+            }
             if updated && synchronized {
                 batch.tracking(when, &tracking)?;
                 batch.tracking_report(when, &tracking)?;

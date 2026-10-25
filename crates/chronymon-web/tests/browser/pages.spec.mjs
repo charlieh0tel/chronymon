@@ -232,57 +232,70 @@ test("Live: the log fills only while the daemon was stopped, and a slow clock's 
   for (const t of reported.at) expect(t > stop && t < start - 60).toBe(false);
 });
 
-// The synthetic run's time unsynchronized: its leap changes' times.
-async function unsynchronized(page) {
+// The synthetic run's time not synchronized to a source: when it lost
+// sync, went on to its local reference and was synchronized again, by
+// its leap and reference changes.
+async function notSynchronized(page) {
   const events = await (await page.request.get("/api/events?limit=500")).json();
-  const leap = (test) => events.find((e) => e.kind === "leap_change" && test(e.detail)).at;
-  return [leap((d) => d.endsWith(" to Unsynchronized")), leap((d) => d.startsWith("Unsynchronized to "))];
+  const at = (kind, test) => events.find((e) => e.kind === kind && test(e.detail)).at;
+  return {
+    lost: at("leap_change", (d) => d.endsWith(" to Unsynchronized")),
+    local: at("reference_change", (d) => d.endsWith(" to local")),
+    regained: at("reference_change", (d) => d.startsWith("local to ")),
+  };
 }
 
 const NOT_SYNCHRONIZED = "chronyd not synchronized";
+const ON_LOCAL = "chronyd on its local reference";
 
-test("Live: chronyd unsynchronized is a gap, shaded and named", async ({ page }) => {
-  const [lost, regained] = await unsynchronized(page);
+test("Live: chronyd unsynchronized or on its local reference is a gap, shaded and named", async ({ page }) => {
+  const { lost, local, regained } = await notSynchronized(page);
   const read = lastHistory(page);
   await page.goto(`/?from=${Math.floor(lost - 1800)}&to=${Math.ceil(regained + 1800)}&columns=frequency`);
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
   const got = await (await page.request.get(read.url.toString())).json();
-  expect(got.unsynchronized).toEqual([[lost, regained]]);
-  const drawn = await page.evaluate(([from, to]) => {
+  expect(got.unsynchronized).toEqual([[lost, local]]);
+  expect(got.local).toEqual([[local, regained]]);
+  const drawn = await page.evaluate(([from, local, to]) => {
     const chart = stack.charts[0];
     const values = chart.data[1];
     return {
       bands: stack.read.bands.map((b) => [b.from, b.to]),
       breaks: values.filter((v) => v === null).length,
-      // The line's values in the span, but the update ending it, a
+      // The line's values in the spans, but the update ending them, a
       // little before the poll that saw it.
       within: chart.data[0].filter((t, i) => values[i] != null && t > from && t < to - 60).length,
+      unsynchronized: chart.valToPos((from + local) / 2, "x"),
+      // In the local reference's span, and as far as can be from an
+      // update, which the cursor would otherwise read.
       middle: chart.valToPos((from + to) / 2, "x"),
     };
-  }, [lost, regained]);
-  expect(drawn.bands).toEqual([[lost, regained]]);
+  }, [lost, local, regained]);
+  expect(drawn.bands).toEqual([[lost, local], [local, regained]]);
   expect(drawn.breaks).toBe(1);
   expect(drawn.within).toBe(0);
   const box = await charts(page).first().locator(".u-over").boundingBox();
-  await page.mouse.move(box.x + drawn.middle, box.y + box.height / 2);
-  await expect(page.locator("#readout")).toContainText(NOT_SYNCHRONIZED);
-  await expect(page.locator("#note-tip")).toHaveText(NOT_SYNCHRONIZED);
+  for (const [x, text] of [[drawn.unsynchronized, NOT_SYNCHRONIZED], [drawn.middle, ON_LOCAL]]) {
+    await page.mouse.move(box.x + x, box.y + box.height / 2);
+    await expect(page.locator("#readout")).toContainText(text);
+    await expect(page.locator("#note-tip")).toHaveText(text);
+  }
   expect(await readoutValue(page, "Frequency")).toBeNull();
-  // A range that does not reach it has none.
+  // A range that does not reach them has none.
   await page.goto(`/?from=${Math.ceil(regained + 600)}&to=${Math.ceil(regained + 3600)}&columns=frequency`);
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
   expect(await page.evaluate(() => stack.read.bands)).toEqual([]);
 });
 
-test("Kiosk: chronyd unsynchronized is shaded on its charts", async ({ page }) => {
-  const [lost, regained] = await unsynchronized(page);
+test("Kiosk: chronyd unsynchronized or on its local reference is shaded on its charts", async ({ page }) => {
+  const { lost, local, regained } = await notSynchronized(page);
   await page.setViewportSize(KIOSK_VIEWPORT);
   await page.goto(`/kiosk?from=${Math.floor(lost - 1800)}&to=${Math.ceil(regained + 1800)}`);
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
-  expect(await page.evaluate(() => stack.read.bands.map((b) => [b.from, b.to]))).toEqual([[lost, regained]]);
+  expect(await page.evaluate(() => stack.read.bands.map((b) => [b.from, b.to]))).toEqual([[lost, local], [local, regained]]);
 });
 
 test("Live: the range buttons move the window and the address", async ({ page }) => {

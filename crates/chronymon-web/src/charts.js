@@ -976,22 +976,31 @@ function markAt(u, marks, bands) {
 
 // ---------------------------------------------------------------- bands
 
-// A span chronyd was unsynchronized in, shaded behind the lines in the
-// red the strip says so in, faintly, as the time axis's own state
+// A span chronyd was not synchronized to a source in, unsynchronized
+// or on its local reference, shaded behind the lines in the red the
+// strip says unsynchronized in, faintly, as the time axis's own state
 // rather than an event at an instant.
-const UNSYNCHRONIZED_BAND = "#f871711f";
+const NOT_SYNCHRONIZED_BAND = "#f871711f";
 
-// The spans a read of `tracking` says chronyd was unsynchronized in,
-// as bands `{ from, to, text }`, unix seconds.
-const unsynchronizedBands = (got) =>
-  (got.unsynchronized ?? []).map(([from, to]) => ({ from, to, text: `chronyd ${LEAP_NAMES.unsynchronized}` }));
+// What a band says of chronyd, by the read's list of its spans.
+const NOT_SYNCHRONIZED_TEXTS = {
+  unsynchronized: `chronyd ${LEAP_NAMES.unsynchronized}`,
+  local: "chronyd on its local reference",
+};
+
+// The spans a read of `tracking` says chronyd was not synchronized to
+// a source in, as bands `{ from, to, text }`, unix seconds.
+const notSynchronizedBands = (got) =>
+  Object.entries(NOT_SYNCHRONIZED_TEXTS)
+    .flatMap(([key, text]) => (got[key] ?? []).map(([from, to]) => ({ from, to, text })))
+    .sort((a, b) => a.from - b.from);
 
 // Each band across the plot area, from its start to its end.
 function drawBands(u, bands) {
   const [lo, hi] = [u.scales.x.min, u.scales.x.max];
   const { ctx } = u;
   ctx.save();
-  ctx.fillStyle = UNSYNCHRONIZED_BAND;
+  ctx.fillStyle = NOT_SYNCHRONIZED_BAND;
   for (const { from, to } of bands) {
     if (to < lo || from > hi) continue;
     const left = u.valToPos(Math.max(from, lo), "x", true);
@@ -1042,7 +1051,7 @@ function markTip(chart, text) {
 //   read, why, toggling  kept by drawStack: the last drawn, to draw it
 //                        again, and whether its titles toggle lines
 // `read` is `{ x, span, drawn, bands }`, `bands` optional, as
-// `unsynchronizedBands` gives them; `why` what to say when there is
+// `notSynchronizedBands` gives them; `why` what to say when there is
 // nothing.
 function drawStack(view, read, why) {
   read.drawn = read.drawn.filter(drawsAnything);

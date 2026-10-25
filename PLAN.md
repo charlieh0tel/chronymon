@@ -51,7 +51,14 @@ beside it, as chronyc does.  No access, no start.
    latest until the daemon stopped recording.  Leap changes are
    chronyd's report: unsynchronized during a leap second too
    (`leap_in_progress`, 4.8 `reference.c:1178`), so a span under 2 s
-   is none.
+   is none.  So is chronyd on its local reference (`local`), named so:
+   reference ID 127.127.1.1 (`NTP_REFID_LOCAL`, 4.8 `ntp.h:113`),
+   address unspecified, leap normal, reference time kept near now
+   (`REF_GetReferenceParams`, `reference.c:1184`).  From a reference
+   change to it, its detail naming it `local`, or the daemon's first
+   read of it, until one from it; an unsynchronized span ends there.
+   An older daemon named it `-`, as unsynchronized, so those are not
+   found.  The strip names it "local reference".
    The Sources table reads `source_report`, not the last sample row,
    so reach run down to 0, or no sample at all after a restart (age
    `(uint32_t)-1`, `SST_DoSourceReport`), shows as chronyd reports it,

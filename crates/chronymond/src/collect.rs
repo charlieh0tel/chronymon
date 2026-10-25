@@ -1179,6 +1179,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_local_reference_is_named() {
+        let mut db = Database::new("local-reference");
+        let mut collector = collector(&db, MAKE_STEP);
+        // chronyd's tracking on its local reference
+        // (`REF_GetReferenceParams`, chrony 4.8 `reference.c:1184`).
+        let local = Tracking {
+            reference_id: ReferenceId::LOCAL,
+            address: Address::Unspecified,
+            stratum: 10,
+            ..tracking(1, 1e-6)
+        };
+        for (second, read) in [(0, tracking(0, 1e-6)), (1, local), (2, tracking(2, 2e-6))] {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(read, vec![]),
+                        Process::Running(100),
+                    )
+                })
+                .expect("recorded");
+        }
+        let mut statement = db
+            .reader
+            .prepare("SELECT detail FROM event WHERE kind = 'reference_change' ORDER BY rowid")
+            .expect("a query");
+        let details: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .map(|row| row.expect("a row"))
+            .collect();
+        assert_eq!(details, ["192.0.2.1 to local", "local to 192.0.2.1"]);
+    }
+
+    #[test]
     fn a_history_row_is_an_update() {
         let mut db = Database::new("tracking-updates");
         let mut collector = collector(&db, MAKE_STEP);
