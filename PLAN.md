@@ -146,7 +146,9 @@ status strip and shared cursor readout, uPlot 1.6.32 from jsdelivr
 with SRI, assets compiled into the binary.  smartclock's `style.css`,
 `common.js`, `charts.js` and HTTP crate are copied in, to be factored
 into something shared once both have settled.  Served directly on a
-port, as smartclock-web is.  Live updates as smartclock
+port, as smartclock-web is: 127.0.0.1:8323 by default, set in
+`/etc/default/chronymon-web` (0.0.0.0 for the LAN).  Read-only, no
+authentication.  Live updates as smartclock
 does them: the page polls a `since` cursor every few seconds and
 appends what is new.  Nothing arrives faster than chronyd's own
 updates, so a push channel would buy nothing.
@@ -190,11 +192,12 @@ Pages:
 3. **Web.**  Live, Sources, Journal; then Distribution.
 4. **Log ingest.**  Backfill, rotated and `.gz` files, header-based
    columns; then the Refclocks and Temperature pages.
-5. **Packaging.**  Debian package and release through deb-workflows
-   (`rust-build-deb.yml`), systemd units, the daemon in the `_chrony`
-   group.
-6. **Later, maybe.**  smartclock-sensord's ambient readings, a
-   Prometheus exporter.
+5. **Packaging.**  One Debian package, `chronymon`, amd64 and arm64,
+   released through deb-workflows (`rust-build-deb.yml`): both
+   binaries, their systemd units and `/etc/default` files, and a
+   `chronymon` system user (sysusers.d) in the `_chrony` group.
+6. **Later, maybe.**  A kiosk page, smartclock-sensord's ambient
+   readings, a Prometheus exporter.
 
 ## Adversarial review
 
@@ -243,6 +246,12 @@ Pages:
   types: 4.9's are 4.8's; 4.3 to 4.5 send `RPY_NTP_DATA`, 4.6 on
   `RPY_NTP_DATA2`.
 - Unix socket only; no socket access means the daemon does not start.
+- The daemon runs as its own `chronymon` user, in the `_chrony` group,
+  so it can read the socket and the logs but not chrony's state.
+- The database is `/var/lib/chronymon/chronymon.sqlite`
+  (`StateDirectory=chronymon`).
+- Polled every second by default, set in `/etc/default/chronymond`.
+- Web on 127.0.0.1:8323 by default; one package for amd64 and arm64.
 - Debian package and systemd units; CI and release through
   deb-workflows.
 - Our own control protocol client, with the logs beside it.
