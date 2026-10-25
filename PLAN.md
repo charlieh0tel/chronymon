@@ -43,9 +43,10 @@ beside it, as chronyc does.  No access, no start.
    chronyd reports 0 while unsynchronized (`REF_GetReferenceParams`,
    4.8 `reference.c:1216`), and a backward step moves it back, so the
    latest is not the greatest.  Unsynchronized is no time on a chart's
-   axis, nor in a table's extent.  On Live's and the kiosk's charts
-   it is a span, shaded and named, the clock's lines broken across it,
-   its values stale: from a leap change to unsynchronized until one
+   axis, nor in a table's extent.  On the clock's charts, Live's and
+   the kiosk's (not its offset overlay: the sources' go on), it is a
+   span, shaded and named, the lines broken across it, its values
+   stale: from a leap change to unsynchronized until one
    from it, or from a row at reference time 0 (the daemon's first read;
    an older daemon's every loss of sync) until the next update; at the
    latest until the daemon stopped recording.  Leap changes are
