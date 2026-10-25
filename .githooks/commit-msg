@@ -1,0 +1,11 @@
+#!/bin/sh
+# Refuse a commit message that credits an AI assistant: this project's
+# commits carry no such trailer or footer (AGENTS.md).  Git passes the
+# message file as $1; CI passes /dev/stdin with every commit's message.
+# Lines starting with # are the editor's comments, not the message.
+# A trailer line, an address, or the footer, rather than any mention of
+# them, so a message may describe this check.
+if grep -v '^#' "$1" | grep -qiE '^[[:space:]]*(co-authored-by|claude-session):|@anthropic\.com|claude\.ai/code|generated with \[claude'; then
+    echo "commit refused: the message credits an AI assistant, which this project's commits never do (AGENTS.md)" >&2
+    exit 1
+fi
