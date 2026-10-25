@@ -36,6 +36,10 @@ before), which by default excludes `ntpdata`, `sourcestats` and
 socket answers all of them; the client binds its own socket in
 `/run/chrony/`, which needs the `_chrony` user or group.
 
+chronymon speaks the Unix socket only.  UDP would give a partial
+picture, and one path is less to test.  Without access to the socket
+the daemon refuses to start, saying which group it needs.
+
 The daemon reads two ways, through one ingest path:
 
 1. **Control protocol (primary), our own client.**  Polled once a
@@ -53,20 +57,19 @@ The daemon reads two ways, through one ingest path:
    Polling faster than samples arrive loses nothing; polling with the
    daemon down does, which the logs backfill when chronyd keeps them.
 
-2. **Log files (fallback and extras).**  Tailed and backfilled from
+2. **Log files (backfill and extras).**  Tailed and backfilled from
    rotated files, `.gz` included, deduplicated by (log, time, source):
    - `refclocks.log` and `tempcomp.log`, which hold per-sample data
      the control protocol does not report;
    - `tracking`, `statistics` and `measurements` logs, to fill the
-     history from before the daemon ran or while it was down;
-   - hosts where the socket cannot be reached.
+     history from before the daemon ran or while it was down.
 
    Columns are found by name from each file's header line, never by
    position.
 
 ### Why our own client, and the logs beside it
 
-Researched against chrony 4.3 to 4.8's source and `chrony-candm`
+Researched against chrony 4.2 to 4.9's source and `chrony-candm`
 0.1.3's, 2026-10-24.
 
 - **Precision.**  The protocol carries chrony's own float (7-bit
@@ -85,14 +88,17 @@ Researched against chrony 4.3 to 4.8's source and `chrony-candm`
   bytes longer) from 4.6; `serverstats` with 24 in 4.3 and 25 from
   4.4.  The client decodes each reply type it knows by its type code,
   and reports any other as unsupported rather than guessing.  Fixtures
-  from every supported chronyd, which runs unprivileged in a container
-  with `-x`, keep that honest.
+  from every supported chronyd, run in a container with `-x`, keep
+  that honest.
 - **`chrony-candm` rejected.**  It decodes no reply type past 25, so
   no `ntpdata` from 4.6 on (Debian 13's 4.6.1, 4.8); it is
   GPL-2.0-only, which Apache-2.0 cannot combine with; its async API is
   the default; it has had one release since 2024.
 - **`chronyc -c` rejected.**  1 ppb resolution, positional CSV, a
   process per report per poll, and the same privilege for `ntpdata`.
+- **UDP rejected.**  Unprivileged, but without `ntpdata`,
+  `sourcestats` or `selectdata` by default: a view missing most of
+  what it is for.
 - **Logs kept.**  The only complete record (every sample, where the
   protocol gives the last), the only source for refclock and tempcomp
   samples, and the backfill for time the daemon was not running.
@@ -111,7 +117,7 @@ The smartclock layout, so the two read the same:
 | Crate | Kind | Role |
 | - | - | - |
 | `chronymon` | lib | the data model: reports, samples, events, units, newtypes |
-| `chronymon-control` | lib | the control protocol client: request and reply encoding, Unix socket and UDP transports, typed errors; synchronous |
+| `chronymon-control` | lib | the control protocol client: request and reply encoding, the Unix socket transport, typed errors; synchronous |
 | `chronymon-log` | lib | the SQLite schema, `migrate()`, writer and readers; the chrony log parser |
 | `chronymond` | bin | collectors, event detection, the one writer, a Unix socket for live state |
 | `chronymon-web` | bin | the browser view: reads the database directly (WAL), asks the daemon for live state |
@@ -175,10 +181,10 @@ Pages:
    the history, a scheduled audit), license files, `README.md`,
    `AGENTS.md`, the commit hook.
 1. **Control client.**  `chronymon-control`: every report in the
-   table, both transports, each reply type 4.3 through 4.8 sends, with
-   replies captured from each version as fixtures: a script in `tools/`
-   builds each chronyd in a container, runs it with `-x`, and records
-   its replies.
+   table, each reply type the supported versions send, with replies
+   captured from each version as fixtures: a script in `tools/` runs
+   each release's packaged chronyd in a Docker container with `-x`
+   and records its replies.
 2. **Daemon, protocol ingest.**  Schema 1 and `migrate()`, collectors,
    change detection, events, the live socket.
 3. **Web.**  Live, Sources, Journal; then Distribution.
@@ -231,7 +237,12 @@ Pages:
 - Served directly on a port.
 - Separate daemon and web binaries.
 - Events only in the journal.
-- chrony 4.3 through 4.8.
+- chrony as packaged by supported Debian and Ubuntu releases, Ubuntu
+  22.04 (4.2) excepted: 4.3 (Debian 12), 4.5 (Ubuntu 24.04), 4.6.1
+  (Debian 13), 4.8 (Ubuntu 26.04, 26.10), 4.9 (Debian forky).  Reply
+  types: 4.9's are 4.8's; 4.3 to 4.5 send `RPY_NTP_DATA`, 4.6 on
+  `RPY_NTP_DATA2`.
+- Unix socket only; no socket access means the daemon does not start.
 - Debian package and systemd units; CI and release through
   deb-workflows.
 - Our own control protocol client, with the logs beside it.
