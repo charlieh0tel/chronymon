@@ -14,6 +14,16 @@ pub enum Error {
         source: rusqlite::Error,
     },
 
+    /// The daemon kept checkpointing into the database while it was
+    /// read without its WAL.
+    #[error("{path}: changed while read, {attempts} times")]
+    Changing {
+        /// The database's path.
+        path: PathBuf,
+        /// How many times it was read.
+        attempts: usize,
+    },
+
     /// A newer chronymon wrote this database.
     #[error("database is schema {found}, newer than this program's {supported}")]
     NewerSchema {
