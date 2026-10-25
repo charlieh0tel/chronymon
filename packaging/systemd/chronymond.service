@@ -30,8 +30,10 @@ StateDirectory=chronymon
 StateDirectoryMode=2750
 
 ProtectSystem=strict
-# Where the client binds its socket for chronyd's replies.
-ReadWritePaths=/run/chrony
+# Where the client binds its socket for chronyd's replies.  "-": absent
+# until chrony starts, which must not stop this starting.  Made later
+# and read-only here, chronymond exits for a restart (docs/running.md).
+ReadWritePaths=-/run/chrony
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

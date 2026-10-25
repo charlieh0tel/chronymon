@@ -30,6 +30,17 @@ Without access to the socket chronymond does not start, and says
 which user it needs.  With access but no chronyd, it runs and records
 chronyd as down until chronyd answers.
 
+`ReadWritePaths=-/run/chrony`: the `-` lets the unit start, and record
+chronyd as down, when `/run/chrony` does not exist yet (chrony not
+started, or stopped: chrony's unit removes it), where without it the
+unit fails at namespace setup (`226/NAMESPACE`).  Whether a
+`/run/chrony` made later is writable depends on systemd: 259 leaves
+`/run` writable under `ProtectSystem=strict`, and chronymond carries
+on.  Where it is read-only, chronymond cannot bind its socket there,
+records its stop, and exits with an error; systemd restarts it 5 s
+later, with `/run/chrony` writable.  Both tested in a systemd
+container.
+
 ## Serving the network
 
 Set `CHRONYMON_WEB_LISTEN=0.0.0.0:8323` in `/etc/default/chronymon-web`
