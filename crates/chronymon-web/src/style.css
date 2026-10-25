@@ -134,6 +134,8 @@ td a, .source-link { color: var(--text); text-decoration: underline dotted; }
 .state-selected { color: var(--ok); }
 .state-bad { color: var(--bad); }
 .state-warn { color: var(--warn); }
+/* A source chronyd no longer has, its history still to be seen. */
+tr.removed { opacity: 0.45; }
 /* A distribution's figures beside its histogram. */
 table.numbers { border-collapse: collapse; width: auto; }
 table.numbers th { font-weight: 400; color: var(--dim); padding: 3px 18px 3px 0; white-space: nowrap; }

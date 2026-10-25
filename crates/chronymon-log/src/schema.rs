@@ -1,7 +1,7 @@
 //! The tables, as the daemon creates them and the readers expect them.
 //!
 //! Times are integer nanoseconds since the Unix epoch, UTC.  Every
-//! table but `source` and `status` is a time series keyed by `at`, the
+//! table but `source`, `source_report` and `status` is a time series keyed by `at`, the
 //! moment the daemon read the row, and holds a row only when what it
 //! read had changed: chronyd is polled every second, its sources far
 //! less often.
@@ -9,11 +9,16 @@
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
 pub const LOG_TABLES: i64 = 2;
+
+/// The first schema with `source_report`.  An older database gains it,
+/// empty, on open, likewise; its sources' latest reports are their
+/// latest samples' until the daemon next polls.
+pub const SOURCE_REPORT: i64 = 3;
 
 /// Facts about the database itself, the schema version first.
 pub(crate) const META: &str = "CREATE TABLE IF NOT EXISTS meta (
@@ -49,6 +54,27 @@ pub(crate) const TABLES: &str = r"
         name         TEXT,
         first_seen   INTEGER NOT NULL,
         last_seen    INTEGER NOT NULL
+    ) STRICT;
+
+    -- `sources`, as chronyd last reported each source: what the
+    -- Sources table shows.  Replaced when anything but the sample's age
+    -- changes, and kept when a source is removed.  `source_sample`
+    -- keeps the history, of samples only: a source's reach falling to
+    -- 0, or its samples dropped by a restart, are here alone.
+    CREATE TABLE IF NOT EXISTS source_report (
+        source_id                   INTEGER PRIMARY KEY REFERENCES source(id),
+        at                          INTEGER NOT NULL,
+        poll                        INTEGER NOT NULL,
+        stratum                     INTEGER NOT NULL,
+        -- As `source_sample`'s.
+        state                       TEXT    NOT NULL,
+        reachability                INTEGER NOT NULL,
+        -- When the last sample arrived, as `source_sample`'s; NULL, as
+        -- are the three after it, while chronyd has no sample.
+        sample_time                 INTEGER,
+        latest_measurement          REAL,
+        original_latest_measurement REAL,
+        latest_measurement_error    REAL
     ) STRICT;
 
     -- `tracking`, one row per clock update.

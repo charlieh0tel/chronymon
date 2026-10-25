@@ -301,7 +301,8 @@ pub(crate) fn overlay(path: &Path, query: &str) -> Result<Value> {
     Ok(with(json!({ "at": overlay.at, "lines": lines }), bounds))
 }
 
-/// `/api/sources`: every source with the latest of each report.
+/// `/api/sources`: every source with the latest of each report, those
+/// chronyd has removed last.
 pub(crate) fn sources(path: &Path) -> Result<Value> {
     let reader = open(path)?;
     let sources: Vec<Value> = reader
@@ -315,8 +316,9 @@ pub(crate) fn sources(path: &Path) -> Result<Value> {
                 "name": s.name,
                 "first_seen": seconds(s.first_seen),
                 "last_seen": seconds(s.last_seen),
-                "state": s.sample.as_ref().map(|(state, _)| state),
-                "sample": s.sample.as_ref().map(|(_, values)| object(values)),
+                "removed": s.removed,
+                "state": s.report.as_ref().map(|(state, _)| state),
+                "report": s.report.as_ref().map(|(_, values)| object(values)),
                 "selection_state": s.selection.as_ref().map(|(state, _)| state),
                 "selection": s.selection.as_ref().map(|(_, values)| object(values)),
                 "stats": s.stats.as_ref().map(object),

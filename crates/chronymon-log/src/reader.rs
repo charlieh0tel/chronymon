@@ -20,18 +20,21 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::path::Path;
 
+use chronymon::event::EventKind;
+use chronymon_control::report::Address;
+use chronymon_control::report::SourceMode;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
 use rusqlite::OptionalExtension as _;
 use rusqlite::params;
 use rusqlite::types::Value;
 
-use chronymon::event::EventKind;
-
 use crate::error::Error;
 use crate::error::Result;
+use crate::text;
 
 /// Fewest buckets worth drawing, and the most a chart can show.
 pub const MIN_POINTS: usize = 16;
@@ -51,6 +54,10 @@ const GAP_SPACINGS: i64 = 3;
 
 /// Nanoseconds in a second.
 const NANOSECONDS: f64 = 1e9;
+
+/// The table of chronyd's latest `sources` report of each source, from
+/// schema [`SOURCE_REPORT`](crate::schema::SOURCE_REPORT).
+const REPORT: &str = "source_report";
 
 /// The latest time a window may reach, unix seconds: 2255, short of the
 /// 2262 at which 64 bits of nanoseconds run out, with room for the
@@ -429,8 +436,13 @@ pub struct Source {
     pub first_seen: i64,
     /// Unix nanoseconds.
     pub last_seen: i64,
-    /// Its latest sample: state, and the columns by name.
-    pub sample: Option<(String, Values)>,
+    /// Whether chronyd no longer has it: it was not in the daemon's
+    /// latest read of the sources, or its last event is its removal.
+    pub removed: bool,
+    /// chronyd's latest `sources` report of it: state, and the columns
+    /// by name, without the sample's while it has none.  From its
+    /// latest sample in a database older than [`SOURCE_REPORT`](crate::schema::SOURCE_REPORT).
+    pub report: Option<(String, Values)>,
     /// Its latest selection: state character, and the columns by name.
     pub selection: Option<(String, Values)>,
     /// Its latest regression, by name.
@@ -499,11 +511,16 @@ impl Reader {
     /// added the table reads as empty, not as an error, so the web view
     /// shows what an older database holds until the daemon migrates it.
     fn exists(&self, table: Table) -> Result<bool> {
+        self.has_table(table.name())
+    }
+
+    /// Whether the database has the table `name`, chartable or not.
+    fn has_table(&self, name: &str) -> Result<bool> {
         Ok(self
             .connection
             .query_row(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![table.name()],
+                params![name],
                 |_| Ok(()),
             )
             .optional()?
@@ -599,38 +616,87 @@ impl Reader {
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Every source, the most recently seen first, each with the
-    /// latest of each report.
+    /// Every source, chronyd's current ones first, then those removed,
+    /// the most recently seen first, each with the latest of each
+    /// report.
+    ///
+    /// The daemon brings every current source's `last_seen` to the
+    /// poll's time, so one seen before the latest was not in chronyd's
+    /// latest list; and when chronyd has no sources left, so that none
+    /// is newer, each one's removal says so.
     pub fn sources(&self) -> Result<Vec<Source>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, address, mode, name, first_seen, last_seen FROM source
-             ORDER BY last_seen DESC, id",
+            "SELECT id, address, mode, name, first_seen, last_seen,
+                 last_seen < (SELECT MAX(last_seen) FROM source)
+                 OR COALESCE((SELECT kind FROM event
+                     WHERE source_id = source.id AND kind IN (?1, ?2)
+                     ORDER BY at DESC, rowid DESC LIMIT 1) = ?2, 0) AS removed
+             FROM source
+             ORDER BY removed, last_seen DESC, id",
         )?;
         let rows = statement
-            .query_map([], |row| {
-                Ok(Source {
-                    id: row.get(0)?,
-                    address: row.get(1)?,
-                    mode: row.get(2)?,
-                    name: row.get(3)?,
-                    first_seen: row.get(4)?,
-                    last_seen: row.get(5)?,
-                    sample: None,
-                    selection: None,
-                    stats: None,
-                    ntp: None,
-                })
-            })?
+            .query_map(
+                params![
+                    EventKind::SourceAdded.name(),
+                    EventKind::SourceRemoved.name()
+                ],
+                |row| {
+                    Ok(Source {
+                        id: row.get(0)?,
+                        address: shown_address(row.get(1)?, &row.get::<_, String>(2)?),
+                        mode: row.get(2)?,
+                        name: row.get(3)?,
+                        first_seen: row.get(4)?,
+                        last_seen: row.get(5)?,
+                        removed: row.get(6)?,
+                        report: None,
+                        selection: None,
+                        stats: None,
+                        ntp: None,
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter()
             .map(|mut source| {
-                source.sample = self.latest_labeled(Table::SourceSample, "state", source.id)?;
+                source.report = self.report(source.id)?;
                 source.selection = self.latest_labeled(Table::Selection, "state", source.id)?;
                 source.stats = self.latest(Table::SourceStats, source.id)?;
                 source.ntp = self.latest(Table::NtpSample, source.id)?;
                 Ok(source)
             })
             .collect()
+    }
+
+    /// chronyd's latest `sources` report of `source_id`: its
+    /// `source_report` row, else its latest sample.
+    fn report(&self, source_id: i64) -> Result<Option<(String, Values)>> {
+        if !self.has_table(REPORT)? {
+            return self.latest_labeled(Table::SourceSample, "state", source_id);
+        }
+        let columns = Table::SourceSample.columns();
+        let sql = format!(
+            "SELECT state, {} FROM {REPORT} WHERE source_id = ?1",
+            columns.join(", ")
+        );
+        let report = self
+            .connection
+            .query_row(&sql, params![source_id], |row| {
+                let values = columns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(n, c)| match row.get::<_, Option<f64>>(1 + n) {
+                        Ok(value) => value.map(|v| Ok((*c, v))),
+                        Err(e) => Some(Err(e)),
+                    })
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok((row.get(0)?, values))
+            })
+            .optional()?;
+        match report {
+            Some(report) => Ok(Some(report)),
+            None => self.latest_labeled(Table::SourceSample, "state", source_id),
+        }
     }
 
     /// The newest row of `table` for `source_id`, its columns by name.
@@ -1262,6 +1328,20 @@ fn gaps(buckets: &[i64]) -> Vec<bool> {
 }
 
 /// Unix nanoseconds as seconds.
+/// A source's stored address, but an NTP source's whose name was not
+/// resolved yet as chronyd prints it: the daemon once recorded these
+/// placeholders, in eight hex digits as a refclock's reference ID is,
+/// and now leaves them out ([`Address::Unresolved`]).
+fn shown_address(address: String, mode: &str) -> String {
+    if mode == text::mode(SourceMode::Refclock) || address.parse::<IpAddr>().is_ok() {
+        return address;
+    }
+    match u32::from_str_radix(&address, 16) {
+        Ok(id) => Address::Unresolved(id).to_string(),
+        Err(_) => address,
+    }
+}
+
 fn seconds(stored: i64) -> f64 {
     stored as f64 / NANOSECONDS
 }
@@ -1861,7 +1941,8 @@ mod tests {
         let sources = reader.sources().expect("sources");
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name.as_deref(), Some("ntp.example"));
-        let (state, values) = sources[0].sample.clone().expect("a sample");
+        assert!(!sources[0].removed);
+        let (state, values) = sources[0].report.clone().expect("a report");
         assert_eq!(state, "selected");
         assert!(values.contains(&("latest_measurement", 2e-6)));
         assert!(sources[0].stats.is_none());
@@ -1872,5 +1953,80 @@ mod tests {
             events.iter().map(|e| e.at).collect::<Vec<_>>(),
             [2, 3, 4].map(|s| (START + s) * NS)
         );
+    }
+
+    #[test]
+    fn the_latest_report_and_removed_sources() {
+        let mut db = Database::new("report");
+        let pps = Address::ReferenceId(u32::from_be_bytes(*b"PPS\0"));
+        let placeholder = Address::ReferenceId(1);
+        let (refclock, server, gone, unresolved) = db
+            .log
+            .write(|batch| {
+                let source =
+                    |at, address, mode| batch.source(at, address, ReferenceId(1), mode, None);
+                let unresolved = source(at(0), placeholder, SourceMode::Client)?;
+                let gone = source(at(0), sample(OTHER, 0.0).address, SourceMode::Client)?;
+                let refclock = source(at(64), pps, SourceMode::Refclock)?;
+                let server = source(at(64), sample(SERVER, 0.0).address, SourceMode::Client)?;
+                // A sample from before chronyd restarted, and now none.
+                batch.source_sample(at(0), refclock, &sample(SERVER, 1e-6))?;
+                let none = SourceData {
+                    address: pps,
+                    state: SourceState::Nonselectable,
+                    mode: SourceMode::Refclock,
+                    reachability: 0,
+                    since_sample: None,
+                    ..sample(SERVER, 0.0)
+                };
+                batch.source_report(at(64), refclock, &none)?;
+                batch.source_report(at(64), server, &sample(SERVER, 2e-6))?;
+                batch.event(at(1), EventKind::SourceRemoved, Some(unresolved), None)?;
+                Ok((refclock, server, gone, unresolved))
+            })
+            .expect("written");
+        let sources = db.reader().sources().expect("sources");
+        let order: Vec<(i64, bool)> = sources.iter().map(|s| (s.id, s.removed)).collect();
+        assert_eq!(
+            order,
+            [
+                (refclock, false),
+                (server, false),
+                (unresolved, true),
+                (gone, true)
+            ]
+        );
+        let (state, values) = sources[0].report.clone().expect("a report");
+        assert_eq!(state, "nonselectable");
+        assert!(values.contains(&("reachability", 0.0)));
+        assert!(
+            !values.iter().any(|(c, _)| *c == "latest_measurement"),
+            "{values:?}"
+        );
+        let (_, values) = sources[1].report.clone().expect("a report");
+        assert!(values.contains(&("latest_measurement", 2e-6)));
+        assert_eq!(sources[2].address, "ID#0000000001");
+        assert_eq!(sources[0].address, pps.to_string());
+    }
+
+    #[test]
+    fn with_every_source_removed_none_is_current() {
+        let mut db = Database::new("all-removed");
+        db.log
+            .write(|batch| {
+                let id = batch.source(
+                    at(0),
+                    sample(SERVER, 0.0).address,
+                    ReferenceId(1),
+                    SourceMode::Client,
+                    None,
+                )?;
+                batch.event(at(0), EventKind::SourceAdded, Some(id), None)?;
+                batch.event(at(1), EventKind::SourceRemoved, Some(id), None)?;
+                Ok(())
+            })
+            .expect("written");
+        let sources = db.reader().sources().expect("sources");
+        assert!(sources[0].removed);
     }
 }

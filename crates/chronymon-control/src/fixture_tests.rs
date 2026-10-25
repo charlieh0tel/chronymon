@@ -147,6 +147,7 @@ fn name(address: Address) -> String {
     match address {
         Address::Ip(address) => address.to_string(),
         Address::ReferenceId(id) => reference_text(ReferenceId(id)),
+        Address::Unresolved(_) => address.to_string(),
         Address::Unspecified => "[UNSPEC]".to_owned(),
     }
 }

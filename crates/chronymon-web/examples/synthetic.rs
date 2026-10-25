@@ -2,7 +2,8 @@
 //! daemon's own writer, so the web view can be looked at without a
 //! chronyd: a clock disciplined by a PPS refclock and two NTP servers,
 //! its frequency following the day's temperature, with an outage, a
-//! restart and a step along the way; and chronyd's logs as the daemon
+//! restart and a step along the way, a third server removed, and an
+//! NMEA refclock whose samples stop; and chronyd's logs as the daemon
 //! reads them: refclock and tempcomp samples throughout, and tracking
 //! for some hours before the daemon started, for the charts to fill
 //! from.  Later, chronyd restarted with tracking.log on and a 64 s
@@ -55,6 +56,10 @@ const DAY: f64 = 86_400.0;
 const OUTAGE_AT: f64 = 0.4;
 const OUTAGE_FOR: i64 = 1800;
 const STEP_AT: f64 = 0.7;
+/// When, likewise, the removed server goes, and the NMEA refclock's
+/// samples stop: both within the last day.
+const REMOVED_AT: f64 = 0.85;
+const SILENT_AT: f64 = 0.9;
 /// Hours of `tracking.log` from before the daemon's first poll.
 const LOG_ONLY_HOURS: i64 = 6;
 /// When, as a fraction of the span, chronyd restarts with tracking.log
@@ -104,9 +109,23 @@ struct Feed {
     jitter: f64,
     /// Round trip, for an NTP server.
     delay: f64,
+    /// When, as a fraction of the span, chronyd removes it.
+    removed: Option<f64>,
+    /// When, likewise, its samples stop, and chronyd has none.
+    silent: Option<f64>,
 }
 
-fn feeds() -> [Feed; 3] {
+impl Feed {
+    /// Whether it still has samples at `second` of a span from `start`.
+    fn sampled(&self, second: i64, start: i64, span: i64) -> bool {
+        [self.removed, self.silent]
+            .into_iter()
+            .flatten()
+            .all(|at| second < start + (span as f64 * at) as i64)
+    }
+}
+
+fn feeds() -> [Feed; 5] {
     [
         Feed {
             address: Address::ReferenceId(u32::from_be_bytes(*b"PPS\0")),
@@ -116,6 +135,19 @@ fn feeds() -> [Feed; 3] {
             bias: 0.0,
             jitter: 2e-7,
             delay: 0.0,
+            removed: None,
+            silent: None,
+        },
+        Feed {
+            address: Address::ReferenceId(u32::from_be_bytes(*b"NMEA")),
+            reference_id: u32::from_be_bytes(*b"NMEA"),
+            mode: SourceMode::Refclock,
+            name: "NMEA",
+            bias: 0.043,
+            jitter: 2e-3,
+            delay: 0.0,
+            removed: None,
+            silent: Some(SILENT_AT),
         },
         Feed {
             address: Address::Ip(IpAddr::from([192, 0, 2, 10])),
@@ -125,6 +157,8 @@ fn feeds() -> [Feed; 3] {
             bias: 4e-5,
             jitter: 3e-5,
             delay: 0.012,
+            removed: None,
+            silent: None,
         },
         Feed {
             address: Address::Ip(IpAddr::from([198, 51, 100, 20])),
@@ -134,6 +168,19 @@ fn feeds() -> [Feed; 3] {
             bias: -1.2e-4,
             jitter: 8e-5,
             delay: 0.031,
+            removed: None,
+            silent: None,
+        },
+        Feed {
+            address: Address::Ip(IpAddr::from([203, 0, 113, 30])),
+            reference_id: u32::from_be_bytes([203, 0, 113, 30]),
+            mode: SourceMode::Client,
+            name: "ntp3.example.com",
+            bias: 2.5e-4,
+            jitter: 1.5e-4,
+            delay: 0.054,
+            removed: Some(REMOVED_AT),
+            silent: None,
         },
     ]
 }
@@ -210,6 +257,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         let mut offset = 0.0_f64;
         let mut valid = vec![0_u32; feeds.len()];
+        // Each feed's last `sources` report, and when it was removed.
+        let mut reports: Vec<Option<SourceData>> = vec![None; feeds.len()];
+        let mut removed: Vec<Option<i64>> = vec![None; feeds.len()];
         let mut down = false;
         for second in (start..=end).step_by(UPDATE_EVERY as usize) {
             let when = at(second).expect("in range");
@@ -256,6 +306,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 compensation: (temperature - TEMPERATURE_MEAN) * 0.08,
             }))?;
             for (reference, bias, jitter) in [("PPS", 0.0, 2e-8), ("NMEA", 0.043, 2e-3)] {
+                let feed = feeds.iter().find(|f| f.name == reference);
+                if feed.is_some_and(|f| !f.sampled(second, start, span)) {
+                    continue;
+                }
                 let cooked = bias + noise.normal(jitter) + offset;
                 batch.log_line(&Line::Refclock(RefclockLine {
                     at: when,
@@ -302,6 +356,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 batch.tracking(when, &tracking)?;
             }
             for (n, f) in feeds.iter().enumerate() {
+                if removed[n].is_none() && f.removed.is_some() && !f.sampled(second, start, span) {
+                    removed[n] = Some(second);
+                    batch.event(
+                        when,
+                        EventKind::SourceRemoved,
+                        Some(ids[n]),
+                        Some(&f.address.to_string()),
+                    )?;
+                }
+                if !f.sampled(second, start, span) {
+                    continue;
+                }
                 let every = if f.mode == SourceMode::Refclock {
                     UPDATE_EVERY
                 } else {
@@ -330,6 +396,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     latest_measurement_error: Seconds::new(f.jitter + delay / 2.0),
                 };
                 batch.source_sample(when, ids[n], &data)?;
+                reports[n] = Some(data);
                 batch.source_stats(
                     when,
                     ids[n],
@@ -411,14 +478,31 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-        for f in &feeds {
+        for (n, f) in feeds.iter().enumerate() {
+            let seen = at(removed[n].unwrap_or(end)).expect("in range");
             batch.source(
-                at(end).expect("in range"),
+                seen,
                 f.address,
                 ReferenceId(f.reference_id),
                 f.mode,
                 Some(f.name),
             )?;
+            let Some(last) = reports[n] else {
+                continue;
+            };
+            // What chronyd reports of a source whose samples stopped:
+            // reach run down to 0, and no sample (`SST_DoSourceReport`).
+            let report = match f.silent {
+                Some(_) => SourceData {
+                    state: SourceState::Nonselectable,
+                    stratum: 0,
+                    reachability: 0,
+                    since_sample: None,
+                    ..last
+                },
+                None => last,
+            };
+            batch.source_report(seen, ids[n], &report)?;
         }
         batch.status(
             at(end).expect("in range"),

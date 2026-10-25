@@ -81,24 +81,39 @@ pub(crate) struct Snapshot {
     names: HashMap<IpAddr, String>,
 }
 
+/// Every source but those whose names are not resolved yet: their
+/// placeholders are replaced by the addresses the names resolve to,
+/// which are then sources of their own, and chronyc leaves them out
+/// too (`client.c`, chrony 4.3 to 4.9).
 fn read_sources(chronyd: &mut impl Chronyd) -> Result<Vec<Source>, Error> {
     (0..chronyd.source_count()?)
-        .map(|index| {
-            let data = chronyd.source_data(index)?;
-            let ntp = match (data.mode, data.address) {
-                (SourceMode::Client | SourceMode::Peer, Address::Ip(address)) => {
-                    Some(chronyd.ntp_data(address)?)
-                }
-                _ => None,
+        .filter_map(|index| {
+            let data = match chronyd.source_data(index) {
+                Ok(data) => data,
+                Err(e) => return Some(Err(e)),
             };
-            Ok(Source {
-                data,
-                stats: chronyd.source_stats(index)?,
-                selection: chronyd.select_data(index)?,
-                ntp,
-            })
+            if let Address::Unresolved(_) = data.address {
+                return None;
+            }
+            Some(read_source(chronyd, index, data))
         })
         .collect()
+}
+
+/// The rest of one source's reports, after `sources`.
+fn read_source(chronyd: &mut impl Chronyd, index: u32, data: SourceData) -> Result<Source, Error> {
+    let ntp = match (data.mode, data.address) {
+        (SourceMode::Client | SourceMode::Peer, Address::Ip(address)) => {
+            Some(chronyd.ntp_data(address)?)
+        }
+        _ => None,
+    };
+    Ok(Source {
+        data,
+        stats: chronyd.source_stats(index)?,
+        selection: chronyd.select_data(index)?,
+        ntp,
+    })
 }
 
 /// What an error reading chronyd means for the status row.
@@ -283,6 +298,9 @@ impl Collector {
             if seen.is_none() && !first_poll {
                 batch.event(at, EventKind::SourceAdded, Some(id), name.as_deref())?;
             }
+            if seen.is_none_or(|seen| report_changed(&seen.data, &source.data)) {
+                batch.source_report(at, id, &source.data)?;
+            }
             if seen.is_none_or(|seen| new_sample(&seen.data, &source.data)) {
                 batch.source_sample(at, id, &source.data)?;
             }
@@ -330,7 +348,7 @@ impl Collector {
         match address {
             Address::Ip(ip) => self.names.get(&ip).cloned(),
             Address::ReferenceId(id) => ReferenceId(id).text(),
-            Address::Unspecified => None,
+            Address::Unresolved(_) | Address::Unspecified => None,
         }
     }
 }
@@ -342,6 +360,20 @@ fn selection_changed(before: &SelectData, now: &SelectData) -> bool {
         last_sample_ago: now.last_sample_ago,
         ..*before
     } != *now
+}
+
+/// Whether `sources` says anything new of a source: anything but the
+/// age of its last sample growing.
+fn report_changed(before: &SourceData, now: &SourceData) -> bool {
+    let since_sample = match (before.since_sample, now.since_sample) {
+        (Some(_), Some(age)) => Some(age),
+        (then, _) => then,
+    };
+    new_sample(before, now)
+        || SourceData {
+            since_sample,
+            ..*before
+        } != *now
 }
 
 /// Whether `now` reports a sample `before` did not: the measurement
@@ -367,6 +399,7 @@ pub(crate) mod tests {
     use chronymon_control::report::Leap;
     use chronymon_control::report::SelectOptions;
     use chronymon_control::report::SourceState;
+    use chronymon_log::timestamp::to_stored;
     use chronymon_log::writer::Log;
     use rusqlite::Connection;
 
@@ -617,5 +650,146 @@ pub(crate) mod tests {
             .query_row("SELECT state FROM status", [], |row| row.get(0))
             .expect("a status");
         assert_eq!(state, "up");
+    }
+
+    /// chronyd answering with `sources`, by index.
+    struct Fake {
+        sources: Vec<Source>,
+    }
+
+    impl Fake {
+        fn source(&self, index: u32) -> Result<&Source, Error> {
+            let index = usize::try_from(index).expect("an index");
+            self.sources
+                .get(index)
+                .ok_or(Error::Status(Status::NoSuchSource))
+        }
+    }
+
+    impl Chronyd for Fake {
+        fn tracking(&mut self) -> Result<Tracking, Error> {
+            Ok(tracking(0, 0.0))
+        }
+        fn source_count(&mut self) -> Result<u32, Error> {
+            Ok(u32::try_from(self.sources.len()).expect("a count"))
+        }
+        fn source_data(&mut self, index: u32) -> Result<SourceData, Error> {
+            Ok(self.source(index)?.data)
+        }
+        fn source_stats(&mut self, index: u32) -> Result<SourceStats, Error> {
+            let source = self.source(index)?;
+            assert!(!matches!(source.data.address, Address::Unresolved(_)));
+            Ok(source.stats)
+        }
+        fn select_data(&mut self, index: u32) -> Result<SelectData, Error> {
+            let source = self.source(index)?;
+            assert!(!matches!(source.data.address, Address::Unresolved(_)));
+            Ok(source.selection)
+        }
+        fn ntp_data(&mut self, address: IpAddr) -> Result<NtpData, Error> {
+            self.sources
+                .iter()
+                .find(|s| s.data.address == Address::Ip(address))
+                .and_then(|s| s.ntp)
+                .ok_or(Error::Status(Status::NoSuchSource))
+        }
+        fn source_name(&mut self, address: IpAddr) -> Result<String, Error> {
+            assert_eq!(address, SERVER);
+            Ok("ntp.example".to_owned())
+        }
+    }
+
+    #[test]
+    fn leaves_out_unresolved_sources() {
+        let mut placeholder = source(0, 0);
+        placeholder.data.address = Address::Unresolved(1);
+        placeholder.data.since_sample = None;
+        placeholder.ntp = None;
+        let mut fake = Fake {
+            sources: vec![placeholder, source(5, 10)],
+        };
+        let snapshot = Collector::new(Seconds::new(1.0))
+            .read(&mut fake)
+            .expect("a snapshot");
+        let sources = snapshot.sources.expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].data.address, Address::Ip(SERVER));
+        assert_eq!(snapshot.names.len(), 1);
+    }
+
+    #[test]
+    fn reports_reach_lost_and_samples_gone() {
+        let mut db = Database::new("report");
+        let mut collector = Collector::new(Seconds::new(1.0));
+        let unreached = |age, reachability| {
+            let mut s = source(age, 10);
+            s.data.reachability = reachability;
+            s
+        };
+        let mut gone = unreached(0, 0);
+        gone.data.since_sample = None;
+        gone.data.state = SourceState::Nonselectable;
+        gone.data.stratum = 0;
+        for (second, source) in [
+            (0, source(5, 10)),
+            // Older, and nothing else: no report.
+            (1, source(6, 10)),
+            // A poll unanswered.
+            (2, unreached(7, 0o376)),
+            // chronyd restarted, with no sample yet.
+            (3, gone),
+        ] {
+            let mut fake = Fake {
+                sources: vec![source],
+            };
+            let read = collector.read(&mut fake);
+            db.log
+                .write(|batch| collector.record(batch, at(second), read, Process::Running(100)))
+                .expect("recorded");
+        }
+        assert_eq!(db.count("source_sample"), 1);
+        assert_eq!(db.count("source_report"), 1);
+        let report: (i64, String, i64, Option<i64>, Option<f64>) = db
+            .reader
+            .query_row(
+                "SELECT at, state, reachability, sample_time, latest_measurement
+                 FROM source_report",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("a report");
+        let stored = to_stored(at(3)).expect("in range");
+        assert_eq!(report, (stored, "nonselectable".to_owned(), 0, None, None));
+    }
+
+    #[test]
+    fn a_report_waits_for_a_change() {
+        let mut db = Database::new("report-age");
+        let mut collector = Collector::new(Seconds::new(1.0));
+        for (second, age) in [(0, 5), (1, 6)] {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(tracking(0, 0.0), vec![source(age, 10)]),
+                        Process::Running(100),
+                    )
+                })
+                .expect("recorded");
+        }
+        let written: i64 = db
+            .reader
+            .query_row("SELECT at FROM source_report", [], |row| row.get(0))
+            .expect("a report");
+        assert_eq!(written, to_stored(at(0)).expect("in range"));
     }
 }
