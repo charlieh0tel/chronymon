@@ -358,11 +358,12 @@ const TIME_SIZE = 50;
 // Under the bottom chart the time axis takes its place.
 const STACK_END = Math.round(TIME_SIZE / 3);
 
-// The height of chart `n` of a stack of `count`, each given `height`.
-// The bottom chart's time axis is drawn inside its height, so it is
-// given the axis's room on top: otherwise its plot is that much shorter
-// than the others'.
-const stackChartHeight = (height, n, count) => height + (n === count - 1 ? TIME_SIZE - STACK_END : 0);
+// The height of chart `n` of a stack of `count`, each given `height`,
+// its axes `scale` times their own size.  The bottom chart's time axis
+// is drawn inside its height, so it is given the axis's room on top:
+// otherwise its plot is that much shorter than the others'.
+const stackChartHeight = (height, n, count, scale = 1) =>
+  height + (n === count - 1 ? (TIME_SIZE - STACK_END) * scale : 0);
 
 // The options every chart in a stack of time charts shares:
 //   width, height  its size, as `stackChartHeight` gives the height
@@ -375,16 +376,26 @@ const stackChartHeight = (height, n, count) => height + (n === count - 1 ? TIME_
 //   yStroke        the y axis labels' color
 //   legend, hooks  uPlot's, the hooks added to the drag that sets
 //                  the range
+//   font, scale    optional: the axes' font, as uPlot takes it, and how
+//                  many times their own size its room is
 function stackOptions(stack) {
+  const scale = stack.scale ?? 1;
+  const font = stack.font ? { font: stack.font } : {};
   return {
     width: stack.width,
     height: stack.height,
-    padding: [STACK_END, STACK_RIGHT, stack.last ? 0 : STACK_END, null],
+    padding: [STACK_END * scale, STACK_RIGHT * scale, stack.last ? 0 : STACK_END * scale, null],
     title: stack.title,
     series: [{}, ...stack.series],
     axes: [
-      { ...AXIS, size: TIME_SIZE, show: stack.last },
-      { ...AXIS, ...(stack.yStroke ? { stroke: stack.yStroke } : {}), ...stack.fitted.axis, size: stack.ySize },
+      { ...AXIS, ...font, size: TIME_SIZE * scale, show: stack.last },
+      {
+        ...AXIS,
+        ...font,
+        ...(stack.yStroke ? { stroke: stack.yStroke } : {}),
+        ...stack.fitted.axis,
+        size: stack.ySize,
+      },
     ],
     scales: {
       x: { time: true },
@@ -638,10 +649,12 @@ function heldAxis(held) {
 //   height(count)  each chart's height, given how many there are
 //   sync           the cursor's sync key
 //   hooks          uPlot's, as `stackOptions` takes them
+//   font, scale    optional, as `stackOptions` takes them
 function stackCharts(container, read, style) {
+  const scale = style.scale ?? 1;
   const height = style.height(read.drawn.length);
-  const fits = stackFits(read, height);
-  const ySize = stackWidth(fits);
+  const fits = stackFits(read, height / scale);
+  const ySize = stackWidth(fits) * scale;
   const charts = read.drawn.map((drawing, n) => {
     const several = drawing.lines.length > 1;
     const host = document.createElement("div");
@@ -649,7 +662,7 @@ function stackCharts(container, read, style) {
     const held = { fit: fits[n], ySize };
     const opts = stackOptions({
       width: container.clientWidth || 800,
-      height: stackChartHeight(height, n, read.drawn.length),
+      height: stackChartHeight(height, n, read.drawn.length, scale),
       title: drawing.title ?? label(drawing.column),
       series: [
         ...(drawing.envelope
@@ -681,6 +694,8 @@ function stackCharts(container, read, style) {
       legend: { show: false },
       sync: style.sync,
       hooks: style.hooks,
+      font: style.font,
+      scale,
     });
     const chart = ranged(new uPlot(opts, stackData(read, drawing), host));
     chart.chronymonShape = stackShape(drawing, fits[n]);
@@ -716,9 +731,10 @@ const stackData = (read, drawing) => [drawing.x ?? read.x, ...drawingArrays(draw
 // on a timer neither flashes nor moves, and drawn afresh when it does
 // not.  Answers the charts, the same ones or new.
 function restack(container, charts, read, style) {
+  const scale = style.scale ?? 1;
   const height = style.height(read.drawn.length);
-  const fits = stackFits(read, height);
-  const ySize = stackWidth(fits);
+  const fits = stackFits(read, height / scale);
+  const ySize = stackWidth(fits) * scale;
   const kept = charts.length === read.drawn.length &&
     charts.every((c, n) => c.chronymonShape === stackShape(read.drawn[n], fits[n]));
   if (kept) {
@@ -730,7 +746,7 @@ function restack(container, charts, read, style) {
       c.setData(stackData(read, read.drawn[n]));
       const size = {
         width: container.clientWidth || c.width,
-        height: stackChartHeight(height, n, charts.length),
+        height: stackChartHeight(height, n, charts.length, scale),
       };
       if (size.width !== c.width || size.height !== c.height) c.setSize(size);
       // A new width alone changes no scale, which is what uPlot measures
@@ -843,9 +859,11 @@ function markTip(chart, text) {
 
 // A stack of time charts with event marks and one shared readout,
 // which a page keeps in `view` across reads:
-//   container, readout   its elements
+//   container, readout   its elements; a stack nobody points at has
+//                        no readout
 //   sync                 the cursor's sync key
 //   charts, marks        the charts drawn and the events marked
+//   height, font, scale  optional, as `stackCharts` takes them
 // `read` is `{ x, drawn }`; `why` what to say when there is nothing.
 function drawStack(view, read, why) {
   read.drawn = read.drawn.filter(drawsAnything);
@@ -855,6 +873,7 @@ function drawStack(view, read, why) {
   }
   update($(view.note), "textContent", "");
   const readout = () => {
+    if (!view.readout) return;
     const mark = view.charts.map((c) => markAt(c, view.marks)).find((m) => m != null);
     showHtml($(view.readout), readoutHtml(view.charts, mark));
     const under = view.charts.find((c) => c.over.matches(":hover"));
@@ -867,6 +886,8 @@ function drawStack(view, read, why) {
       setCursor: [readout],
       draw: [(u) => drawMarks(u, view.marks)],
     },
+    font: view.font,
+    scale: view.scale,
   });
   readout();
 }
@@ -876,7 +897,7 @@ function clearStack(view, why) {
   for (const c of view.charts) c.destroy();
   view.charts = [];
   $(view.container).innerHTML = "";
-  showHtml($(view.readout), "");
+  if (view.readout) showHtml($(view.readout), "");
   markTip(null, null);
   update($(view.note), "textContent", why);
 }

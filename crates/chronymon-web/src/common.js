@@ -177,6 +177,21 @@ const LEAP_NAMES = {
   unsynchronized: "not synchronized",
 };
 
+// A source's state as chronyc's `sources` marks it, and the class
+// that colors it.
+const SOURCE_STATES = {
+  selected: ["*", "state-selected"],
+  combined: ["+", ""],
+  not_combined: ["-", ""],
+  nonselectable: ["?", "state-warn"],
+  falseticker: ["x", "state-bad"],
+  jittery: ["~", "state-warn"],
+};
+
+// A source as `/api/sources` gives it, by its name, or its address
+// when it has none of its own.
+const sourceName = (s) => (s.name && s.name !== s.address ? s.name : s.address);
+
 // ---------------------------------------------------------------- strip
 
 // Whether the last poll found the daemon writing and chronyd up.  Null
