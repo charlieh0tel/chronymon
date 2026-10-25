@@ -1,10 +1,13 @@
 #!/bin/bash
-# The browser tests for chronymon-web's pages: build the server and the
-# synthetic data, serve a synthetic database and a path with none, and
-# run crates/chronymon-web/tests/browser against them.  With Node and
-# `make web-deps`, natively; without, in Playwright's container.
+# Run COMMAND in crates/chronymon-web/tests/browser against chronymon-web
+# of this tree: build the server and the synthetic data, serve a
+# synthetic database and a path with none, then run it.  With Node and
+# `make web-deps`, natively; without, in Playwright's container, with
+# the repository at the same path.
 #
-# Usage: tools/test-web [PLAYWRIGHT ARGS...]
+# Usage: tools/with-web COMMAND [ARGS...]
+#   tools/with-web npx playwright test
+#   tools/with-web node screenshots.mjs
 set -euo pipefail
 
 # The image's Playwright must match package.json's.
@@ -45,11 +48,11 @@ serve "$FULL_PORT" "$work/full.sqlite"
 serve "$MISSING_PORT" "$work/missing.sqlite"
 
 if command -v npx >/dev/null && [ -d "$tests/node_modules" ]; then
-    (cd "$tests" && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright test "$@")
+    (cd "$tests" && PLAYWRIGHT_BROWSERS_PATH=0 "$@")
 else
     # The host's network, to reach the servers; the caller's uid, so
-    # node_modules and the results are the caller's.
+    # node_modules and what is written are the caller's.
     docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
-        -v "$tests:/tests" -w /tests "$PLAYWRIGHT_IMAGE" \
-        sh -c "npm ci --no-fund --no-audit --loglevel=error && npx playwright test $*"
+        -v "$repo:$repo" -w "$tests" "$PLAYWRIGHT_IMAGE" \
+        sh -c 'npm ci --no-fund --no-audit --loglevel=error && exec "$@"' sh "$@"
 fi
