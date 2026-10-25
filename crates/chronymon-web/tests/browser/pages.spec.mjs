@@ -66,6 +66,38 @@ test("API: a request too large is refused, saying why", async ({ page }) => {
   expect((await points.json()).error).toMatch(/^points=5001 is more than 5000$/);
 });
 
+// Each chart's time axis, `[min, max]`, on the page now.
+const timeAxes = (page) => page.evaluate(() => stack.charts.map((c) => [c.scales.x.min, c.scales.x.max]));
+
+// The NMEA refclock's ID: its samples stop hours before now.
+const nmeaId = async (page) =>
+  (await (await page.request.get("/api/sources")).json()).find((s) => s.name === "NMEA").id;
+
+test("Every stack: its charts share one time axis, the range's, to its end", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const nmea = await nmeaId(page);
+  for (const path of [
+    "/?last=86400",
+    "/sources?last=86400",
+    `/source?source=${nmea}&last=86400`,
+    `/source?source=${nmea}&last=all`,
+    "/refclocks?last=86400",
+    "/temperature?last=86400",
+    "/kiosk?last=86400",
+  ]) {
+    await page.goto(path);
+    await expect(charts(page).first()).toBeVisible();
+    await page.waitForFunction(() => !running);
+    const axes = await timeAxes(page);
+    expect(axes.length, path).toBeGreaterThan(1);
+    for (const axis of axes) expect(axis, path).toEqual(axes[0]);
+    // Up to now, though NMEA's samples, and so the last of its rows in
+    // every table, stopped hours before.
+    expect(axes[0][1], path).toBeGreaterThan(Date.now() / 1000 - 120);
+    if (path.endsWith("86400")) expect(axes[0][1] - axes[0][0], path).toBeCloseTo(86400, -1);
+  }
+});
+
 test("Colophon: links to the repository and its issues", async ({ page }) => {
   await page.goto("/");
   const colophon = page.locator("#colophon");

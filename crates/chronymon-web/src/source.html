@@ -140,18 +140,20 @@ async function load(signal) {
   stack.marks = events.marks.filter((m, n) =>
     events.events[n].source_id == null || String(events.events[n].source_id) === sourceId);
   const ntp = s.mode !== "refclock";
-  const [measured, stats, selection] = await Promise.all([
-    readHistory(signal, ntp ? "ntp_sample" : "source_sample", ntp ? NTP : SAMPLE, sourceId),
-    readHistory(signal, "source_stats", STATS, sourceId),
-    readHistory(signal, "selection", SELECTION, sourceId),
-  ]);
+  const reads = [
+    [ntp ? "ntp_sample" : "source_sample", ntp ? NTP : SAMPLE],
+    ["source_stats", STATS],
+    ["selection", SELECTION],
+  ].map(([table, columns]) => (bounds) => readHistory(signal, table, columns, sourceId, null, bounds));
+  const [measured, stats, selection] = await readTogether(reads);
   const drawn = [
     ...(ntp && measured.at.length ? [offsetBounds(measured)] : []),
     ...own(ntp ? "ntp_sample" : "source_sample", measured, ntp ? ["offset"] : []),
     ...own("source_stats", stats),
     ...own("selection", selection),
   ];
-  drawStack(stack, { x: [], drawn }, "no samples from this source in this range");
+  drawStack(stack, { x: [], span: spanOf([measured, stats, selection]), drawn },
+    "no samples from this source in this range");
 }
 
 rangeControl($("ranges"), soon);

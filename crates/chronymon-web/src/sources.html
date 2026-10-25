@@ -117,22 +117,14 @@ async function load(signal) {
     return;
   }
   const names = new Map(sources.map((s) => [s.id, s.name || s.address]));
-  let bounds = rangeBounds();
-  const { from, to } = bounds;
+  const { from, to } = rangeBounds();
   const events = await eventsFor(signal, from, to);
   stack.marks = events.marks;
-  let got = await Promise.all(OVERLAID.map((o) => ask(overlayQuery(o, bounds), signal, HISTORY_TIMEOUT)));
-  if (range.last === "all") {
-    const first = Math.min(...got.map((g) => g.first ?? Infinity));
-    const last = Math.max(...got.map((g) => g.last ?? -Infinity));
-    if (last > first) {
-      bounds = { from: first, to: last, seconds: last - first };
-      got = await Promise.all(OVERLAID.map((o) => ask(overlayQuery(o, bounds), signal, HISTORY_TIMEOUT)));
-    }
-  }
+  const got = await readTogether(OVERLAID.map((o) => (bounds) =>
+    ask(overlayQuery(o, bounds), signal, HISTORY_TIMEOUT)));
   const drawn = OVERLAID.map(([table, column], n) =>
     overlayChart(table, column, got[n], (id) => names.get(id) ?? `source ${id}`));
-  drawStack(stack, { x: [], drawn }, "no samples in this range");
+  drawStack(stack, { x: [], span: spanOf(got), drawn }, "no samples in this range");
 }
 
 rangeControl($("ranges"), soon);
