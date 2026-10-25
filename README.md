@@ -44,7 +44,6 @@ environment.
     make screenshots  # docs/images
 
 The browser targets use Node after `make web-deps`, else Docker.
-Design: `PLAN.md`.  Releases: `RELEASING.md`.
 
 ## License
 
