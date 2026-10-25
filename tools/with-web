@@ -12,8 +12,6 @@ set -euo pipefail
 
 # The image's Playwright must match package.json's.
 PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.63.0-noble
-FULL_PORT=9983
-MISSING_PORT=9984
 # Hours of synthetic readings, longer than the 24 h windows tested.
 HOURS=48
 
@@ -23,6 +21,15 @@ work="$repo/target/web-test"
 cargo=${CARGO:-cargo}
 
 cd "$repo"
+# Ports the kernel has free, so runs in several worktrees at once do
+# not serve each other's databases.
+free_port() {
+    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+FULL_PORT=$(free_port)
+MISSING_PORT=$(free_port)
+export CHRONYMON_WEB_FULL="http://127.0.0.1:$FULL_PORT"
+export CHRONYMON_WEB_MISSING="http://127.0.0.1:$MISSING_PORT"
 "$cargo" build -q -p chronymon-web --bins --examples
 mkdir -p "$work"
 rm -f "$work"/full.sqlite*
@@ -47,12 +54,15 @@ serve() {
 serve "$FULL_PORT" "$work/full.sqlite"
 serve "$MISSING_PORT" "$work/missing.sqlite"
 
-if command -v npx >/dev/null && [ -d "$tests/node_modules" ]; then
+# Natively only with `make web-deps`'s Chromium: a container run leaves
+# node_modules without it.
+if command -v npx >/dev/null && compgen -G "$tests/node_modules/playwright-core/.local-browsers/chromium-*" >/dev/null; then
     (cd "$tests" && PLAYWRIGHT_BROWSERS_PATH=0 "$@")
 else
     # The host's network, to reach the servers; the caller's uid, so
     # node_modules and what is written are the caller's.
     docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+        -e CHRONYMON_WEB_FULL -e CHRONYMON_WEB_MISSING \
         -v "$repo:$repo" -w "$tests" "$PLAYWRIGHT_IMAGE" \
         sh -c 'npm ci --no-fund --no-audit --loglevel=error && exec "$@"' sh "$@"
 fi
