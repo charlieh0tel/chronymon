@@ -13,7 +13,7 @@ use chronymon_control::report::ReferenceId;
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 5;
+pub const VERSION: i64 = 6;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
@@ -132,6 +132,29 @@ impl fmt::Display for RefclockLock {
         )
     }
 }
+
+/// The first schema keying a log file by its inode alone, not its
+/// device too, whose number can change across boots (LVM, btrfs): the
+/// bytes before where reading stopped already tell a reused inode.  An
+/// older database's `log_file` is rebuilt on open, of each inode the
+/// row last written.
+pub const INODE_KEY: i64 = 6;
+
+/// An older schema's `log_file` renamed out of [`TABLES`]' way.
+pub(crate) const LOG_FILE_ASIDE: &str = "
+    ALTER TABLE log_file RENAME TO old_log_file;
+";
+
+/// Of each inode, its row last written copied into [`TABLES`]' new
+/// `log_file`, the old dropped.  Another device's of the same inode is
+/// most likely the same file before a boot renumbered it; if not, its
+/// fingerprint differs and it is read again from its start.
+pub(crate) const LOG_FILE_BACK: &str = "
+    INSERT INTO log_file (inode, path, length, read, fingerprint, rejected)
+        SELECT inode, path, length, read, fingerprint, rejected FROM old_log_file
+        WHERE rowid IN (SELECT MAX(rowid) FROM old_log_file GROUP BY inode);
+    DROP TABLE old_log_file;
+";
 
 /// Facts about the database itself, the schema version first.
 pub(crate) const META: &str = "CREATE TABLE IF NOT EXISTS meta (
@@ -447,12 +470,12 @@ pub(crate) const TABLES: &str = r"
     CREATE UNIQUE INDEX IF NOT EXISTS tempcomp_sample_line ON tempcomp_sample (at,
         temperature, compensation);
 
-    -- How far each log file has been read, by device and inode, which
-    -- survive logrotate's renames: a file grown since is read from
-    -- here, one of the same length is not read again.
+    -- How far each log file has been read, by inode, which survives
+    -- logrotate's renames: a file grown since is read from here, one of
+    -- the same length is not read again.  Not by device too, whose
+    -- number can change across boots (LVM, btrfs).
     CREATE TABLE IF NOT EXISTS log_file (
-        device      INTEGER NOT NULL,
-        inode       INTEGER NOT NULL,
+        inode       INTEGER PRIMARY KEY,
         path        TEXT    NOT NULL,
         length      INTEGER NOT NULL,
         read        INTEGER NOT NULL,
@@ -462,7 +485,6 @@ pub(crate) const TABLES: &str = r"
         fingerprint BLOB    NOT NULL,
         -- 1 when its header was refused: none of this file is read,
         -- however it grows.
-        rejected    INTEGER NOT NULL,
-        PRIMARY KEY (device, inode)
+        rejected    INTEGER NOT NULL
     ) STRICT;
 ";

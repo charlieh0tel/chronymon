@@ -61,8 +61,9 @@ beside it, as chronyc does.  No access, no start.
    write them alike.  Their column names cannot be split apart, so a
    log is known by its header matched whole, and an unknown header is
    refused with an `unsupported` event, not read by guesswork, and
-   stays refused however the file grows.  A file is followed by device
-   and inode, and is the file read only while the bytes before where
+   stays refused however the file grows.  A file is followed by inode,
+   not device, whose number can change across boots (LVM, btrfs), and
+   is the file read only while the bytes before where
    its reading stopped are unchanged: one truncated and rewritten, or
    a new one on a reused inode, is read from its start.  A line is
    kept once, keyed whole: a refclock's raw and filtered samples can

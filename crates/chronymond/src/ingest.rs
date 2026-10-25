@@ -2,8 +2,8 @@
 //! chronymon knows in chronyd's log directory, rotated and compressed
 //! ones included, each from where it was last read.
 //!
-//! A file is followed by device and inode, which logrotate's renames
-//! keep: the `tracking.log` read yesterday is today's `tracking.log.1`,
+//! A file is followed by inode, which logrotate's renames keep, not
+//! device, whose number can change across boots (LVM, btrfs): the `tracking.log` read yesterday is today's `tracking.log.1`,
 //! already read, and only what was appended since is new.  It is known
 //! for the same file by the bytes before where its reading stopped: a
 //! file truncated and written again, or a new one on a reused inode, is
@@ -141,7 +141,6 @@ fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> 
     };
     let metadata = file.metadata()?;
     let id = FileId {
-        device: metadata.dev(),
         inode: metadata.ino(),
     };
     let length = metadata.len();
