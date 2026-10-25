@@ -389,6 +389,8 @@ test.describe("Kiosk: the clock", () => {
     const stopped = await time.textContent();
     await page.waitForTimeout(1500);
     await expect(time).toHaveText(stopped);
+    // The answers still held back are the test's, not the page's.
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 });
 
