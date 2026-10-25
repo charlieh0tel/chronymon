@@ -359,7 +359,8 @@ pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
 /// `/api/history?table=&columns=a,b&from=&to=&points=&source=`: one
 /// table's columns, bucketed on one grid, each with the indexes its
 /// line breaks at; with `fill=&fill_columns=`, a log's where the daemon
-/// was not recording.
+/// was not recording.  `unsynchronized`: `[from, to]` pairs, for
+/// `tracking` when chronyd was, else none.
 pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
     let table = table(query)?;
     let columns = columns(query, "columns", table)?;
@@ -399,7 +400,17 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
                 })
             })
             .collect();
-        Ok(with(json!({ "at": series.at, "plots": plots }), bounds))
+        // Where the clock's lines break for chronyd unsynchronized, for
+        // the charts to mark.
+        let unsynchronized = if table == Table::Tracking {
+            reader.unsynchronized(window)?
+        } else {
+            Vec::new()
+        };
+        Ok(with(
+            json!({ "at": series.at, "plots": plots, "unsynchronized": unsynchronized }),
+            bounds,
+        ))
     })
 }
 

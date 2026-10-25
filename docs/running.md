@@ -119,3 +119,6 @@ changes, sources added and removed):
 | `host_crash` | the last boot ended without a shutdown: power loss, hard reset, or a kernel crash (said so when pstore holds a record) |
 | `daemon_start`, `daemon_stop`, `daemon_crash` | chronymond's own |
 | `unsupported` | a reply or log layout this version cannot read |
+
+Between a leap change to unsynchronized and one from it, the clock's
+charts on Live and the kiosk break their lines and shade the span.
