@@ -1,0 +1,39 @@
+name: Bug report
+description: chronymond or the web view misbehaves
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `chronymond --version` or `chronymon-web --version`, or a commit.
+    validations:
+      required: true
+  - type: input
+    id: chrony
+    attributes:
+      label: chrony
+      description: The output of `chronyd --version`, and the refclocks and log directives in chrony.conf if they matter.
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and how chronymon was installed (Debian package, built from source).
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: The web view's address, with its query (e.g. `/?last=21600`), and the browser.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      description: Commands run and their output, or `journalctl -u chronymond -u chronymon-web`.
+      render: text
