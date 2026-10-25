@@ -241,8 +241,8 @@ pub(crate) const TABLES: &str = r"
     -- `tracking`, one row per clock update: its last offset or their
     -- RMS changing, not its reference time alone, which chronyd moves
     -- on every slew (`handle_slew`, chrony 4.8 `reference.c:175`); and
-    -- the daemon's first read, unless of the last row's reference time,
-    -- an update already recorded.  An older database's rows are per
+    -- the daemon's first read, unless of the last row's reference time
+    -- or update (last offset, RMS and reference), already recorded.  An older database's rows are per
     -- change of the reference time, losing sync included.
     CREATE TABLE IF NOT EXISTS tracking (
         at                   INTEGER NOT NULL,

@@ -1841,6 +1841,8 @@ mod tests {
         Timestamp::new(START + second, 0).expect("in range")
     }
 
+    /// chronyd's tracking after an update at `second`, its last offset
+    /// its own, as every update's is.
     fn tracking(second: i64, frequency: f64) -> chronymon_control::report::Tracking {
         chronymon_control::report::Tracking {
             reference_id: ReferenceId(1),
@@ -1849,7 +1851,7 @@ mod tests {
             leap: Leap::Normal,
             reference_time: at(second),
             current_correction: Seconds::new(0.0),
-            last_offset: Seconds::new(1e-6),
+            last_offset: Seconds::new(1e-6 + second as f64 * 1e-12),
             rms_offset: Seconds::new(1e-6),
             frequency: Ppm::new(frequency),
             residual_frequency: Ppm::new(0.0),
