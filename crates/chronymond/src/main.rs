@@ -95,16 +95,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Connect, or say why not.  Refused permission is fatal: no retry
-/// fixes the user the daemon runs as.
-fn connect(cli: &Cli) -> Result<Option<Client>, ControlError> {
-    match Client::connect(&cli.socket) {
-        Ok(client) => Ok(Some(client)),
-        Err(e) if refused(&e) => Err(e),
-        Err(_) => Ok(None),
-    }
-}
-
 fn refused(error: &ControlError) -> bool {
     match error {
         ControlError::Connect { source, .. } | ControlError::Socket { source, .. } => {
@@ -132,11 +122,16 @@ fn bad_lines(count: usize) -> String {
 fn run(cli: &Cli) -> Result<()> {
     let interval = seconds(cli.interval, "--interval")?;
     let log_interval = seconds(cli.log_interval, "--log-interval")?;
-    let mut client = connect(cli).map_err(|e| {
-        anyhow::anyhow!(
+    // Refused permission is fatal: no retry fixes the user the daemon
+    // runs as.  Anything else -- chronyd not running yet -- is recorded
+    // as chronyd down, and retried.
+    let mut client = match Client::connect(&cli.socket) {
+        Ok(client) => Some(client),
+        Err(e) if refused(&e) => anyhow::bail!(
             "{e}: the daemon must run as chronyd's user (_chrony on Debian and Ubuntu) or root"
-        )
-    })?;
+        ),
+        Err(_) => None,
+    };
     let mut log =
         Log::open(&cli.database).with_context(|| format!("opening {}", cli.database.display()))?;
     let step_threshold = config::step_threshold(&cli.chrony_config);
@@ -181,20 +176,22 @@ fn run(cli: &Cli) -> Result<()> {
     let mut state = None;
     let mut next = Instant::now();
     loop {
-        if client.is_none() {
-            client = connect(cli).unwrap_or(None);
-        }
         let at = Timestamp::now();
-        let read = match client.as_mut() {
-            Some(client) => collector.read(client),
-            None => Err(ControlError::Timeout {
-                attempts: 0,
-                timeout: Duration::ZERO,
-            }),
+        // A fresh socket after any failure: chronyd may have restarted.
+        let read = match client
+            .take()
+            .map_or_else(|| Client::connect(&cli.socket), Ok)
+        {
+            Ok(mut connected) => {
+                let read = collector.read(&mut connected);
+                if read.is_ok() {
+                    client = Some(connected);
+                }
+                read
+            }
+            Err(e) => Err(e),
         };
         if let Err(e) = &read {
-            // A fresh socket next time: chronyd may have restarted.
-            client = None;
             let now = collect::state_of(e);
             if state != Some(now) {
                 eprintln!("chronymond: chronyd {}: {e}", now.name());

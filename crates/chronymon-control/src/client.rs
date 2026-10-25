@@ -67,6 +67,15 @@ pub struct Client {
 impl Client {
     /// Connect to chronyd's socket at `server`.
     pub fn connect(server: &Path) -> Result<Self, Error> {
+        // chronyd's socket first, as chronyc does: when chronyd is not
+        // running or this user may not use it, that is what to say,
+        // and there is nothing of the client's own to clean up.
+        UnixDatagram::unbound()
+            .and_then(|probe| probe.connect(server))
+            .map_err(|source| Error::Connect {
+                path: server.to_path_buf(),
+                source,
+            })?;
         let parent = server.parent().unwrap_or(Path::new("/"));
         let directory = parent.join(format!(
             "chronymon.{}.{}",
