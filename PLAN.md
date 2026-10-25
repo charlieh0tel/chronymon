@@ -179,16 +179,14 @@ The host's:
   `sample_time`, which it is charted by, and an extent as two queries,
   since SQLite scans for `MIN` and `MAX` together.
 
-Rows a day, for ten NTP sources polled every 64 s, 1,350 samples
-each: a `source_sample`, `source_stats` and `ntp_sample` row per
-sample, about 40,000; `tracking`, up to one per selection, which
-chronyd runs on every source's sample, about 13,500; `selection`, up
-to a row per source per selection, since each sets every source's
-score and limits, up to 135,000.  Some 190,000 rows, a few hundred
-bytes each with their indexes: about 10 GB a year at worst, so raw
-retention is affordable.  A refclock polled every 16 s is four times
-an NTP source.  (`sourcestats` compared whole wrote a row every poll,
-864,000 a day for ten sources.)
+Rows a day, measured on one host (chrony 4.6.1, eight sources, a PPS
+at poll 2), under a day of chronymon 0.2.0: `selection` 70,922;
+`source_stats` 388,729, before it was written only when its
+regression changed; `source_sample` 14,465; `tracking` 11,797,
+before its history was only updates; `ntp_sample` 1,965.  The
+database, the logs' backfill included, 138 MB.  Raw retention is
+affordable.  Every `selection` row is kept, not thinned, decided
+after measuring: about 7 MB a day there.
 
 ## Web
 
@@ -293,7 +291,7 @@ Journal, Distribution, Kiosk.
 ## Decisions
 
 - One host per daemon and view.  More than one is a schema change.
-- Raw rows forever.  No alerting.
+- Raw rows forever, every `selection` row included.  No alerting.
 - Separate daemon and web binaries; web served directly on
   127.0.0.1:8323, read-only, no authentication.
 - Events only in the journal; none inferred from the logs (a NUL run
