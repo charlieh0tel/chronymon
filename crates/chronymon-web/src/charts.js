@@ -541,6 +541,8 @@ function filledCharts(table, got, fills) {
 //             text is for
 //   envelope  { min, max }, drawn behind the line, or null
 //   lines     [{ column, values, color, name }] on one y axis
+// and, given by a page, optionally
+//   heading   its title as HTML, in place of one naming its lines
 function chartsOf(table, plots) {
   return plots.map((plot) => {
     const k = key(table, plot.column);
@@ -629,6 +631,7 @@ const stackFits = (read, height) =>
 const stackShape = (drawing, fitted) =>
   JSON.stringify([
     drawing.lines.map((l) => [l.column, l.name, l.color]),
+    drawing.heading ?? null,
     Boolean(drawing.envelope),
     Boolean(fitted.range),
     Boolean(fitted.axis.splits),
@@ -721,9 +724,9 @@ function stackCharts(container, read, style) {
     hint(chart, ...drawing.lines.map((l) => l.column));
     // uPlot's title is plain text, and with the legend off a chart of
     // several lines otherwise names them without saying which is which.
-    if (several) {
+    if (several || drawing.heading) {
       const heading = chart.root.querySelector(".u-title");
-      if (heading) heading.innerHTML = groupTitle(drawing);
+      if (heading) heading.innerHTML = drawing.heading ?? groupTitle(drawing);
     }
     return chart;
   });

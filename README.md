@@ -11,7 +11,7 @@ them in a browser.
 | **Temperature** | **Distribution** |
 | ![Temperature: tempcomp's temperature and compensation, and the frequency](docs/images/web-temperature.png) | ![Distribution: a histogram and percentiles of the offset](docs/images/web-distribution.png) |
 
-![Kiosk: the clock's state in large type, sources, events and a day of charts](docs/images/web-kiosk.png)
+![Kiosk: the clock's state and the time in large type, sources, events and a day of charts](docs/images/web-kiosk.png)
 
 Synthetic data; `make screenshots` retakes them.
 

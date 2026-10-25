@@ -1,12 +1,13 @@
 //! Fill a database with made-up but plausible readings, through the
 //! daemon's own writer, so the web view can be looked at without a
-//! chronyd: a clock disciplined by a PPS refclock and two NTP servers,
-//! its frequency following the day's temperature, with an outage, a
-//! restart and a step along the way, a third server removed, and an
-//! NMEA refclock whose samples stop; and chronyd's logs as the daemon
-//! reads them: refclock and tempcomp samples throughout, and tracking
-//! for some hours before the daemon started, for the charts to fill
-//! from.  Later, chronyd restarted with tracking.log on and a 64 s
+//! chronyd: a clock disciplined by a PPS refclock and six NTP servers,
+//! one with a long name, as many sources as a kiosk must hold, its
+//! frequency following the day's temperature, with an outage, a
+//! restart and a step along the way, a seventh server removed, and a
+//! `noselect` NMEA refclock whose samples stop; and chronyd's logs as
+//! the daemon reads them: refclock and tempcomp samples throughout,
+//! and tracking for some hours before the daemon started, for the
+//! charts to fill from.  Later, chronyd restarted with tracking.log on and a 64 s
 //! update interval, a row only every few buckets, the daemon stopped
 //! for a while and then recording beside the log: the log fills the
 //! charts only while the daemon was stopped.
@@ -113,6 +114,8 @@ struct Feed {
     removed: Option<f64>,
     /// When, likewise, its samples stop, and chronyd has none.
     silent: Option<f64>,
+    /// Whether it has the `noselect` option.
+    noselect: bool,
 }
 
 impl Feed {
@@ -125,7 +128,7 @@ impl Feed {
     }
 }
 
-fn feeds() -> [Feed; 5] {
+fn feeds() -> [Feed; 9] {
     [
         Feed {
             address: Address::ReferenceId(u32::from_be_bytes(*b"PPS\0")),
@@ -137,6 +140,7 @@ fn feeds() -> [Feed; 5] {
             delay: 0.0,
             removed: None,
             silent: None,
+            noselect: false,
         },
         Feed {
             address: Address::ReferenceId(u32::from_be_bytes(*b"NMEA")),
@@ -148,6 +152,7 @@ fn feeds() -> [Feed; 5] {
             delay: 0.0,
             removed: None,
             silent: Some(SILENT_AT),
+            noselect: true,
         },
         Feed {
             address: Address::Ip(IpAddr::from([192, 0, 2, 10])),
@@ -159,6 +164,7 @@ fn feeds() -> [Feed; 5] {
             delay: 0.012,
             removed: None,
             silent: None,
+            noselect: false,
         },
         Feed {
             address: Address::Ip(IpAddr::from([198, 51, 100, 20])),
@@ -170,6 +176,55 @@ fn feeds() -> [Feed; 5] {
             delay: 0.031,
             removed: None,
             silent: None,
+            noselect: false,
+        },
+        Feed {
+            address: Address::Ip(IpAddr::from([192, 0, 2, 11])),
+            reference_id: u32::from_be_bytes([192, 0, 2, 11]),
+            mode: SourceMode::Client,
+            name: "ntp4.example.net",
+            bias: 2e-5,
+            jitter: 4e-5,
+            delay: 0.018,
+            removed: None,
+            silent: None,
+            noselect: false,
+        },
+        Feed {
+            address: Address::Ip(IpAddr::from([198, 51, 100, 21])),
+            reference_id: u32::from_be_bytes([198, 51, 100, 21]),
+            mode: SourceMode::Client,
+            name: "time-a.long-hostname.example.org",
+            bias: -6e-5,
+            jitter: 1e-4,
+            delay: 0.042,
+            removed: None,
+            silent: None,
+            noselect: false,
+        },
+        Feed {
+            address: Address::Ip(IpAddr::from([203, 0, 113, 31])),
+            reference_id: u32::from_be_bytes([203, 0, 113, 31]),
+            mode: SourceMode::Client,
+            name: "b.ntp.example.com",
+            bias: 9e-5,
+            jitter: 6e-5,
+            delay: 0.025,
+            removed: None,
+            silent: None,
+            noselect: false,
+        },
+        Feed {
+            address: Address::Ip(IpAddr::from([192, 0, 2, 12])),
+            reference_id: u32::from_be_bytes([192, 0, 2, 12]),
+            mode: SourceMode::Client,
+            name: "clock.example.edu",
+            bias: -3e-5,
+            jitter: 5e-5,
+            delay: 0.021,
+            removed: None,
+            silent: None,
+            noselect: false,
         },
         Feed {
             address: Address::Ip(IpAddr::from([203, 0, 113, 30])),
@@ -181,6 +236,7 @@ fn feeds() -> [Feed; 5] {
             delay: 0.054,
             removed: Some(REMOVED_AT),
             silent: None,
+            noselect: false,
         },
     ]
 }
@@ -400,8 +456,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     address: f.address,
                     poll: if f.mode == SourceMode::Refclock { 4 } else { 6 },
                     stratum: if f.mode == SourceMode::Refclock { 0 } else { 1 },
+                    // chronyd never selects a `noselect` source, and
+                    // reports it as not selectable (`sources.c`, 4.9).
                     state: if n == 0 {
                         SourceState::Selected
+                    } else if f.noselect {
+                        SourceState::Nonselectable
                     } else {
                         SourceState::NotCombined
                     },
@@ -436,14 +496,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &SelectData {
                         reference_id: ReferenceId(f.reference_id),
                         address: f.address,
-                        state: if n == 0 { '*' } else { '-' },
+                        state: if n == 0 {
+                            '*'
+                        } else if f.noselect {
+                            'N'
+                        } else {
+                            '-'
+                        },
                         authenticated: false,
                         leap: Leap::Normal,
                         configured_options: SelectOptions {
+                            noselect: f.noselect,
                             prefer: n == 0,
                             ..SelectOptions::default()
                         },
                         effective_options: SelectOptions {
+                            noselect: f.noselect,
                             prefer: n == 0,
                             ..SelectOptions::default()
                         },
