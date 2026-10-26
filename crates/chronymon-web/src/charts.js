@@ -327,7 +327,12 @@ function asinhAxis(values, height) {
   const every = Math.ceil((above.length + below.length) / Math.max(1, mostTicks(height) - 1));
   const thin = (side) =>
     side.filter((_, i) => (side.length - 1 - i) % every === 0 && (every === 1 || i > 0 || side.length === 1));
-  const ticks = [...thin(below).map((t) => -t).reverse(), 0, ...thin(above)];
+  const ends = [below.length ? -below.at(-1) : 0, above.length ? above.at(-1) : 0];
+  const ticks = [
+    ...clearOfZero(thin(below), threshold, ends, height).map((t) => -t).reverse(),
+    0,
+    ...clearOfZero(thin(above), threshold, ends, height),
+  ];
   const format = (v) => (v == null ? null : v.toLocaleString(undefined, { maximumSignificantDigits: 3 }));
   const widest = Math.max(4, ...ticks.map((v) => format(v).length));
   return {
@@ -339,9 +344,24 @@ function asinhAxis(values, height) {
       filter: (u, splits) => splits,
       values: (u, splits) => splits.map(format),
     },
-    range: [ticks[0], ticks.at(-1)],
+    range: ends,
     scale: { distr: 4, asinh: threshold },
   };
+}
+
+// Of one side's ticks of an asinh axis, outward from zero, those whose
+// labels clear zero's and one another's on a plot `height` tall from
+// `ends[0]` to `ends[1]`, kept from the outermost in.  Thinned by count
+// alone, the threshold can still sit a pixel or two from zero when the
+// axis reaches seconds beside a threshold of nanoseconds.
+function clearOfZero(side, threshold, [lo, hi], height) {
+  const at = (v) => Math.asinh(v / threshold);
+  const px = (height - 2 * STACK_END) / (at(hi) - at(lo));
+  const kept = [];
+  for (const t of [...side].reverse()) {
+    if (at(t) * px >= LABEL_ROOM && (!kept.length || (at(kept.at(-1)) - at(t)) * px >= LABEL_ROOM)) kept.push(t);
+  }
+  return kept.reverse();
 }
 
 // Charts in a stack share a time axis only if their plotting areas line

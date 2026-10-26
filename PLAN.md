@@ -207,7 +207,9 @@ the error, said where the chart would be.
 
 Offset axes are `asinh` (linear near zero, logarithmic beyond), used
 only when the data reaches past ten times the linear threshold, with
-ticks at zero, the threshold and its decades.
+ticks at zero, the threshold and its decades, as many as fit, less
+any whose label would print over zero's or another's: a step of
+seconds beside nanoseconds put the threshold a few pixels from zero.
 
 Pages: Live, Sources and each source's own, Refclocks, Temperature,
 Journal, Distribution, Kiosk.

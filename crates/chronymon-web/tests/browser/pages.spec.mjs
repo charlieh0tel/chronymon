@@ -69,6 +69,39 @@ test("API: a request too large is refused, saying why", async ({ page }) => {
 // Each chart's time axis, `[min, max]`, on the page now.
 const timeAxes = (page) => page.evaluate(() => stack.charts.map((c) => [c.scales.x.min, c.scales.x.max]));
 
+// The clock's last offsets as `/api/history` answers them, each bucket
+// that has one passed through `change(seconds, n)`, `n` its count among
+// them, into mean, lowest and highest alike.
+const routeLastOffset = (page, change) =>
+  page.route("**/api/history?*", async (route) => {
+    const response = await route.fetch();
+    const got = await response.json();
+    for (const plot of got.plots.filter((p) => p.table === "tracking" && p.column === "last_offset")) {
+      let n = 0;
+      plot.mean.forEach((v, i) => {
+        if (v == null) return;
+        const changed = change(v, n++);
+        if (changed === v) return;
+        plot.mean[i] = plot.min[i] = plot.max[i] = changed;
+      });
+    }
+    return route.fulfill({ response, json: got });
+  });
+
+// A step of seconds beside offsets of microseconds: an asinh axis.
+const STEP = -20;
+
+// Each chart's y tick labels too near the next to clear it, by uPlot's
+// position for each and the axes' type size, as `[chart, a, b]`.
+const crowdedTicks = (page) => page.evaluate(() => {
+  const type = Number((stack.font ?? "12px").match(/\d+/)[0]);
+  return stack.charts.flatMap((c, n) => {
+    const at = c.axes[1].splits?.(c, 1, c.scales.y.min, c.scales.y.max) ?? [];
+    const ticks = at.map((v) => [v, c.valToPos(v, "y")]).sort((a, b) => a[1] - b[1]);
+    return ticks.slice(1).flatMap(([v, p], i) => (p - ticks[i][1] < type ? [[n, ticks[i][0], v]] : []));
+  });
+});
+
 // The NMEA refclock's ID: its samples stop hours before now.
 const nmeaId = async (page) =>
   (await (await page.request.get("/api/sources")).json()).find((s) => s.name === "NMEA").id;
@@ -125,6 +158,28 @@ test("Live: charts, a readout under the cursor, and the events", async ({ page }
   await expect(page.locator("#readout")).not.toBeEmpty();
   await expect(page.locator("#journal")).toContainText("step");
 });
+
+// The clock's offsets made this many times smaller, a fraction of a
+// nanosecond: beside a step of seconds, its asinh axis's threshold sits
+// a few pixels from zero.
+const QUIET = 1e-4;
+
+for (const columns of ["last_offset", "last_offset,frequency,skew,rms_offset,root_delay,root_dispersion"]) {
+  test(`Live: an asinh axis's tick labels clear one another, zero kept, ${columns}`, async ({ page }) => {
+    await routeLastOffset(page, (v, n) => (n === 300 ? STEP : v * QUIET));
+    await page.goto(`/?last=21600&columns=${columns}`);
+    await expect(charts(page).first()).toBeVisible();
+    await page.waitForFunction(() => !running);
+    const axis = await page.evaluate(() => {
+      const c = stack.charts[0];
+      return { distr: c.scales.y.distr, min: c.scales.y.min, ticks: c.axes[1].splits() };
+    });
+    expect(axis.distr).toBe(4);
+    expect(axis.min).toBeLessThanOrEqual(STEP * 1e6);
+    expect(axis.ticks).toContain(0);
+    expect(await crowdedTicks(page)).toEqual([]);
+  });
+}
 
 test("Live: a column unticked leaves its chart", async ({ page }) => {
   await page.goto("/?last=86400");
