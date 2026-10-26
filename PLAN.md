@@ -338,3 +338,22 @@ Journal, Distribution, Kiosk.
 - smartclock-sensord's ambient readings.
 - A Prometheus exporter.
 - Every packet from `measurements.log` on the Sources page.
+
+## Open questions
+
+- Before 1.0.0 a reference change to the local reference was
+  journaled as `-`, like a loss of sync, so an older database shows no
+  local spans.  Infer them from a change to `-` with no leap change to
+  unsynchronized?
+- Two daemon restarts while chronyd stays unsynchronized: the second
+  reference-time-0 row is dropped as a repeat.  Keep those, as rows on
+  the local reference are?
+- The log tables' unique keys cover every column, about doubling their
+  indexes, `refclock_sample` at 1 Hz most.  Key on a hash of the line?
+- `log_file` rows for files long gone are never pruned.
+- chronyd's `-R` disables makestep's limit, unseen here; read it from
+  `/proc/<pid>/cmdline`?
+- The copies of smartclock's web assets and HTTP crate: share them
+  before they drift.
+- Not yet seen on a real host: the boot, shutdown and crash events
+  across a deliberate reboot; refclock fixtures captured there.
