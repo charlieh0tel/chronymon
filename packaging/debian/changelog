@@ -1,3 +1,12 @@
+chronymon (1.0.1-1) unstable; urgency=medium
+
+  * Kiosk: each axis fits the bulk of what it draws; outliers are
+    pinned to the edge, marked and counted.
+  * An asinh axis never prints one tick label over another.
+  * Temperature gives r squared beside r.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sun, 25 Oct 2026 18:04:23 -0700
+
 chronymon (1.0.0-1) unstable; urgency=medium
 
   * Kiosk: the host's time; room for eight sources and long names.
