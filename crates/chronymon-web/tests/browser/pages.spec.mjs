@@ -532,7 +532,11 @@ test("Temperature: the series and the scatter", async ({ page }) => {
   await page.goto("/temperature?last=86400");
   await expect(charts(page).first()).toBeVisible();
   await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).not.toBeEmpty();
+  const figures = page.locator("#figures");
+  await expect(figures).toContainText(/, r = -?\d\.\d{3}, r² = \d\.\d{3}/);
+  // r² is r squared, to the figures shown.
+  const [, r, squared] = (await figures.textContent()).match(/r = (-?\d\.\d{3}), r² = (\d\.\d{3})/);
+  expect(Number(squared)).toBeCloseTo(Number(r) ** 2, 2);
 });
 
 test("Journal: the synthetic run's events", async ({ page }) => {

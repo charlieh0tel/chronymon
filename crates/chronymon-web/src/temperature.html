@@ -112,7 +112,7 @@ function drawScatter(temperature, frequency, points) {
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} buckets` +
     (fit ? `; least squares ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
-    (r == null ? "" : `, r = ${r.toFixed(3)}`) +
+    (r == null ? "" : `, r = ${r.toFixed(3)}, r² = ${(r * r).toFixed(3)}`) +
     ". A clock whose frequency follows its temperature is what tempcomp corrects for." +
     (uncompensated ? " tempcomp applied no compensation in this range." : ""));
 }
