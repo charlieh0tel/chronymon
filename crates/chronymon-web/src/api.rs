@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -57,6 +58,18 @@ const HISTOGRAM_TO: f64 = 99.5;
 
 /// Nanoseconds in a second.
 const NANOSECONDS: f64 = 1e9;
+
+/// The kernel's name for this host, which is chronyd's: the web view
+/// runs beside the daemon it reads (one host, PLAN.md).
+const HOSTNAME: &str = "/proc/sys/kernel/hostname";
+
+/// This host's name, for the pages to say whose clock they show; None
+/// where the kernel will not say.
+fn host() -> Option<String> {
+    let name = fs::read_to_string(HOSTNAME).ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
 
 /// A request this does not answer: a name it does not serve, a value
 /// that does not parse, or more than one answer may cost.  Answered 400,
@@ -326,6 +339,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
         });
         Ok(json!({
             "now": now,
+            "host": host(),
             "status": status,
             "tracking": tracking,
             "reference_name": reference_name,

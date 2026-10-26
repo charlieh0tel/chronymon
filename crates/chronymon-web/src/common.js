@@ -216,12 +216,23 @@ let ticking = false;
 // The last status answer, for a page that wants it.
 let lastStatus = null;
 
+// The page's own title, before the host is put in it.
+const PAGE_TITLE = document.title;
+
+// `chronymon@host`, the program and whose clock it shows, in place of
+// the title's leading `chronymon`.
+function titled(host) {
+  const title = host ? PAGE_TITLE.replace(/^chronymon/, `chronymon@${host}`) : PAGE_TITLE;
+  if (document.title !== title) document.title = title;
+}
+
 async function tick() {
   if (ticking) return;
   ticking = true;
   try {
     const s = await getJson("/api/status");
     lastStatus = s;
+    titled(s.host);
     if (s.error) {
       paintLost("no data", s.error);
       linkIs(false);

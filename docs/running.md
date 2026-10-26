@@ -49,7 +49,8 @@ and restart it.  The view is read-only and asks for no password.
 ## Kiosk
 
 `http://<host>:8323/kiosk` is one screen for an unattended landscape
-display.  Left, in large type, the sync state, the host's time in UTC
+display, headed `chronyd@<host>`; every page is titled
+`chronymon@<host>`.  Left, in large type, the sync state, the host's time in UTC
 (below it the date, and the display's local time), the reference,
 offset, frequency and skew, then the sources; right, a day of charts
 and the newest events.  The time is the server's at its last answer,
