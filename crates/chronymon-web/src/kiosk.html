@@ -272,6 +272,10 @@ const stack = {
   sync: haveUplot ? uPlot.sync("kiosk") : null,
   charts: [],
   marks: [],
+  // Each y axis fitted to the bulk of what it draws: nobody zooms past
+  // a restart's or a boot's transients here.  The browser pages keep
+  // the whole range, for finding them.
+  clip: true,
   // Each chart's height, so the stack, with the time axis under its
   // bottom chart, fills its panel and no more.
   height(count) {
