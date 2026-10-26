@@ -355,5 +355,7 @@ Journal, Distribution, Kiosk.
   `/proc/<pid>/cmdline`?
 - The copies of smartclock's web assets and HTTP crate: share them
   before they drift.
+- The kiosk's `chronyd@host` head line can't be seen on the user's TV
+  (overscan cutting the top, or too small?).
 - Not yet seen on a real host: the boot, shutdown and crash events
   across a deliberate reboot; refclock fixtures captured there.
