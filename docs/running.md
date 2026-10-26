@@ -58,7 +58,13 @@ its age, once no answer has come for 3 s, and is dimmed while the feed
 is not live.  The sources and events lose their last rows rather than
 scroll, the sources with a row saying how many more.  The offset
 overlay draws the sources listed, each in its color there, but a
-refclock another is locked to (see "Paired refclocks").  No nav, controls,
+refclock another is locked to (see "Paired refclocks").  Each chart's
+y axis fits the bulk of what it draws, its 0.5% to 99.5% and half that
+span again either side; a bucket past that, as a source's first
+samples after chronyd restarts or a step after a boot, is drawn at the
+axis's edge with a marker, and the title counts them ("0 below and 12
+above the axis").  Nothing past it, nothing is clipped.  The other
+pages always show the whole range.  No nav, controls,
 colophon or pointer, and it never scrolls: full size from 1440x1080
 CSS pixels, scaled down to fit a smaller screen.  It never changes its
 address.  A reload paints the last status, sources and

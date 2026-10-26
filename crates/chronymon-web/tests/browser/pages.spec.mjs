@@ -658,6 +658,99 @@ for (const { size, address } of KIOSK_SCREENS) {
   });
 }
 
+// The synthetic run's step, in the clock's last offset, µs.
+const SYNTHETIC_STEP = 0.18e6;
+
+// Each chart's title, y axis and what lies off it: its range and kind,
+// how many buckets it draws at each edge and their markers, and its
+// lines' lowest and highest values as drawn.
+const yAxes = (page) => page.evaluate(() => stack.charts.map((c) => {
+  const off = c.chronymonAxis.fit.off;
+  const drawn = c.data.slice(1).flat().filter((v) => v != null);
+  return {
+    title: c.root.querySelector(".u-title").textContent,
+    min: c.scales.y.min,
+    max: c.scales.y.max,
+    distr: c.scales.y.distr,
+    below: off?.below ?? 0,
+    above: off?.above ?? 0,
+    marks: off?.marks.length ?? 0,
+    lowest: Math.min(...drawn),
+    highest: Math.max(...drawn),
+  };
+}));
+
+// The words a title ends with for the buckets drawn at its axis's edge.
+const offScaleWords = (axis) => `; ${axis.below} below and ${axis.above} above the axis`;
+
+test("Kiosk: a step past the bulk is drawn at the axis's edge, marked and counted", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await page.goto("/kiosk?last=86400");
+  await expect(charts(page)).toHaveCount(4);
+  await page.waitForFunction(() => !running);
+  const [offset] = await yAxes(page);
+  // Fitted to the microseconds of wander, the step's 0.18 s above it.
+  expect(offset.max).toBeLessThan(SYNTHETIC_STEP / 100);
+  expect(offset.distr).toBe(1);
+  expect(offset.above).toBeGreaterThan(0);
+  expect(offset.marks).toBe(offset.below + offset.above);
+  expect(offset.highest).toBe(offset.max);
+  expect(offset.title.endsWith(offScaleWords(offset))).toBe(true);
+  expect(await kioskFaults(page)).toEqual([]);
+});
+
+test("Kiosk: nothing past the bulk, nothing clipped", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  // Six quiet hours after the step.
+  await page.goto("/kiosk?last=21600");
+  await expect(charts(page)).toHaveCount(4);
+  await page.waitForFunction(() => !running);
+  for (const axis of await yAxes(page)) {
+    expect(axis.marks, axis.title).toBe(0);
+    expect(axis.title, axis.title).not.toContain("above the axis");
+    expect(axis.lowest, axis.title).toBeGreaterThanOrEqual(axis.min);
+    expect(axis.highest, axis.title).toBeLessThanOrEqual(axis.max);
+  }
+  await expect(page.locator("#charts .off-scale")).toHaveCount(0);
+});
+
+test("Live: the step sets the axis, nothing clipped", async ({ page }) => {
+  await page.goto("/?last=86400");
+  await expect(charts(page).first()).toBeVisible();
+  await page.waitForFunction(() => !running);
+  const axes = await yAxes(page);
+  expect(axes[0].max).toBeGreaterThanOrEqual(SYNTHETIC_STEP);
+  for (const axis of axes) {
+    expect(axis.marks, axis.title).toBe(0);
+    expect(axis.lowest, axis.title).toBeGreaterThanOrEqual(axis.min);
+    expect(axis.highest, axis.title).toBeLessThanOrEqual(axis.max);
+  }
+  await expect(page.locator("#charts .off-scale")).toHaveCount(0);
+});
+
+// One bucket in this many of the clock's last offset made a tail of
+// excursions, a decade apart up to milliseconds: past an asinh axis's
+// reach, and too many to be clipped.
+const TAIL_EVERY = 20;
+const TAIL = [1e-4, -1e-3, 1e-2];
+
+test("Kiosk: clipped to an asinh bulk, a step counted, its tick labels clear one another", async ({ page }) => {
+  await routeLastOffset(page, (v, n) =>
+    n === 300 ? STEP : n % TAIL_EVERY === 0 ? TAIL[(n / TAIL_EVERY) % TAIL.length] : v * QUIET);
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await page.goto("/kiosk?last=21600");
+  await expect(charts(page)).toHaveCount(4);
+  await page.waitForFunction(() => !running);
+  const [offset] = await yAxes(page);
+  expect(offset.distr).toBe(4);
+  expect(offset.min).toBeGreaterThan(STEP * 1e6);
+  expect(offset.max).toBeGreaterThanOrEqual(Math.max(...TAIL) * 1e6);
+  expect(offset.below).toBe(1);
+  expect(offset.lowest).toBe(offset.min);
+  expect(offset.title.endsWith(offScaleWords(offset))).toBe(true);
+  expect(await crowdedTicks(page)).toEqual([]);
+});
+
 test("Kiosk: more sources than fit, the last row says how many more", async ({ page }) => {
   // Sources added to the server's, more than the panel holds.
   const extra = 12;

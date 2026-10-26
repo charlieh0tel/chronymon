@@ -264,6 +264,15 @@ Journal, Distribution, Kiosk.
   eight names in its title wrapped onto the chart.  Events moved right,
   under the charts their marks are on, so eight sources leave them
   room; no colophon, as smartclock's has none.
+  Each y axis is fitted to the bulk of what it draws (buckets' lowest
+  and highest included): the 0.5% to 99.5%, Distribution's, and half
+  that span again either side, past a normal spread's tails; the asinh
+  choice made on what is left.  A bucket beyond is drawn at the edge,
+  marked, and counted in the title, in Distribution's words.  A host's
+  startup transients (a source's first samples, -20 s after a boot) set
+  axes to a million times the wander, which no asinh axis reads.  Not
+  on the browser pages, whose full range is for finding those; and
+  nothing clipped when nothing lies beyond.
   Rotating through the other pages, in frames, was built and dropped:
   they are for a person at a browser.
 

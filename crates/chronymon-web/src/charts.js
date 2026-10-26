@@ -364,6 +364,126 @@ function clearOfZero(side, threshold, [lo, hi], height) {
   return kept.reverse();
 }
 
+// ------------------------------------------------------------- clipping
+//
+// A y axis fitted to the bulk of what a chart draws, on a display no one
+// zooms: a source's first samples after chronyd restarts, or a step of
+// seconds after a boot, beside microseconds of wander leave the wander a
+// hairline, asinh axis or not.  What lies beyond is drawn at the axis's
+// edge, marked, and counted in the title.
+
+// The percentiles the bulk lies between: those the Distribution page's
+// histogram shows (HISTOGRAM_FROM and HISTOGRAM_TO in api.rs).
+const BULK_FROM = 0.5;
+const BULK_TO = 99.5;
+// How far past the bulk a value is still drawn to scale, in spans of
+// the bulk: a normal spread's 0.5% and 99.5% are 2.6 sigma out, so half
+// its span again either side reaches 5 sigma, past a day of buckets'
+// extremes.  Only what lies beyond is an outlier.
+const BULK_MARGIN = 0.5;
+// The marker at the axis's edge where a line goes past it, a triangle
+// pointing off the plot: its height and half its base, in CSS pixels.
+const OFF_SCALE_MARK = 5;
+
+// The `p`th percentile of sorted `values`, by linear interpolation
+// between the nearest ranks, as `percentile` in api.rs.
+function percentile(sorted, p) {
+  const rank = (p / 100) * (sorted.length - 1);
+  const below = Math.floor(rank);
+  const above = Math.min(below + 1, sorted.length - 1);
+  return sorted[below] + (sorted[above] - sorted[below]) * (rank - below);
+}
+
+// The values a clipped axis is drawn to scale over, `[lo, hi]`: the
+// bulk of `values` and its margin.  Null when every value is within
+// them, and the axis need not be clipped.
+function bulkOf(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const from = percentile(sorted, BULK_FROM), to = percentile(sorted, BULK_TO);
+  const margin = (to - from) * BULK_MARGIN;
+  const bulk = [from - margin, to + margin];
+  return sorted[0] < bulk[0] || sorted.at(-1) > bulk[1] ? bulk : null;
+}
+
+// What of `drawing` lies off its y axis `[lo, hi]`, its lines not
+// `hidden`: how many of a line's buckets, its envelope's included, go
+// below and above, and a mark `{ at, side, color }` for each, `at` the
+// bucket's index and `side` -1 below, 1 above.  Null for none.
+function offScale(drawing, hidden, [lo, hi]) {
+  const marks = [];
+  drawing.lines.forEach((line, n) => {
+    if (hidden(line)) return;
+    const arrays = [line.values, ...(n === 0 && drawing.envelope ? [drawing.envelope.min, drawing.envelope.max] : [])];
+    line.values.forEach((_, i) => {
+      const at = arrays.map((a) => a[i]).filter((v) => v != null);
+      if (at.some((v) => v < lo)) marks.push({ at: i, side: -1, color: line.color });
+      if (at.some((v) => v > hi)) marks.push({ at: i, side: 1, color: line.color });
+    });
+  });
+  if (!marks.length) return null;
+  return {
+    below: marks.filter((m) => m.side < 0).length,
+    above: marks.filter((m) => m.side > 0).length,
+    marks,
+  };
+}
+
+// A y axis for `drawing` as `yAxis` fits one to `values`, clipped to
+// their bulk when `clip` and anything lies beyond it, with `off`, as
+// `offScale` gives it, for what is drawn at its edge.
+function clippedAxis(drawing, values, height, hidden, clip) {
+  const bulk = clip ? bulkOf(values) : null;
+  if (!bulk) return yAxis(drawing.column, values, height);
+  const fit = yAxis(drawing.column, values.filter((v) => v >= bulk[0] && v <= bulk[1]), height);
+  const off = fit.range ? offScale(drawing, hidden, fit.range) : null;
+  return off ? { ...fit, off } : fit;
+}
+
+// `values` held inside a clipped axis's range, drawn at its edge.
+const pinned = (values, fit) =>
+  fit.off ? values.map((v) => (v == null ? v : Math.min(Math.max(v, fit.range[0]), fit.range[1]))) : values;
+
+// What a chart's title says of the buckets drawn at its y axis's edge,
+// after what it names: nothing when there are none.
+function offScaleTitle(chart, fit) {
+  const heading = chart.root.querySelector(".u-title");
+  if (!heading) return;
+  let note = heading.querySelector(".off-scale");
+  if (!fit.off) {
+    note?.remove();
+    return;
+  }
+  if (!note) {
+    note = document.createElement("span");
+    note.className = "muted off-scale";
+    heading.appendChild(note);
+  }
+  update(note, "textContent", `; ${beyondWords(fit.off.below, fit.off.above, "the axis")}`);
+}
+
+// A marker at the y axis's edge for each bucket drawn there, in its
+// line's color.
+function drawOffScale(u) {
+  const off = u.chronymonAxis?.fit.off;
+  if (!off) return;
+  const { ctx } = u;
+  const size = OFF_SCALE_MARK * devicePixelRatio;
+  ctx.save();
+  for (const { at, side, color } of off.marks) {
+    const x = u.valToPos(u.data[0][at], "x", true);
+    const edge = side < 0 ? u.bbox.top + u.bbox.height : u.bbox.top;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x, edge);
+    ctx.lineTo(x - size, edge + side * size);
+    ctx.lineTo(x + size, edge + side * size);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 // Charts in a stack share a time axis only if their plotting areas line
 // up: each gets the widest y axis of the stack, and the same right
 // padding, wide enough for the bottom chart's last time label, which
@@ -766,10 +886,12 @@ const drawsAnything = (d) => drawingArrays(d).flat().some((v) => v != null && is
 // Each chart's y axis, fitted to what it draws.  The scale has to cover
 // the envelope, not just the lines: the min and max are drawn, and an
 // axis that ends below them would clip the very excursions they exist
-// to show.  A line hidden is not fitted to.
-const stackFits = (read, height, hidden) =>
+// to show.  A line hidden is not fitted to.  With `clip`, as
+// `clippedAxis` clips it.
+const stackFits = (read, height, hidden, clip) =>
   read.drawn.map((chart) =>
-    yAxis(chart.column, fittedArrays(chart, hidden).flat().filter((v) => v != null && isFinite(v)), height));
+    clippedAxis(chart, fittedArrays(chart, hidden).flat().filter((v) => v != null && isFinite(v)), height, hidden,
+      clip));
 
 // What a chart of the stack is drawn as, less its data and its y axis's
 // range, ticks and width: its lines, and the kind of y axis.  Two reads
@@ -812,6 +934,8 @@ function heldAxis(held) {
 //   font, scale    optional, as `stackOptions` takes them
 //   toggles        optional: whether the names in the titles hide and
 //                  show their lines
+//   clip           optional: whether each y axis is clipped to the bulk
+//                  of what it draws, as `clippedAxis` clips it
 //   bands          optional: the bands behind each chart's lines, as
 //                  `drawBands` takes them, a function, read as drawn;
 //                  none behind a drawing's whose `shaded` is false
@@ -819,7 +943,7 @@ function stackCharts(container, read, style) {
   const scale = style.scale ?? 1;
   const height = style.height(read.drawn.length);
   const hidden = hiddenOn(style.toggles);
-  const fits = stackFits(read, height / scale, hidden);
+  const fits = stackFits(read, height / scale, hidden, style.clip);
   const ySize = stackWidth(fits) * scale;
   const charts = read.drawn.map((drawing, n) => {
     const several = drawing.lines.length > 1;
@@ -865,7 +989,7 @@ function stackCharts(container, read, style) {
       font: style.font,
       scale,
     });
-    const chart = ranged(new uPlot(opts, stackData(read, drawing), host));
+    const chart = ranged(new uPlot(opts, stackData(read, drawing, fits[n]), host));
     chart.chronymonShape = stackShape(drawing, fits[n]);
     chart.chronymonAxis = held;
     // Set before uPlot first draws, which it does in a microtask.
@@ -886,14 +1010,17 @@ function stackCharts(container, read, style) {
       const heading = chart.root.querySelector(".u-title");
       if (heading) heading.innerHTML = drawing.heading ?? groupTitle(drawing, style.toggles);
     }
+    offScaleTitle(chart, fits[n]);
     return chart;
   });
   settleWidths(charts, container);
   return charts;
 }
 
-// What a chart of the stack plots: its time axis, then its series.
-const stackData = (read, drawing) => [drawing.x ?? read.x, ...drawingArrays(drawing)];
+// What a chart of the stack plots on its y axis `fit`: its time axis,
+// then its series, held inside a clipped axis.
+const stackData = (read, drawing, fit) =>
+  [drawing.x ?? read.x, ...drawingArrays(drawing).map((values) => pinned(values, fit))];
 
 // The stack `charts`, drawn in `container`, brought up to `read`: each
 // chart given its new data, y axis and size in place while the stack
@@ -904,7 +1031,7 @@ function restack(container, charts, read, style) {
   const scale = style.scale ?? 1;
   const height = style.height(read.drawn.length);
   const hidden = hiddenOn(style.toggles);
-  const fits = stackFits(read, height / scale, hidden);
+  const fits = stackFits(read, height / scale, hidden, style.clip);
   const ySize = stackWidth(fits) * scale;
   const kept = charts.length === read.drawn.length &&
     charts.every((c, n) => c.chronymonShape === stackShape(read.drawn[n], fits[n]));
@@ -915,7 +1042,8 @@ function restack(container, charts, read, style) {
       held.fit = fits[n];
       held.ySize = ySize;
       held.span = read.span;
-      c.setData(stackData(read, read.drawn[n]));
+      c.setData(stackData(read, read.drawn[n], fits[n]));
+      offScaleTitle(c, fits[n]);
       showLines(c, hidden);
       const size = {
         width: container.clientWidth || c.width,
@@ -1077,7 +1205,7 @@ function markTip(chart, text) {
 //   sync                 the cursor's sync key
 //   charts, marks        the charts drawn and the events marked
 //   height, font, scale  optional, as `stackCharts` takes them
-//   toggles              optional, as `stackCharts` takes it
+//   toggles, clip        optional, as `stackCharts` takes them
 //   read, why, toggling  kept by drawStack: the last drawn, to draw it
 //                        again, and whether its titles toggle lines
 // `read` is `{ x, span, drawn, bands }`, `bands` optional, as
@@ -1106,11 +1234,12 @@ function drawStack(view, read, why) {
     hooks: {
       setCursor: [readout],
       drawClear: [(u) => drawBands(u, u.chronymonBands?.() ?? [])],
-      draw: [(u) => drawMarks(u, view.marks)],
+      draw: [(u) => drawMarks(u, view.marks), drawOffScale],
     },
     font: view.font,
     scale: view.scale,
     toggles: view.toggles,
+    clip: view.clip,
     // The read drawn now, not the one a chart kept was made for.
     bands: () => view.read?.bands ?? [],
   });
