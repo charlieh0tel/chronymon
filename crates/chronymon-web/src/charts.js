@@ -139,6 +139,10 @@ function hintAs(chart, text) {
   heading.classList.add("hinted");
 }
 
+// What a chart's title says of the readings it leaves out of what it
+// `shows`: how many lie below it and how many above.
+const beyondWords = (below, above, shows) => `${below} below and ${above} above ${shows}`;
+
 // Points to ask for: enough that a long window is not thinned to
 // half-hour bins, bounded by what the server will give.
 function pointsFor(seconds) {

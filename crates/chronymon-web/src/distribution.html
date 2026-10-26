@@ -108,7 +108,7 @@ function histogram(host, d, k, width) {
   return new uPlot({
     width,
     height: 260,
-    title: `${columnName(k)}: ${d.histogram.below} below and ${d.histogram.above} above the 0.5% and 99.5% shown`,
+    title: `${columnName(k)}: ${beyondWords(d.histogram.below, d.histogram.above, "the 0.5% and 99.5% shown")}`,
     scales: { x: { time: false } },
     axes: [{ ...AXIS }, { ...AXIS, size: 60 }],
     series: [
