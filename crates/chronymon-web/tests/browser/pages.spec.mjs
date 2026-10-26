@@ -131,6 +131,18 @@ test("Every stack: its charts share one time axis, the range's, to its end", asy
   }
 });
 
+test("Titles: the program at its host, as chronymon@host", async ({ page }) => {
+  const { host } = await (await page.request.get("/api/status")).json();
+  expect(host).toBeTruthy();
+  await page.goto("/");
+  await expect(page).toHaveTitle(`chronymon@${host}`);
+  await page.goto("/sources");
+  await expect(page).toHaveTitle(`chronymon@${host}: sources`);
+  await page.goto("/kiosk");
+  await expect(page).toHaveTitle(`chronymon@${host}: kiosk`);
+  await expect(page.locator("#kiosk-head")).toContainText(`chronyd@${host}`);
+});
+
 test("Colophon: links to the repository and its issues", async ({ page }) => {
   await page.goto("/");
   const colophon = page.locator("#colophon");

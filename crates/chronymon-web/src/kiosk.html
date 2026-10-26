@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<title>chronymon kiosk</title>
+<title>chronymon: kiosk</title>
 
 <!-- Nothing here waits on the network before the first paint, which a
      player that reloads the page would otherwise show as a white
@@ -341,7 +341,7 @@ function renderKiosk(s, cached = false, cachedAge = 0) {
     : { now: s.now - cachedAge, at: performance.now() - cachedAge * 1000, live: state === "live" };
   drawClock();
   showHtml($("kiosk-head"),
-    `<span class="dot ${state}"></span><span>chronyd</span>` +
+    `<span class="dot ${state}"></span><span>${esc(s.host ? `chronyd@${s.host}` : "chronyd")}</span>` +
     (state === "live" ? "" : `<span class="pill ${state}">${esc(words)}</span>`) +
     (s.status ? `<span class="muted">polled ${esc(age(s.status.age))} ago</span>` : ""));
   const [sync, tone] = syncOf(s);
