@@ -9,8 +9,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-chronymon = { version = "1.0.1", path = "../chronymon" }
-chronymon-control = { version = "1.0.1", path = "../chronymon-control" }
+chronymon = { version = "1.0.2", path = "../chronymon" }
+chronymon-control = { version = "1.0.2", path = "../chronymon-control" }
 jiff = "0.2.38"
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 thiserror = "2.0.21"
