@@ -37,9 +37,10 @@ To build the package yourself, with
 More in [docs/how-it-works.md](docs/how-it-works.md): settings, the
 network, the kiosk, chronyd's logs and events.
 
-- `chronymond` polls chronyd's control socket every second and reads
-  chronyd's logs (`log tracking measurements statistics refclocks
-  tempcomp`), history included.  It runs as `_chrony`: the socket
+- `chronymond` polls chronyd's control socket, or
+  [its UDP command port](docs/how-it-works.md#over-udp), every second
+  and reads chronyd's logs (`log tracking measurements statistics
+  refclocks tempcomp`), history included.  It runs as `_chrony`: the socket
   admits only chronyd's user and root.
 - `chronymon-web` serves the database read-only on
   `127.0.0.1:8323`, without authentication.  uPlot comes from a CDN.

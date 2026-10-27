@@ -21,7 +21,7 @@ open.
 ## Data sources
 
 chronyd's control protocol (`candm.h`, `cmdmon.c`), on the Unix socket
-only.  Over UDP chronyd answers only the commands open to the network:
+or, an option, UDP.  Over UDP chronyd answers only the commands open to the network:
 through 4.6 a fixed set without `ntpdata` and `selectdata` (4.6
 `cmdmon.c`, `permissions`); from 4.7 those `opencommands` names, its
 list replacing the default, which has neither (4.7 `conf.c`,
@@ -108,8 +108,12 @@ From chrony 4.2 to 4.9's source and `chrony-candm` 0.1.3's,
   async.
 - **`chronyc -c` rejected**: 1 ppb, positional CSV, a process per
   report.
-- **UDP not yet**: `ntpdata` and `selectdata` need 4.7's
-  `opencommands`.
+- **UDP an option, not the default**: `ntpdata` and `selectdata` need
+  4.7's `opencommands`, and the package supports chrony from 4.3.  It
+  needs no access to the socket, which can steer chronyd; a report
+  chronyd refuses there is fatal, naming the `opencommands` line, as no
+  retry fixes chronyd's configuration.  The unit allows `AF_INET` and
+  `AF_INET6` for it.
 - **Logs kept**: the only complete record, the only refclock and
   tempcomp samples, and the backfill.
 

@@ -15,7 +15,9 @@ use anyhow::Context as _;
 use anyhow::Result;
 use chronymon_control::client::Client;
 use chronymon_control::client::DEFAULT_SOCKET;
+use chronymon_control::client::Server;
 use chronymon_control::error::Error as ControlError;
+use chronymon_control::error::Status;
 use chronymon_log::writer::ChronydState;
 use chronymon_log::writer::Log;
 use clap::Parser;
@@ -39,9 +41,11 @@ mod lifecycle;
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Cli {
-    /// chronyd's control socket.
+    /// chronyd's control socket, a path, or its UDP command port, an
+    /// address: `127.0.0.1`, `[::1]:323`.  Over UDP chronyd must open
+    /// the reports read (chrony 4.7's `opencommands`).
     #[arg(long, env = "CHRONYMOND_SOCKET", default_value = DEFAULT_SOCKET)]
-    socket: PathBuf,
+    socket: Server,
 
     /// The database to write.
     #[arg(
@@ -119,6 +123,15 @@ fn read_only(error: &ControlError) -> bool {
     io_kind(error) == Some(ErrorKind::ReadOnlyFilesystem)
 }
 
+/// The reports a poll reads, as `opencommands` names them: what chronyd
+/// must open for the daemon to use UDP.
+const OPEN_COMMANDS: &str = "sources sourcestats sourcename tracking ntpdata selectdata";
+
+/// Whether chronyd refused a report: over UDP, one it does not open.
+fn unauthorized(error: &ControlError) -> bool {
+    matches!(error, ControlError::Status(Status::Unauthorized))
+}
+
 fn seconds(value: f64, option: &str) -> Result<Duration> {
     Duration::try_from_secs_f64(value)
         .ok()
@@ -153,7 +166,7 @@ fn run(cli: &Cli) -> Result<()> {
     eprintln!(
         "chronymond: version {}, {} every {interval:?}, {}",
         env!("CARGO_PKG_VERSION"),
-        cli.socket.display(),
+        cli.socket,
         collector.config()
     );
 
@@ -212,7 +225,19 @@ fn run(cli: &Cli) -> Result<()> {
         if let Err(e) = &read
             && read_only(e)
         {
-            failed = Some(e.to_string());
+            failed = Some(format!(
+                "{e}: exiting, for a restart to find its directory writable"
+            ));
+            break;
+        }
+        // Like refused permission, fatal: chronyd's configuration must
+        // change.
+        if let Err(e) = &read
+            && unauthorized(e)
+        {
+            failed = Some(format!(
+                "{e}: chronyd must open, in chrony.conf, `opencommands {OPEN_COMMANDS}` (chrony 4.7 on)"
+            ));
             break;
         }
         if let Err(e) = &read {
@@ -254,10 +279,7 @@ fn run(cli: &Cli) -> Result<()> {
     let system_stopping = host::system_stopping();
     log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
     if let Some(e) = failed {
-        anyhow::bail!(
-            "{e}: exiting, for a restart to find {} writable",
-            cli.socket.parent().unwrap_or(&cli.socket).display()
-        );
+        anyhow::bail!(e);
     }
     eprintln!("chronymond: stopped");
     Ok(())

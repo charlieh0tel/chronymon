@@ -39,6 +39,28 @@ records its stop, and exits with an error; systemd restarts it 5 s
 later, with `/run/chrony` writable.  Both tested in a systemd
 container.
 
+## Over UDP
+
+chronymond can ask chronyd's UDP command port instead of its socket:
+`CHRONYMOND_SOCKET=127.0.0.1` in `/etc/default/chronymond`, or `::1`,
+or with a port, `127.0.0.1:323`, `[::1]:323`.  chronyd answers there
+only the commands open to the network, through 4.6 never `ntpdata`
+or `selectdata`.  From 4.7 `chrony.conf` can open them; the list
+replaces the default, so it names every report chronymond reads:
+
+    opencommands sources sourcestats sourcename tracking ntpdata selectdata
+
+Without it chronymond names that line and exits.  chronyd answers
+localhost and the hosts `cmdallow` allows; others it ignores, and
+chronymond records chronyd as down.  With `cmdratelimit`, a poll,
+four requests a source, may be over the limit.
+
+Over UDP the reports need no access to the socket, so a daemon run as
+another user could not steer chronyd.  The package's unit still runs
+it as `_chrony`.  Run as another user it would need group `_chrony`
+for the logs, and could not read the PID file (`/run/chrony` is 0700
+on Debian), so would record no restarts or crashes from it.
+
 ## Serving the network
 
 Set `CHRONYMON_WEB_LISTEN=0.0.0.0:8323` in `/etc/default/chronymon-web`

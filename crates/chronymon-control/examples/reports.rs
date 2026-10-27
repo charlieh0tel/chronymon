@@ -1,22 +1,23 @@
 //! Print every report chronyd gives, decoded: a check of the client
-//! against a live chronyd.  Needs access to its socket, so the
-//! `_chrony` group or root.
+//! against a live chronyd.  Its socket needs chronyd's user or root;
+//! its UDP port, the reports opened to it (`opencommands`).
 //!
-//!     cargo run --example reports [-- /run/chrony/chronyd.sock]
+//!     cargo run --example reports [-- /run/chrony/chronyd.sock | 127.0.0.1]
 
 use std::env;
 use std::error::Error;
-use std::path::PathBuf;
 
 use chronymon_control::client::Client;
 use chronymon_control::client::DEFAULT_SOCKET;
+use chronymon_control::client::Server;
 use chronymon_control::report::Address;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let socket = env::args_os()
+    let server: Server = env::args()
         .nth(1)
-        .map_or_else(|| PathBuf::from(DEFAULT_SOCKET), PathBuf::from);
-    let mut client = Client::connect(&socket)?;
+        .unwrap_or_else(|| DEFAULT_SOCKET.to_owned())
+        .parse()?;
+    let mut client = Client::connect(&server)?;
     println!("{:#?}", client.tracking()?);
     println!("{:#?}", client.activity()?);
     for index in 0..client.source_count()? {

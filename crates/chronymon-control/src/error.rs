@@ -3,6 +3,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::client::Server;
+
+/// Neither a path nor an address: not where chronyd could be.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}: neither a path, starting with /, nor an address")]
+pub struct ParseServerError(pub String);
+
 /// A reply's status other than success (`STT_*` in `candm.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -74,12 +81,12 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    /// chronyd's socket could not be reached: it is not running, or
-    /// this user may not use it (it needs the `_chrony` group).
-    #[error("chronyd socket {path}: {source}")]
+    /// chronyd could not be reached: it is not running, or this user
+    /// may not use its socket (it needs chronyd's user or root).
+    #[error("chronyd {server}: {source}")]
     Connect {
-        /// chronyd's socket.
-        path: PathBuf,
+        /// Where chronyd was asked.
+        server: Server,
         /// What failed.
         source: std::io::Error,
     },
