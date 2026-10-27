@@ -1,11 +1,9 @@
-# Running chronymon
+# How chronymon works
 
-## Installing
+## Programs
 
-One Debian package, `chronymon`, carries both programs and starts
-both:
-
-    sudo apt install ./chronymon_<version>_amd64.deb
+The `chronymon` package ([installing](../README.md#installing))
+carries both programs and starts both:
 
 | Program | Runs as | Does |
 | - | - | - |

@@ -15,11 +15,27 @@ them in a browser.
 
 Synthetic data; `make screenshots` retakes them.
 
-## Running
+## Installing
 
-One Debian package, `chronymon`, from the
-[APT repository](https://github.com/charlieh0tel/apt-repo) or a
-release.  It runs both programs; see `docs/running.md`.
+Installing the Debian package is the easiest way.  One package,
+`chronymon`, carries both programs and starts both.  Take the amd64 or
+arm64 `.deb` from the
+[latest release](https://github.com/charlieh0tel/chronymon/releases/latest),
+or from the [APT repository](https://github.com/charlieh0tel/apt-repo):
+
+    sudo apt install ./chronymon_<version>_amd64.deb
+
+To build the package yourself, with
+[cargo-deb](https://github.com/kornelski/cargo-deb):
+
+    cargo install cargo-deb
+    cargo build --release --workspace
+    cargo deb --no-build -p chronymond   # target/debian/chronymon_*.deb
+
+## How it works
+
+More in [docs/how-it-works.md](docs/how-it-works.md): settings, the
+network, the kiosk, chronyd's logs and events.
 
 - `chronymond` polls chronyd's control socket every second and reads
   chronyd's logs (`log tracking measurements statistics refclocks
@@ -28,7 +44,7 @@ release.  It runs both programs; see `docs/running.md`.
 - `chronymon-web` serves the database read-only on
   `127.0.0.1:8323`, without authentication.  uPlot comes from a CDN.
   `/kiosk` is one screen for a display across a room
-  ([options](docs/running.md#kiosk)).
+  ([options](docs/how-it-works.md#kiosk)).
 
 Options: `--help`, or `CHRONYMOND_*` and `CHRONYMON_WEB_*` in the
 environment.
