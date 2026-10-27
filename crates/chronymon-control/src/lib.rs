@@ -1,5 +1,6 @@
 //! A client for chronyd's control protocol, the one chronyc speaks,
-//! over chronyd's Unix socket.  Read-only reports only.
+//! over chronyd's Unix socket or its UDP command port.  Read-only
+//! reports only.
 //!
 //! The reports chronymon needs most -- `ntpdata`, `sourcestats`,
 //! `selectdata` -- are the ones chrony does not promise to keep stable,

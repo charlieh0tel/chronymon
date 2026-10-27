@@ -2,7 +2,9 @@
 # commented out and shows the built-in default; uncomment one only to
 # change it.
 
-# chronyd's control socket.
+# chronyd's control socket, or its UDP command port, an address with
+# or without a port (127.0.0.1, [::1]:323), which needs chronyd 4.7 and
+# its opencommands (docs/how-it-works.md, "Over UDP").
 #CHRONYMOND_SOCKET=/run/chrony/chronyd.sock
 
 # The database.  The web view reads the same file.
