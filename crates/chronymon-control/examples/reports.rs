@@ -19,7 +19,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .parse()?;
     let mut client = Client::connect(&server)?;
     println!("{:#?}", client.tracking()?);
-    println!("{:#?}", client.activity()?);
+    // chronymond does not read it, so its `opencommands` leaves it out.
+    println!("{:#?}", client.activity());
     for index in 0..client.source_count()? {
         let source = client.source_data(index)?;
         println!("{source:#?}");
