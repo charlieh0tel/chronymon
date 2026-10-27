@@ -1,3 +1,11 @@
+chronymon (1.0.3-1) unstable; urgency=medium
+
+  * The kiosk and the status strip keep still as their figures tick.
+  * Figures go to 0 or 3 decimals: whole nanoseconds, ppm to the
+    thousandth, the update interval in whole seconds.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Mon, 26 Oct 2026 21:46:58 -0700
+
 chronymon (1.0.2-1) unstable; urgency=medium
 
   * Pages are titled chronymon@host; the kiosk is headed chronyd@host.
