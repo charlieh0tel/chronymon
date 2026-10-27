@@ -57,74 +57,18 @@ const SOCKET_MODE: u32 = 0o666;
 /// A connection to chronyd's control socket.
 #[derive(Debug)]
 pub struct Client {
-    socket: UnixDatagram,
-    /// The private directory holding the client's socket, removed on
-    /// drop.
-    directory: PathBuf,
+    socket: UnixSocket,
     sequence: u32,
 }
 
 impl Client {
     /// Connect to chronyd's socket at `server`.
     pub fn connect(server: &Path) -> Result<Self, Error> {
-        // chronyd's socket first, as chronyc does: when chronyd is not
-        // running or this user may not use it, that is what to say,
-        // and there is nothing of the client's own to clean up.
-        UnixDatagram::unbound()
-            .and_then(|probe| probe.connect(server))
-            .map_err(|source| Error::Connect {
-                path: server.to_path_buf(),
-                source,
-            })?;
-        let parent = server.parent().unwrap_or(Path::new("/"));
-        let directory = parent.join(format!(
-            "chronymon.{}.{}",
-            process::id(),
-            random_name().map_err(|source| Error::Socket {
-                path: parent.to_path_buf(),
-                source,
-            })?
-        ));
-        DirBuilder::new()
-            .mode(DIRECTORY_MODE)
-            .create(&directory)
-            .map_err(|source| Error::Connect {
-                path: server.to_path_buf(),
-                source,
-            })?;
-        let path = directory.join("sock");
-        let bound = UnixDatagram::bind(&path)
-            .and_then(|socket| {
-                fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE))?;
-                fs::set_permissions(&directory, Permissions::from_mode(DIRECTORY_MODE))?;
-                socket.set_read_timeout(Some(TIMEOUT))?;
-                Ok(socket)
-            })
-            .map_err(|source| Error::Socket {
-                path: path.clone(),
-                source,
-            });
-        let socket = match bound {
-            Ok(socket) => socket,
-            Err(e) => {
-                remove(&directory);
-                return Err(e);
-            }
-        };
-        let client = Self {
-            socket,
-            directory,
+        Ok(Self {
+            socket: UnixSocket::connect(server)?,
             // Any start will do; chronyc's is random too.
             sequence: random_sequence(),
-        };
-        client
-            .socket
-            .connect(server)
-            .map_err(|source| Error::Connect {
-                path: server.to_path_buf(),
-                source,
-            })?;
-        Ok(client)
+        })
     }
 
     /// `tracking`.
@@ -178,15 +122,17 @@ impl Client {
         self.sequence = self.sequence.wrapping_add(1);
         let mut buffer = [0; RECEIVE_BUFFER];
         for attempt in 0..ATTEMPTS {
-            self.socket.send(&request.encode(self.sequence, attempt))?;
+            self.socket
+                .socket
+                .send(&request.encode(self.sequence, attempt))?;
             let deadline = Instant::now() + TIMEOUT;
             loop {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     break;
                 }
-                self.socket.set_read_timeout(Some(remaining))?;
-                let length = match self.socket.recv(&mut buffer) {
+                self.socket.socket.set_read_timeout(Some(remaining))?;
+                let length = match self.socket.socket.recv(&mut buffer) {
                     Ok(length) => length,
                     Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                         break;
@@ -215,7 +161,72 @@ impl Client {
     }
 }
 
-impl Drop for Client {
+/// The client's own Unix socket, connected to chronyd's.
+#[derive(Debug)]
+struct UnixSocket {
+    socket: UnixDatagram,
+    /// The private directory holding the socket, removed on drop.
+    directory: PathBuf,
+}
+
+impl UnixSocket {
+    fn connect(server: &Path) -> Result<Self, Error> {
+        // chronyd's socket first, as chronyc does: when chronyd is not
+        // running or this user may not use it, that is what to say,
+        // and there is nothing of the client's own to clean up.
+        UnixDatagram::unbound()
+            .and_then(|probe| probe.connect(server))
+            .map_err(|source| Error::Connect {
+                path: server.to_path_buf(),
+                source,
+            })?;
+        let parent = server.parent().unwrap_or(Path::new("/"));
+        let directory = parent.join(format!(
+            "chronymon.{}.{}",
+            process::id(),
+            random_name().map_err(|source| Error::Socket {
+                path: parent.to_path_buf(),
+                source,
+            })?
+        ));
+        DirBuilder::new()
+            .mode(DIRECTORY_MODE)
+            .create(&directory)
+            .map_err(|source| Error::Connect {
+                path: server.to_path_buf(),
+                source,
+            })?;
+        let path = directory.join("sock");
+        let bound = UnixDatagram::bind(&path)
+            .and_then(|socket| {
+                fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE))?;
+                fs::set_permissions(&directory, Permissions::from_mode(DIRECTORY_MODE))?;
+                socket.set_read_timeout(Some(TIMEOUT))?;
+                Ok(socket)
+            })
+            .map_err(|source| Error::Socket {
+                path: path.clone(),
+                source,
+            });
+        let socket = match bound {
+            Ok(socket) => socket,
+            Err(e) => {
+                remove(&directory);
+                return Err(e);
+            }
+        };
+        let unix = Self { socket, directory };
+        unix.socket
+            .connect(server)
+            .map_err(|source| Error::Connect {
+                path: server.to_path_buf(),
+                source,
+            })?;
+        Ok(unix)
+    }
+}
+
+impl Drop for UnixSocket {
     fn drop(&mut self) {
         remove(&self.directory);
     }
