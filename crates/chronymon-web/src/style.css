@@ -25,13 +25,14 @@ h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--dim);
 
 /* Status strip: the few things worth seeing before anything else. */
 #status, #state { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline; }
-/* A fixed column, so a reading that gets wider -- "-5.8 ns" to
-   "+122.6 ns" -- does not shove every tile after it sideways. */
-.stat { display: flex; flex-direction: column; gap: 2px; min-width: 10ch; }
-.stat .v { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+/* A fixed column, so a reading that gets wider -- "-5 ns" to
+   "+122.600 µs" -- does not shove every tile after it sideways.  In
+   the value's own ch, which the column is as wide as. */
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat .v { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.1; min-width: 11ch; }
 .stat .k { font-size: 11px; color: var(--dim); }
 .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-#age { min-width: 18ch; }
+#age { min-width: 18ch; font-variant-numeric: tabular-nums; }
 .live { background: #14532d; color: var(--ok); }
 .stale { background: #422006; color: var(--warn); }
 .down { background: #450a0a; color: var(--bad); }
@@ -157,8 +158,9 @@ table.numbers td { padding: 3px 18px 3px 0; font-variant-numeric: tabular-nums; 
    1440x1080 and scaled down below by `--u`, which the page sets.  The
    clock's state and the host's time in large type and the sources on
    the left, its history and events on the right, filling the window
-   and never scrolling; nothing to click, so no pointer either. */
-body.kiosk { --u: 1px; font-size: calc(13 * var(--u));
+   and never scrolling; nothing to click, so no pointer either.  Its
+   figures all tabular, so a count ticking does not shift its line. */
+body.kiosk { --u: 1px; font-size: calc(13 * var(--u)); font-variant-numeric: tabular-nums;
              height: 100vh; overflow: hidden; cursor: none;
              padding: calc(12 * var(--u) + var(--inset-y, 0px)) calc(12 * var(--u) + var(--inset-x, 0px));
              gap: calc(12 * var(--u));

@@ -156,24 +156,41 @@ function carry() {
 // ---------------------------------------------------------- formatting
 
 // SI prefixes for a time in seconds, largest first.
-const SECOND_UNITS = [[1, "s"], [1e-3, "ms"], [1e-6, "µs"], [1e-9, "ns"]];
+// Each unit a time is shown in: its size in seconds, its name, and its
+// decimals.  Whole nanoseconds, the finest any of chronyd's figures
+// means anything to.
+const SECOND_UNITS = [[1, "s", 3], [1e-3, "ms", 3], [1e-6, "µs", 3], [1e-9, "ns", 0]];
 
-// A time in seconds in the unit that suits it, to three decimals:
-// chronyd's offsets run from nanoseconds to seconds, and one fixed unit
-// reads as 0.000 at one end or 1234567 at the other.  `signed` puts a
-// plus on a positive offset, so a sign is never mistaken for absent.
+// A time in seconds in the unit that suits it: chronyd's offsets run
+// from nanoseconds to seconds, and one fixed unit reads as 0.000 at one
+// end or 1234567 at the other.  `signed` puts a plus on a positive
+// offset, so a sign is never mistaken for absent.
 function seconds(v, signed = false) {
   if (v === null || v === undefined || !Number.isFinite(v)) return "--";
   const magnitude = Math.abs(v);
-  const [size, name] = SECOND_UNITS.find(([s]) => magnitude >= s) ?? SECOND_UNITS.at(-1);
-  return `${signed && v > 0 ? "+" : ""}${(v / size).toFixed(3)} ${name}`;
+  const [size, name, decimals] = SECOND_UNITS.find(([s]) => magnitude >= s) ?? SECOND_UNITS.at(-1);
+  return `${fixed(v / size, decimals, signed)} ${name}`;
 }
 
-// A frequency in ppm, to the thousandth chronyc shows and one further.
-const ppm = (v, signed = false) =>
-  v === null || v === undefined ? "--" : `${signed && v > 0 ? "+" : ""}${v.toFixed(4)} ppm`;
+// `v` to `decimals` places, a plus on it if `signed` and positive.
+// Rounded first, so that what rounds to zero has no sign.
+function fixed(v, decimals, signed) {
+  const rounded = Number(v.toFixed(decimals)) || 0;
+  return `${signed && rounded > 0 ? "+" : ""}${rounded.toFixed(decimals)}`;
+}
 
-// An age in seconds, as a person says it.
+// A frequency in ppm, to the thousandth chronyc shows: a part per
+// billion.
+const ppm = (v, signed = false) =>
+  v === null || v === undefined ? "--" : `${fixed(v, 3, signed)} ppm`;
+
+// An interval in seconds: whole seconds, and below one second, as
+// `seconds` puts it.
+const interval = (v) =>
+  v === null || v === undefined ? "--" : v < 1 ? seconds(v) : `${v.toFixed(0)} s`;
+
+// An age in seconds, as a person says it: not an engineering figure,
+// so hours and days to a tenth.
 function age(secs) {
   if (secs === null || secs === undefined || !Number.isFinite(secs)) return "--";
   if (secs < 120) return `${secs.toFixed(0)} s`;
@@ -275,7 +292,7 @@ function readings(s) {
     { k: "skew", v: ppm(v.skew), hint: "The error bound on the frequency." },
     { k: "root delay", v: seconds(v.root_delay) },
     { k: "root dispersion", v: seconds(v.root_dispersion) },
-    { k: "update interval", v: `${fmt(v.last_update_interval, 1)} s` },
+    { k: "update interval", v: interval(v.last_update_interval) },
     { k: "leap", v: LEAP_NAMES[t.leap] ?? t.leap },
     { k: "last update", v: t.reference_time === null ? "none" : `${age(s.now - t.reference_time)} ago` },
   ];

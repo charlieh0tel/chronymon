@@ -128,7 +128,7 @@ function showLoads() {
   if (!DEBUG) return;
   update($("kiosk-foot"), "textContent",
     `load ${loadCount} (${loadedHow}), up ${age((Date.now() - loadedAt) / 1000)}, Chrome ${chromeVersion}, ` +
-    `${innerWidth}x${innerHeight} at ${devicePixelRatio}x, scale ${unitPx.toFixed(2)}` +
+    `${innerWidth}x${innerHeight} at ${devicePixelRatio}x, scale ${unitPx.toFixed(3)}` +
     (lastError ? `, error: ${lastError}` : ""));
 }
 function caught(message) {
@@ -350,8 +350,9 @@ function renderKiosk(s, cached = false, cachedAge = 0) {
   const r = Object.fromEntries(readings(s).map((x) => [x.k, x]));
   update($("kiosk-reference"), "textContent", r.reference?.v ?? "--");
   update($("kiosk-stratum"), "textContent", r.stratum ? `stratum ${r.stratum.v}` : "");
+  // The count last, so that its width changing moves nothing after it.
   update($("kiosk-update"), "textContent", r["last update"]
-    ? `updated ${r["last update"].v}, every ${r["update interval"].v}`
+    ? `updated every ${r["update interval"].v}, last ${r["last update"].v}`
     : s.status?.detail ?? "");
   showTiles(KIOSK_TILES.filter((k) => r[k]).map((k) =>
     tile(k, r[k].v, k === "leap" ? LEAP_TONES[s.tracking.leap] ?? "" : "")));
