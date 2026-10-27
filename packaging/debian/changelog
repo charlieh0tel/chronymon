@@ -1,3 +1,13 @@
+chronymon (1.1.0-1) unstable; urgency=medium
+
+  * chronymond can ask chronyd's UDP command port instead of its
+    socket: CHRONYMOND_SOCKET=127.0.0.1.  Needs chrony 4.7's
+    opencommands for ntpdata and selectdata.
+  * The README says how to install and build the package; the rest of
+    "Running" is now docs/how-it-works.md.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Tue, 27 Oct 2026 12:01:49 -0700
+
 chronymon (1.0.3-1) unstable; urgency=medium
 
   * The kiosk and the status strip keep still as their figures tick.
