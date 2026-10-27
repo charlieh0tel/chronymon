@@ -21,11 +21,14 @@ open.
 ## Data sources
 
 chronyd's control protocol (`candm.h`, `cmdmon.c`), on the Unix socket
-only.  Over UDP chronyd answers only what `opencommands` enables,
-which excludes `ntpdata`, `sourcestats` and `selectdata`.  The socket
-admits only `_chrony` and root: chronyd makes `/run/chrony` 0750 and
-`chronyd.sock` 0755 (4.8), and the client must bind its reply socket
-beside it, as chronyc does.  No access, no start.
+only.  Over UDP chronyd answers only the commands open to the network:
+through 4.6 a fixed set without `ntpdata` and `selectdata` (4.6
+`cmdmon.c`, `permissions`); from 4.7 those `opencommands` names, its
+list replacing the default, which has neither (4.7 `conf.c`,
+`parse_open_commands`).  The socket admits only `_chrony` and root:
+chronyd makes `/run/chrony` 0750 and `chronyd.sock` 0755 (4.8), and
+the client must bind its reply socket beside it, as chronyc does.  No
+access, no start.
 
 1. **Control protocol (primary), our own client**, polled every
    second, each report kept only when it changes:
@@ -105,7 +108,8 @@ From chrony 4.2 to 4.9's source and `chrony-candm` 0.1.3's,
   async.
 - **`chronyc -c` rejected**: 1 ppb, positional CSV, a process per
   report.
-- **UDP rejected**: no `ntpdata`, `sourcestats` or `selectdata`.
+- **UDP not yet**: `ntpdata` and `selectdata` need 4.7's
+  `opencommands`.
 - **Logs kept**: the only complete record, the only refclock and
   tempcomp samples, and the backfill.
 
