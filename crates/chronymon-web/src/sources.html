@@ -100,7 +100,7 @@ function sourcesTable(sources, now) {
       `<td>${report.reachability == null ? "--" : report.reachability.toString(8)}</td>` +
       `<td>${esc(seconds(report.latest_measurement, true))} ` +
       `<span class="muted">± ${esc(seconds(report.latest_measurement_error))}</span></td>` +
-      `<td>${esc(s.selection_state ?? "--")} ${s.selection ? fmt(s.selection.score, 2) : ""}</td>` +
+      `<td>${esc(s.selection_state ?? "--")} ${s.selection ? fmt(s.selection.score) : ""}</td>` +
       `<td>${stats.samples ?? "--"}</td>` +
       `<td>${esc(ppm(stats.residual_frequency, true))}</td>` +
       `<td>${esc(ppm(stats.skew))}</td>` +

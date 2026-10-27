@@ -104,7 +104,7 @@ function describe(s, now) {
   update($("heading"), "textContent", `${s.mode} ${name}${s.removed ? ", removed" : ""}`);
   const tiles = [
     { k: "state", v: s.state ?? "--" },
-    { k: "selection", v: `${s.selection_state ?? "--"} ${s.selection ? fmt(s.selection.score, 2) : ""}` },
+    { k: "selection", v: `${s.selection_state ?? "--"} ${s.selection ? fmt(s.selection.score) : ""}` },
     { k: "stratum", v: String(report.stratum ?? "--") },
     { k: "poll", v: report.poll == null ? "--" : `${age(2 ** report.poll)}` },
     { k: "reach", v: report.reachability == null ? "--" : report.reachability.toString(8) },
