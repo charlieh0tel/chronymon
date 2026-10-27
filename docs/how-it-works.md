@@ -55,11 +55,8 @@ localhost and the hosts `cmdallow` allows; others it ignores, and
 chronymond records chronyd as down.  With `cmdratelimit`, a poll,
 four requests a source, may be over the limit.
 
-Over UDP the reports need no access to the socket, so a daemon run as
-another user could not steer chronyd.  The package's unit still runs
-it as `_chrony`.  Run as another user it would need group `_chrony`
-for the logs, and could not read the PID file (`/run/chrony` is 0700
-on Debian), so would record no restarts or crashes from it.
+The package's unit runs chronymond as `_chrony` either way, for
+chronyd's logs and PID file.
 
 ## Serving the network
 
