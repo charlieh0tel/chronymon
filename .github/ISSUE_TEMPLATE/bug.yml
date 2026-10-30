@@ -35,5 +35,5 @@ body:
     id: logs
     attributes:
       label: Output or logs
-      description: Commands run and their output, or `journalctl -u chronymond -u chronymon-web`.
+      description: Commands run and their output, and `sudo journalctl -u chronymond -u chronymon-web`.
       render: text
