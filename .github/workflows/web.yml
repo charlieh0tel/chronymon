@@ -44,4 +44,7 @@ jobs:
         working-directory: crates/chronymon-web/tests/browser
       - run: PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install --with-deps chromium
         working-directory: crates/chronymon-web/tests/browser
+      # The server and the synthetic data's dependencies, built once, as
+      # deb-workflows' rust-ci.yml caches its jobs' (its pin).
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: make test-web
