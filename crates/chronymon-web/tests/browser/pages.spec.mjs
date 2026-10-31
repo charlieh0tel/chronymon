@@ -555,6 +555,27 @@ test("Refclocks: each refclock's offsets", async ({ page }) => {
   await expect(charts(page).first()).toBeVisible();
 });
 
+test("Refclocks: a gpsd receiver's satellites and dilutions, its fix lost shaded", async ({ page }) => {
+  // The whole range: the receiver's fix is lost early in it, before
+  // the kiosk's day.
+  await page.goto("/refclocks?last=172800");
+  await expect(page.locator("#refclocks")).toContainText("/dev/ttyACM0");
+  await expect(page.locator("#refclocks")).toContainText("gpsd reports");
+  await page.waitForFunction(() => !running);
+  const titles = await page.evaluate(() => stack.charts.map((c) => c.root.querySelector(".u-title").textContent));
+  for (const title of ["Satellites used", "Satellites seen", "PDOP", "TDOP"]) {
+    expect(titles).toContain(`/dev/ttyACM0: ${title}`);
+  }
+  const bands = await page.evaluate(() => stack.charts[0].chronymonBands().map(({ text }) => text));
+  expect(bands).toContain("No fix: /dev/ttyACM0: mode 3, status 7");
+  // Counts tick on whole numbers only.
+  const ticks = await page.evaluate(() => stack.charts
+    .filter((c) => /Satellites/.test(c.root.querySelector(".u-title").textContent))
+    .flatMap((c) => c.chronymonAxis.fit.axis.splits()));
+  expect(ticks.length).toBeGreaterThan(0);
+  expect(ticks.filter((t) => !Number.isInteger(t))).toEqual([]);
+});
+
 test("Refclocks: PPS spans the journal says are shaded, flapping in amber", async ({ page }) => {
   // PPS events placed in the range the page asks about, the device
   // missing one edge, then flapping, then going unreadable for good.
@@ -579,11 +600,13 @@ test("Refclocks: PPS spans the journal says are shaded, flapping in amber", asyn
   await page.goto("/refclocks?last=21600");
   await expect(charts(page).first()).toBeVisible();
   await page.waitForFunction(() => !running);
-  const bands = await page.evaluate(() => stack.charts[0].chronymonBands().map(({ text, color }) => ({ text, color })));
+  const bands = await page.evaluate(() => stack.charts[0].chronymonBands()
+    .filter(({ text }) => text.startsWith("PPS"))
+    .map(({ text, color }) => ({ text, color })));
   expect(bands).toEqual([
     { text: "PPS missing: ptp2:0: 1 edges missed", color: "#f871711f" },
     { text: "PPS flapping: ptp2:0: 9 edges missed in 4 losses", color: "#fbbf241f" },
-    { text: "PPS device unreadable: ptp2, still", color: "#f871711f" },
+    { text: "PPS device unreadable: ptp2:0, still", color: "#f871711f" },
   ]);
 });
 

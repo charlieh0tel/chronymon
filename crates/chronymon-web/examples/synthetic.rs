@@ -46,6 +46,7 @@ use chronymon_log::chrony_log::TempcompLine;
 use chronymon_log::chrony_log::TrackingLine;
 use chronymon_log::schema::RefclockLock;
 use chronymon_log::writer::ChronydState;
+use chronymon_log::writer::Gnss;
 use chronymon_log::writer::Log;
 use jiff::Timestamp;
 
@@ -91,6 +92,21 @@ const REFERENCE_LAG: i64 = 23;
 /// Degrees of the tempcomp sensor's daily swing about its mean.
 const TEMPERATURE_MEAN: f64 = 41.0;
 const TEMPERATURE_SWING: f64 = 4.0;
+/// A gpsd receiver: a row this often, in seconds, while recording, on
+/// the loop's grid, and its fix lost this far through the range for so
+/// long.
+const GNSS_EVERY: i64 = 4 * UPDATE_EVERY;
+const GNSS_DEVICE: &str = "/dev/ttyACM0";
+const FIX_LOST_AT: f64 = 0.3;
+const FIX_LOST_FOR: i64 = 10 * GNSS_EVERY;
+/// Its satellites in view, and how many of them are used at most.
+const SATELLITES_SEEN: i64 = 14;
+const SATELLITES_USED: f64 = 9.0;
+/// gpsd's TPV mode of a 3D fix and of none, and status of a
+/// surveyed-in position.
+const MODE_3D: i64 = 3;
+const MODE_NO_FIX: i64 = 1;
+const STATUS_TIME: i64 = 7;
 
 /// A small, seeded generator: the same database every run.
 struct Noise(u64);
@@ -294,6 +310,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let after = (span as f64 * fraction) as i64;
         start + after / SLOW_UPDATE_EVERY * SLOW_UPDATE_EVERY
     };
+    let fix_lost = start + (span as f64 * FIX_LOST_AT) as i64 / GNSS_EVERY * GNSS_EVERY;
+    let fix_regained = fix_lost + FIX_LOST_FOR;
     let slow = on_grid(SLOW_AT);
     let resumed = slow + SLOW_STOPPED_FOR;
     let fast = on_grid(SLOW_UNTIL);
@@ -415,6 +433,44 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             if !recording {
                 continue;
+            }
+            if (second - start) % GNSS_EVERY == 0 {
+                let fix = !(fix_lost..fix_regained).contains(&second);
+                if second == fix_lost {
+                    batch.event(
+                        when,
+                        EventKind::FixLost,
+                        None,
+                        Some(&format!("{GNSS_DEVICE}: mode {MODE_NO_FIX}, status -")),
+                    )?;
+                }
+                if second == fix_regained {
+                    batch.event(
+                        when,
+                        EventKind::FixRegained,
+                        None,
+                        Some(&format!(
+                            "{GNSS_DEVICE}: mode {MODE_3D}, status {STATUS_TIME}"
+                        )),
+                    )?;
+                }
+                let used = (SATELLITES_USED - 2.0 * phase.cos().abs()).round() as i64;
+                let dop = |base: f64| ((base + 0.2 * phase.sin()) * 10.0).round() / 10.0;
+                batch.gnss(
+                    when,
+                    GNSS_DEVICE,
+                    &Gnss {
+                        mode: if fix { MODE_3D } else { MODE_NO_FIX },
+                        status: fix.then_some(STATUS_TIME),
+                        satellites_used: Some(if fix { used } else { 0 }),
+                        satellites_seen: Some(SATELLITES_SEEN),
+                        gdop: Some(dop(2.1)),
+                        pdop: Some(dop(1.8)),
+                        hdop: Some(dop(0.9)),
+                        vdop: Some(dop(1.6)),
+                        tdop: Some(dop(1.0)),
+                    },
+                )?;
             }
             offset = 0.6 * offset + noise.normal(3e-7);
             let stepped = (step..step + UPDATE_EVERY).contains(&second);

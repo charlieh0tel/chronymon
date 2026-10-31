@@ -460,7 +460,9 @@ directly.  In this order, each its own change:
    `-n`, so connecting starts nothing that was not running.  gpsd's PPS
    messages, a cross-check on the kernel's count, are deferred: on
    apu-0 the pulse goes to the NIC's pin, not to gpsd, which so has
-   none to report.
+   none to report.  The Refclocks page charts each receiver's
+   satellites used and seen, PDOP and TDOP, and shades `fix_lost` to
+   `fix_regained` and `gpsd_down` to `gpsd_up`.
 4. **Steps seen on the clock**, beside `makestep`'s rule: the
    realtime clock moved against the monotonic one between polls past
    any slew.  Catches `chronyc makestep` and `-R`, which the rule
