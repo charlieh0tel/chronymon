@@ -190,6 +190,19 @@ answers again.
 The Refclocks page charts each receiver's satellites used and seen,
 PDOP and TDOP, and shades the spans without a fix and with gpsd down.
 
+## Steps
+
+`step` and `large_offset` are `makestep`'s rule, from chronyd's
+configuration: what chronyd would do with an update's offset.  The
+daemon also watches the clock itself: each poll it reads the realtime
+clock and boot time, which runs on through a suspend, and a jump of
+the one against the other by more than 10% of the time between polls
+(the most Linux lets chronyd slew), plus 50 ms, is a step.  Smaller
+steps cannot be told from a slew.  A step on the clock with no `step`
+by the rule within three polls is `clock_step`; one by the rule the
+clock did not take is `step_unseen`, unless it was too small to see.  A second back at midnight UTC is
+said to be a leap second.
+
 ## chronyd's logs
 
 chronyd's logs give chronymon what its control socket cannot: every
@@ -214,6 +227,8 @@ changes, sources added and removed):
 | - | - |
 | `step` | an update's offset past chronyd's `makestep` threshold, within its update limit: stepped |
 | `large_offset` | the same past the limit, or with no `makestep`: slewed (threshold 1 s without one) |
+| `clock_step` | the clock jumped between polls, against boot time, by more than any slew could, with no `step` by `makestep`'s rule within three polls: `chronyc makestep`, chronyd's `-R`, a leap second, or something else setting the clock |
+| `step_unseen` | `makestep`'s rule said `step` big enough to see, and the clock did not jump within three polls |
 | `chronyd_down`, `chronyd_up` | chronyd stopped or started answering |
 | `chronyd_restart` | chronyd's PID changed |
 | `chronyd_crash` | chronyd's PID file names a process that is gone |

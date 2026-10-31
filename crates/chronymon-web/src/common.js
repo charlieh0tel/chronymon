@@ -367,6 +367,8 @@ const EVENTS = {
   gpsd_up: ["#4ade80", "gpsd up"],
   fix_lost: ["#f87171", "fix lost"],
   fix_regained: ["#4ade80", "fix regained"],
+  clock_step: ["#f87171", "clock stepped, not by makestep"],
+  step_unseen: ["#fbbf24", "makestep step not seen on the clock"],
 };
 
 const eventColor = (kind) => (EVENTS[kind] ?? ["#8b929c"])[0];

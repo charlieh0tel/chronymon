@@ -72,11 +72,17 @@ pub enum EventKind {
     FixLost,
     /// It has one again.
     FixRegained,
+    /// The clock jumped against boot time between polls by more than any
+    /// slew could, and `makestep`'s rule said no step: `chronyc
+    /// makestep`, chronyd's `-R`, or something else setting the clock.
+    ClockStep,
+    /// `makestep`'s rule said a step, and the clock did not jump.
+    StepUnseen,
 }
 
 impl EventKind {
     /// Every kind, for tests and for a reader decoding the stored name.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 31] = [
         Self::DaemonStart,
         Self::DaemonStop,
         Self::DaemonCrash,
@@ -106,6 +112,8 @@ impl EventKind {
         Self::GpsdUp,
         Self::FixLost,
         Self::FixRegained,
+        Self::ClockStep,
+        Self::StepUnseen,
     ];
 
     /// The name stored for it and shown in the journal.
@@ -140,6 +148,8 @@ impl EventKind {
             Self::GpsdUp => "gpsd_up",
             Self::FixLost => "fix_lost",
             Self::FixRegained => "fix_regained",
+            Self::ClockStep => "clock_step",
+            Self::StepUnseen => "step_unseen",
         }
     }
 
