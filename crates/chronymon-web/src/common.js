@@ -386,6 +386,8 @@ function render(s) {
   const troubles = problems.map((t) =>
     `<span class="pill ${TROUBLE_PILLS[t.tone]}"${t.hint ? ` title="${esc(t.hint)}"` : ""}>` +
     `${esc(t.words)}${t.owner ? ` ${esc(t.owner)}` : ""}</span>`).join("");
+  // Edged in the worst one's color, as the kiosk's panel is.
+  update($("status"), "className", `panel ${problems[0]?.tone ?? ""}`.trim());
   showHtml($("status"),
     `<div class="feed"><span class="pill ${state[0]}">${state[1]}</span>` +
     (s.status ? `<span class="muted" id="age">polled ${age(s.status.age)} ago</span>` : "") +
@@ -400,6 +402,7 @@ const paintLost = (what, why) => (page?.lost ?? lost)(what, why);
 
 // Nothing is known.
 function lost(what, why) {
+  update($("status"), "className", "panel");
   showHtml($("status"),
     `<span class="pill down">${esc(what)}</span>` +
     (why ? ` <span class="muted">${esc(why)}</span>` : ""));

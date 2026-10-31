@@ -37,6 +37,11 @@ h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--dim);
 .stat .v { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.1; min-width: 11ch; }
 .stat .k { font-size: 11px; color: var(--dim); }
 .stat.warn .v { color: var(--warn); }
+/* Something wrong now: the strip edged in the worst one's color, as
+   the kiosk's panel is; thickened by a shadow, not the border, so the
+   strip does not move. */
+#status.bad { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad); }
+#status.warn { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn); }
 /* What is wrong now, pills after the feed's. */
 .problems { display: flex; flex-wrap: wrap; gap: 6px 8px; }
 .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
