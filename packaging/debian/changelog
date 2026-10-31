@@ -1,3 +1,16 @@
+chronymon (1.2.0~beta.2-1) unstable; urgency=medium
+
+  * What is wrong now stays on screen while it lasts: PPS missing,
+    flapping or unreadable, a receiver without a fix, gpsd down, and
+    chrony.conf not read.  The kiosk shows each in large type under its
+    sync state, the panel edged in its color, and shades the spans on
+    its charts; the other pages' strip shows them as pills beside LIVE.
+  * The kiosk says ON BACKUPS, in amber, while chronyd is synchronized
+    to other than its own refclocks.
+  * A trouble begun before a chart's range shades the range whole.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 10:47:34 -0700
+
 chronymon (1.2.0~beta.1-1) unstable; urgency=medium
 
   * Beta.  The database goes to schema 7 on first open, and 1.1.0's
