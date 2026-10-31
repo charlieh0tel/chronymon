@@ -1401,6 +1401,40 @@ function leastSquares(pairs) {
   return { slope, intercept: my - slope * mx };
 }
 
+// The least squares polynomial of `degree`, 1 or 2, through `pairs`, x
+// already from T0: its coefficients, constant first.  x is scaled to
+// about 1 for the normal equations, then the coefficients back.
+function polynomial(pairs, degree) {
+  const scale = Math.max(...pairs.map((p) => Math.abs(p.x))) || 1;
+  const size = degree + 1;
+  const a = Array.from({ length: size }, () => new Array(size + 1).fill(0));
+  for (const { x, y } of pairs) {
+    const powers = Array.from({ length: size }, (_, n) => (x / scale) ** n);
+    for (let i = 0; i < size; i++) {
+      for (let j = 0; j < size; j++) a[i][j] += powers[i] * powers[j];
+      a[i][size] += powers[i] * y;
+    }
+  }
+  // Gaussian elimination, with partial pivoting.
+  for (let col = 0; col < size; col++) {
+    const pivot = a.slice(col).reduce((best, row, n) =>
+      Math.abs(row[col]) > Math.abs(a[best][col]) ? n + col : best, col);
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    if (Math.abs(a[col][col]) < Number.EPSILON) return null;
+    for (let row = col + 1; row < size; row++) {
+      const f = a[row][col] / a[col][col];
+      for (let k = col; k <= size; k++) a[row][k] -= f * a[col][k];
+    }
+  }
+  const c = new Array(size).fill(0);
+  for (let row = size - 1; row >= 0; row--) {
+    let s = a[row][size];
+    for (let k = row + 1; k < size; k++) s -= a[row][k] * c[k];
+    c[row] = s / a[row][row];
+  }
+  return c.map((v, n) => v / scale ** n);
+}
+
 // Each value's bucket on the grid of `got`, a read of `points` buckets:
 // the server reports a bucket's mean time, which differs between
 // tables, so two reads pair up only by bucket.
@@ -1436,17 +1470,26 @@ function dots(u, seriesIdx) {
   return { stroke: dot, fill: dot };
 }
 
-// The scatter's colors: the dots, and the fitted line over them.
+// The scatter's colors: the dots, and the linear and quadratic fits
+// over them.
 const DOT_COLOR = "#38bdf8";
 const FIT_COLOR = "#fbbf24";
+const CURVE_COLOR = "#c084fc";
+// Points a fitted curve is drawn through, its width, and the outline's
+// on either side of it, in CSS pixels, and color: the panel's.
+const CURVE_SAMPLES = 64;
+const CURVE_WIDTH = 2;
+const CURVE_OUTLINE_WIDTH = 1.5;
+const CURVE_OUTLINE = "#1d2026";
 
-// A scatter of `pairs` in `host`, `x` and `y` each `{ name }`, with its
-// least-squares line; answers the chart.
-function scatter(host, pairs, x, y, width) {
+// A scatter of `pairs` in `host`, `x` and `y` each `{ name }`, with
+// `fits` drawn over it, each `{ name, color, value }`, `value` the
+// fitted y at an x; answers the chart.
+function scatter(host, pairs, x, y, width, fits) {
   const dx = pairs.map((p) => p.x), dy = pairs.map((p) => p.y);
-  const fit = leastSquares(pairs);
   const lo = Math.min(...dx), hi = Math.max(...dx);
-  const line = fit ? [[lo, hi], [fit.slope * lo + fit.intercept, fit.slope * hi + fit.intercept]] : [[], []];
+  // Each fit drawn through samples across the temperatures seen.
+  const xs = Array.from({ length: CURVE_SAMPLES }, (_, n) => lo + (hi - lo) * n / (CURVE_SAMPLES - 1));
   return new uPlot({
     mode: 2,
     width,
@@ -1459,9 +1502,17 @@ function scatter(host, pairs, x, y, width) {
     series: [
       {},
       { label: "buckets", stroke: DOT_COLOR + "99", fill: DOT_COLOR + "99", paths: dots, points: { show: false } },
-      { label: "fit", stroke: FIT_COLOR, width: 1.5, points: { show: false } },
+      // Each fit over a wider stroke in the panel's color, so it shows
+      // above the dots it runs through.
+      ...fits.flatMap((f) => [
+        { label: `${f.name} outline`, stroke: CURVE_OUTLINE, width: CURVE_WIDTH + 2 * CURVE_OUTLINE_WIDTH, points: { show: false } },
+        { label: f.name, stroke: f.color, width: CURVE_WIDTH, points: { show: false } },
+      ]),
     ],
     legend: { show: false },
     cursor: { drag: { x: false, y: false }, points: { show: false } },
-  }, [null, [dx, dy], line], host);
+  }, [null, [dx, dy], ...fits.flatMap((f) => {
+    const curve = [xs, xs.map(f.value)];
+    return [curve, curve];
+  })], host);
 }

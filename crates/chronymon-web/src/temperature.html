@@ -87,8 +87,10 @@ const stack = {
 
 let scatterChart = null;
 
-// What the last scatter set against each other, for the fit: its pairs,
-// and whether tempcomp compensated nothing over them.
+// The pairs the last scatter set against each other, for the fit.
+// chronyd reports the frequency with tempcomp's compensation undone
+// (`LCL_ReadAbsoluteFrequency`, `local.c`, 4.3 to 4.9), so it is the
+// clock's own however tempcomp is set.
 let fitFrom = null;
 
 // The most compensation chronyd takes, in ppm; past it a reading is
@@ -97,40 +99,6 @@ const TEMPCOMP_LIMIT = 10;
 
 // Significant figures of a fitted coefficient.
 const COEFFICIENT_FIGURES = 4;
-
-// The least squares polynomial of `degree`, 1 or 2, through `pairs`, x
-// already from T0: its coefficients, constant first.  x is scaled to
-// about 1 for the normal equations, then the coefficients back.
-function polynomial(pairs, degree) {
-  const scale = Math.max(...pairs.map((p) => Math.abs(p.x))) || 1;
-  const size = degree + 1;
-  const a = Array.from({ length: size }, () => new Array(size + 1).fill(0));
-  for (const { x, y } of pairs) {
-    const powers = Array.from({ length: size }, (_, n) => (x / scale) ** n);
-    for (let i = 0; i < size; i++) {
-      for (let j = 0; j < size; j++) a[i][j] += powers[i] * powers[j];
-      a[i][size] += powers[i] * y;
-    }
-  }
-  // Gaussian elimination, with partial pivoting.
-  for (let col = 0; col < size; col++) {
-    const pivot = a.slice(col).reduce((best, row, n) =>
-      Math.abs(row[col]) > Math.abs(a[best][col]) ? n + col : best, col);
-    [a[col], a[pivot]] = [a[pivot], a[col]];
-    if (Math.abs(a[col][col]) < Number.EPSILON) return null;
-    for (let row = col + 1; row < size; row++) {
-      const f = a[row][col] / a[col][col];
-      for (let k = col; k <= size; k++) a[row][k] -= f * a[col][k];
-    }
-  }
-  const c = new Array(size).fill(0);
-  for (let row = size - 1; row >= 0; row--) {
-    let s = a[row][size];
-    for (let k = row + 1; k < size; k++) s -= a[row][k] * c[k];
-    c[row] = s / a[row][row];
-  }
-  return c.map((v, n) => v / scale ** n);
-}
 
 // The root mean square of `values`.
 const rms = (values) => Math.sqrt(values.reduce((s, v) => s + v * v, 0) / values.length);
@@ -141,23 +109,38 @@ const utcMinute = (at) => new Date(at * 1000).toISOString().slice(0, 16).replace
 // A coefficient as chrony.conf takes it.
 const coefficient = (v) => String(Number(v.toPrecision(COEFFICIENT_FIGURES)));
 
-// The tempcomp lines that cancel the frequency's following the
-// temperature over the last scatter's pairs, linear and quadratic,
-// each with what it leaves of the frequency's spread.  The frequency
-// is how fast the clock runs, positive fast, and a positive
-// compensation runs it faster, so each coefficient is the fitted one
-// negated; T0, the mean temperature, has none, so k0 is 0.
-function drawFits() {
-  if (!fitFrom) return;
-  const { pairs, uncompensated } = fitFrom;
-  if (!uncompensated) {
-    showHtml($("fits"), `<p class="muted">tempcomp compensated in this range: nothing to fit.</p>`);
-    return;
-  }
+// The fits, linear and quadratic, of the frequency against the
+// temperature over `pairs`, from T0, their mean temperature: each its
+// name, color, coefficients (constant first, x from T0), and the RMS it
+// leaves; and the frequency's own spread about its mean.  What the
+// scatter draws and the dialog gives.
+const FITS = [
+  { name: "Linear", degree: 1, color: FIT_COLOR },
+  { name: "Quadratic", degree: 2, color: CURVE_COLOR },
+];
+function fitsOf(pairs) {
   const t0 = Math.round(pairs.reduce((s, p) => s + p.x, 0) / pairs.length);
   const from = pairs.map((p) => ({ x: p.x - t0, y: p.y }));
   const mean = from.reduce((s, p) => s + p.y, 0) / from.length;
   const spread = rms(from.map((p) => p.y - mean));
+  const fits = FITS.flatMap((f) => {
+    const c = polynomial(from, f.degree);
+    if (!c) return [];
+    const value = (x) => c.reduce((s, v, n) => s + v * (x - t0) ** n, 0);
+    const left = rms(pairs.map(({ x, y }) => y - value(x)));
+    return [{ ...f, c, value, left }];
+  });
+  return { pairs, t0, spread, fits };
+}
+
+// The tempcomp lines that cancel the frequency's following the
+// temperature, from the last scatter's fits, each with what it leaves of
+// the frequency's spread.  The frequency is how fast the clock runs,
+// positive fast, and a positive compensation runs it faster, so each
+// coefficient is the fitted one negated; T0 has none, so k0 is 0.
+function drawFits() {
+  if (!fitFrom) return;
+  const { pairs, t0, spread, fits } = fitFrom;
   const sensor = lastStatus?.tempcomp;
   if (!sensor) return;
   const head = `tempcomp ${sensor.sensor} ${sensor.interval}`;
@@ -165,16 +148,13 @@ function drawFits() {
   // One block to paste: what both were fitted from, the sensor too, so
   // the file says it later, then each fit, its quality in a comment
   // above it, in ASCII, as chrony.conf is.
-  const groups = [["Linear", 1], ["Quadratic", 2]].flatMap(([name, degree]) => {
-    const c = polynomial(from, degree);
-    if (!c) return [];
+  const groups = fits.map(({ name, degree, c, left }) => {
     const [k1, k2] = [-c[1], degree === 2 ? -c[2] : 0];
-    const left = rms(from.map(({ x, y }) => y - c.reduce((s, v, n) => s + v * x ** n, 0)));
     // R^2, the share of the frequency's variance the fit accounts for,
     // and R, its root: for the line, |r|.
     const determined = spread > 0 ? 1 - (left / spread) ** 2 : null;
-    const most = Math.max(...from.map(({ x }) => Math.abs(k1 * x + k2 * x * x)));
-    return [[
+    const most = Math.max(...pairs.map(({ x }) => Math.abs(k1 * (x - t0) + k2 * (x - t0) ** 2)));
+    return [
       `# ${name} fit: leaves ${ppm(left)} RMS of the frequency's ${ppm(spread)}` +
         (determined == null
           ? "."
@@ -183,10 +163,10 @@ function drawFits() {
         ? [`# Compensates up to ${ppm(most)}, past chronyd's ${TEMPCOMP_LIMIT} ppm: readings past it are ignored.`]
         : []),
       `${head} ${t0} 0 ${coefficient(k1)} ${coefficient(k2)}`,
-    ].join("\n")];
+    ].join("\n");
   });
   const common = [
-    `# Fitted by chronymon from ${from.length} points, ` +
+    `# Fitted by chronymon from ${pairs.length} points, ` +
       `${utcMinute(Math.min(...times))} to ${utcMinute(Math.max(...times))} UTC,`,
     `# of ${sensor.sensor}.`,
   ].join("\n");
@@ -219,27 +199,24 @@ function drawScatter(temperature, frequency, points) {
   }
   const fit = leastSquares(pairs);
   const r = pearson(pairs);
+  fitFrom = fitsOf(pairs);
   scatterChart = scatter(
     $("scatter"),
     pairs,
     { name: columnName(key(TEMPCOMP, "temperature")) },
     { name: columnName(key("tracking", "frequency")) },
     $("scatter").clientWidth || 800,
+    fitFrom.fits,
   );
-  // A compensation of zero throughout is tempcomp configured with no
-  // coefficients, or ones that cancel: worth saying, as the frequency
-  // then shows the clock's temperature uncorrected.
-  const compensation = temperature.plots.find((p) => p.column === "compensation");
-  const uncompensated = compensation.mean.every((v) => v == null || v === 0);
-  fitFrom = { pairs, uncompensated };
   // Only for a tempcomp line chronymond read, which the fit replaces.
   $("fit").hidden = !lastStatus?.tempcomp;
+  // The fits' names in their colors, the scatter's legend.
+  const named = fitFrom.fits.map((f) => `<span style="color:${f.color}">${f.name.toLowerCase()}</span>`);
   showHtml($("figures"),
-    `${pairs.length.toLocaleString()} buckets` +
-    (fit ? `; least squares ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
+    `${pairs.length.toLocaleString()} buckets, ${named.join(" and ")} least squares` +
+    (fit ? `; the line ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
     (r == null ? "" : `, r = ${r.toFixed(3)}, r² = ${(r * r).toFixed(3)}`) +
-    ". A clock whose frequency follows its temperature is what tempcomp corrects for." +
-    (uncompensated ? " tempcomp applied no compensation in this range." : ""));
+    ". A clock whose frequency follows its temperature is what tempcomp corrects for.");
 }
 
 async function load(signal) {
@@ -280,7 +257,6 @@ const COPIED_FOR = 1500;
 
 $("fit").addEventListener("click", () => {
   drawFits();
-  $("fit-copy").hidden = !$("fits").querySelector("pre");
   $("fit-dialog").showModal();
 });
 $("fit-close").addEventListener("click", () => $("fit-dialog").close());

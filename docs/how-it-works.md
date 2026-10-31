@@ -255,16 +255,16 @@ and the polling, go on.
 ## Temperature compensation
 
 The Temperature page sets the clock's frequency against the
-temperature chronyd's `tempcomp` reads, from `tempcomp.log`.  To find
-the coefficients, measure first with the null line, every coefficient
-0, which logs the temperature and compensates nothing:
-
-    tempcomp SENSOR 30 0 0 0 0
-    log tracking tempcomp
+temperature chronyd's `tempcomp` reads, from `tempcomp.log`, which
+chronyd writes with a `tempcomp` line and `log tempcomp`.  chronyd
+reports the frequency with the compensation undone, so it is the
+clock's own whatever the coefficients, 0 or a points file.  The
+scatter of one against the other draws the linear and the quadratic
+least squares fits over it.
 
 Once a range holds a good spread of temperatures, the page's Fit
 tempcomp opens a dialog of that range's fit, with Copy, and a block
-to put in place of the null line: a comment of the sensor,
+to put in place of the `tempcomp` line: a comment of the sensor,
 the range and the points fitted, then a linear and a quadratic line,
 each after a comment of how much of the frequency's spread it leaves
 and its R and R^2.  Keep one of the two lines; chronyd takes the last.
@@ -272,8 +272,7 @@ In each, T0 is the mean temperature, k0 0, and k1 and k2 fitted, in
 the sensor's own units (millidegrees, for a Linux sensor).  The sensor
 and interval are the ones chronymond read from chronyd's
 configuration; without a `tempcomp` line read there, as with
-`--chrony-config none`, there is no fit.  A range tempcomp compensated
-in is not fitted.  On Ubuntu, AppArmor lets chronyd read a sensor only
+`--chrony-config none`, there is no fit.  On Ubuntu, AppArmor lets chronyd read a sensor only
 by a `hwmon*/temp*_input` path.
 
 ## Events
