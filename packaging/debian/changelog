@@ -1,3 +1,24 @@
+chronymon (1.2.0~beta.1-1) unstable; urgency=medium
+
+  * Beta.  The database goes to schema 7 on first open, and 1.1.0's
+    daemon will not open it again.
+  * chrony.conf is read as strictly as chronyd reads it, includes and
+    all; on an error the last good one is kept and the Journal says so.
+    `--chrony-config none` for a chronyd configured otherwise.
+  * The daemon starts whenever chrony starts.
+  * --pps watches PPS edges where the kernel sees them, /dev/ppsN or a
+    PTP clock's pin, and journals pulses lost, flapping and down; the
+    Refclocks page shades the spans.
+  * --gpsd records each receiver's fix, satellites and dilutions of
+    precision, journals fixes lost and regained, and charts them on
+    the Refclocks page.
+  * Steps on the clock that makestep's rule did not say, chronyc
+    makestep, -R, a leap second or another program, are journaled as
+    clock_step; a rule's step the clock did not take as step_unseen.
+  * Betas are GitHub pre-releases, never in the APT repository.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 09:58:03 -0700
+
 chronymon (1.1.0-1) unstable; urgency=medium
 
   * chronymond can ask chronyd's UDP command port instead of its
