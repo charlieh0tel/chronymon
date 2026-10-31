@@ -263,7 +263,8 @@ the coefficients, measure first with the null line, every coefficient
     log tracking tempcomp
 
 Once a range holds a good spread of temperatures, the page's Fit
-tempcomp gives a block to put in its place: a comment of the sensor,
+tempcomp opens a dialog of that range's fit, with Copy, and a block
+to put in place of the null line: a comment of the sensor,
 the range and the points fitted, then a linear and a quadratic line,
 each after a comment of how much of the frequency's spread it leaves
 and its R and R^2.  Keep one of the two lines; chronyd takes the last.

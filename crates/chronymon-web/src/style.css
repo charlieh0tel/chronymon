@@ -258,6 +258,12 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u)); font-variant-numeric: tab
 /* Titles a fixed height, which the page takes from each chart's room,
    and one line: cut short rather than wrapped onto the chart. */
 .kiosk .u-title { font-size: calc(20 * var(--u)); line-height: calc(30 * var(--u)); height: calc(30 * var(--u));
-                  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }/* A tempcomp line to paste, selected whole by one click. */
+                  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }/* The fit's button clear of the figures above it. */
+.controls.fit { margin-top: 14px; }
+/* The fit over the page, the page dimmed behind it. */
+dialog#fit-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+                    border-radius: 8px; padding: 16px; width: min(1000px, 95vw); }
+dialog#fit-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
+/* A tempcomp line to paste, selected whole by one click. */
 pre.tempcomp { user-select: all; overflow-x: auto; padding: 6px 10px; background: var(--bg);
                border: 1px solid var(--line); border-radius: 6px; }

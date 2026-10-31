@@ -719,9 +719,9 @@ test("Temperature: the fit gives tempcomp lines that cancel the synthetic clock'
   const text = await page.locator("#fits pre.tempcomp").textContent();
   const groups = text.split("\n\n");
   expect(groups).toHaveLength(3);
-  expect(groups[0]).toMatch(new RegExp("^# Fitted by chronymon from \\d+ points of " +
-    "/sys/devices/platform/coretemp\\.0/hwmon/hwmon2/temp1_input, " +
-    "\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d to \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC\\.$"));
+  expect(groups[0]).toMatch(new RegExp("^# Fitted by chronymon from \\d+ points, " +
+    "\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d to \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC,\\n" +
+    "# of /sys/devices/platform/coretemp\\.0/hwmon/hwmon2/temp1_input\\.$"));
   for (const [n, name] of ["Linear", "Quadratic"].entries()) {
     expect(groups[n + 1]).toMatch(new RegExp(`^# ${name} fit: leaves [\\d.]+ ppm RMS of the frequency's ` +
       `[\\d.]+ ppm, R 0\\.\\d{4}, R\\^2 0\\.\\d{4}\\.\ntempcomp `));
@@ -729,6 +729,27 @@ test("Temperature: the fit gives tempcomp lines that cancel the synthetic clock'
   expect(/^[\x20-\x7e\n]*$/.test(text)).toBe(true);
   const left = groups.slice(1).map((g) => Number(g.match(/leaves ([\d.]+) ppm/)[1]));
   expect(left[1]).toBeLessThan(left[0]);
+});
+
+test("Temperature: the fit is a dialog over the page, closed by Close, Escape or outside", async ({ page }) => {
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  // The button clear of the figures above it.
+  const [figures, button] = await Promise.all([page.locator("#figures").boundingBox(),
+    page.locator("#fit").boundingBox()]);
+  expect(button.y - (figures.y + figures.height)).toBeGreaterThanOrEqual(10);
+  const dialog = page.locator("#fit-dialog");
+  for (const close of [
+    () => page.locator("#fit-close").click(),
+    () => page.keyboard.press("Escape"),
+    () => page.mouse.click(5, 5),
+  ]) {
+    await page.locator("#fit").click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator("pre.tempcomp")).toHaveCount(1);
+    await close();
+    await expect(dialog).toBeHidden();
+  }
 });
 
 test("Temperature: no fit without a tempcomp line chronymond read", async ({ page }) => {
@@ -753,7 +774,9 @@ test("Temperature: compensated readings are not fitted", async ({ page }) => {
   await page.goto("/temperature?last=172800");
   await expect(page.locator("#scatter .uplot")).toBeVisible();
   await page.locator("#fit").click();
+  await expect(page.locator("#fit-dialog")).toBeVisible();
   await expect(page.locator("#fits")).toContainText("tempcomp compensated in this range");
+  await expect(page.locator("#fit-copy")).toBeHidden();
   await expect(page.locator("#fits pre.tempcomp")).toHaveCount(0);
 });
 

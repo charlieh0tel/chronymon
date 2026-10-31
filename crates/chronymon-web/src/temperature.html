@@ -37,9 +37,20 @@
   <h2>The clock's frequency against temperature</h2>
   <div id="scatter"></div>
   <div id="figures" class="muted"></div>
-  <div class="controls"><button id="fit" type="button" hidden>Fit tempcomp</button></div>
-  <div id="fits"></div>
+  <div class="controls fit"><button id="fit" type="button" hidden>Fit tempcomp</button></div>
 </div>
+
+<!-- The fit, of the range shown when it was asked for, over the page
+     until closed. -->
+<dialog id="fit-dialog" aria-labelledby="fit-heading">
+  <h2 id="fit-heading">tempcomp, fitted</h2>
+  <div id="fits"></div>
+  <div class="controls">
+    <button id="fit-copy" type="button">Copy</button>
+    <span class="grow"></span>
+    <button id="fit-close" type="button">Close</button>
+  </div>
+</dialog>
 
 <footer id="colophon"></footer>
 
@@ -77,10 +88,8 @@ const stack = {
 let scatterChart = null;
 
 // What the last scatter set against each other, for the fit: its pairs,
-// and whether tempcomp compensated nothing over them.  The fit, once
-// asked for, follows each read.
+// and whether tempcomp compensated nothing over them.
 let fitFrom = null;
-let fitting = false;
 
 // The most compensation chronyd takes, in ppm; past it a reading is
 // ignored (`chrony.conf`, tempcomp, 4.3 to 4.9).
@@ -139,12 +148,10 @@ const coefficient = (v) => String(Number(v.toPrecision(COEFFICIENT_FIGURES)));
 // compensation runs it faster, so each coefficient is the fitted one
 // negated; T0, the mean temperature, has none, so k0 is 0.
 function drawFits() {
-  if (!fitting || !fitFrom) return;
+  if (!fitFrom) return;
   const { pairs, uncompensated } = fitFrom;
   if (!uncompensated) {
-    showHtml($("fits"), `<p class="muted">tempcomp compensated in this range, so the frequency here is ` +
-      `not the clock's own.  Fit from a range measured with the null line, every coefficient 0: ` +
-      `<code>tempcomp SENSOR INTERVAL 0 0 0 0</code>.</p>`);
+    showHtml($("fits"), `<p class="muted">tempcomp compensated in this range: nothing to fit.</p>`);
     return;
   }
   const t0 = Math.round(pairs.reduce((s, p) => s + p.x, 0) / pairs.length);
@@ -178,12 +185,13 @@ function drawFits() {
       `${head} ${t0} 0 ${coefficient(k1)} ${coefficient(k2)}`,
     ].join("\n")];
   });
-  const common = `# Fitted by chronymon from ${from.length} points of ${sensor.sensor}, ` +
-    `${utcMinute(Math.min(...times))} to ${utcMinute(Math.max(...times))} UTC.`;
+  const common = [
+    `# Fitted by chronymon from ${from.length} points, ` +
+      `${utcMinute(Math.min(...times))} to ${utcMinute(Math.max(...times))} UTC,`,
+    `# of ${sensor.sensor}.`,
+  ].join("\n");
   showHtml($("fits"), `<pre class="tempcomp">${esc([common, ...groups].join("\n\n"))}</pre>` +
-    `<p class="muted">Each point a bucket of the range above, its mean temperature and frequency.  ` +
-    `In chrony.conf in place of the null line, keeping one of the two tempcomp lines: chronyd takes ` +
-    `the last.  Then restart chronyd.</p>`);
+    `<p class="muted">Pick your preferred fit.</p>`);
 }
 
 // The frequency as one series: the protocol's, or the log's where the
@@ -205,7 +213,6 @@ function drawScatter(temperature, frequency, points) {
   );
   fitFrom = null;
   $("fit").hidden = true;
-  showHtml($("fits"), "");
   if (pairs.length < MIN_PAIRS) {
     showHtml($("figures"), "too few readings of both in this range to set against each other");
     return;
@@ -227,7 +234,6 @@ function drawScatter(temperature, frequency, points) {
   fitFrom = { pairs, uncompensated };
   // Only for a tempcomp line chronymond read, which the fit replaces.
   $("fit").hidden = !lastStatus?.tempcomp;
-  drawFits();
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} buckets` +
     (fit ? `; least squares ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
@@ -269,9 +275,33 @@ async function load(signal) {
   drawScatter(temperature, frequency, pointsFor(temperature.to - temperature.from));
 }
 
+// How long Copy says it copied, in ms.
+const COPIED_FOR = 1500;
+
 $("fit").addEventListener("click", () => {
-  fitting = true;
   drawFits();
+  $("fit-copy").hidden = !$("fits").querySelector("pre");
+  $("fit-dialog").showModal();
+});
+$("fit-close").addEventListener("click", () => $("fit-dialog").close());
+// A click on the backdrop, outside the dialog's box, closes it.
+$("fit-dialog").addEventListener("click", (e) => {
+  const box = $("fit-dialog").getBoundingClientRect();
+  if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) {
+    $("fit-dialog").close();
+  }
+});
+// The clipboard is there only to a page served over HTTPS or from
+// localhost; elsewhere the block is selected, to copy by hand.
+$("fit-copy").addEventListener("click", async () => {
+  const pre = $("fits").querySelector("pre");
+  try {
+    await navigator.clipboard.writeText(pre.textContent);
+    $("fit-copy").textContent = "Copied";
+    setTimeout(() => { $("fit-copy").textContent = "Copy"; }, COPIED_FOR);
+  } catch {
+    getSelection().selectAllChildren(pre);
+  }
 });
 rangeControl($("ranges"), soon);
 addEventListener("resize", soon);
