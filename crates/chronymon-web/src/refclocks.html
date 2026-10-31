@@ -50,6 +50,10 @@ const TABLE = "refclock_sample";
 // Each refclock's charts: its offset after corrections, on the asinh
 // axis, the driver's own before them, and the sample's dispersion.
 const COLUMNS = ["cooked_offset", "raw_offset", "dispersion"];
+// Each gpsd receiver's charts, when the daemon watches gpsd: its
+// satellites, and the dilutions of position and of time.
+const RECEIVERS = "gnss";
+const RECEIVER_COLUMNS = ["satellites_used", "satellites_seen", "pdop", "tdop"];
 
 // Why there may be nothing: the control protocol says nothing of a
 // refclock's samples, so they are only in chronyd's log.
@@ -67,12 +71,17 @@ const stack = {
 };
 
 async function load(signal) {
-  const refclocks = await ask(`/api/keys?table=${TABLE}`, signal);
-  showHtml($("refclocks"), refclocks.length
-    ? esc(refclocks.map((r) => `${r.name}: ${r.rows.toLocaleString()} samples, ` +
-        `${new Date(r.first * 1000).toLocaleString()} to ${new Date(r.last * 1000).toLocaleString()}`).join("; "))
-    : "");
-  if (!refclocks.length) {
+  const [refclocks, receivers] = await Promise.all([
+    ask(`/api/keys?table=${TABLE}`, signal),
+    ask(`/api/keys?table=${RECEIVERS}`, signal),
+  ]);
+  const extent = (r, what) => `${r.name}: ${r.rows.toLocaleString()} ${what}, ` +
+    `${new Date(r.first * 1000).toLocaleString()} to ${new Date(r.last * 1000).toLocaleString()}`;
+  showHtml($("refclocks"), esc([
+    ...refclocks.map((r) => extent(r, "samples")),
+    ...receivers.map((r) => extent(r, "gpsd reports")),
+  ].join("; ")));
+  if (!refclocks.length && !receivers.length) {
     clearStack(stack, NOTHING);
     return;
   }
@@ -83,20 +92,24 @@ async function load(signal) {
   const { from, to } = rangeBounds();
   const events = await eventsFor(signal, from, to);
   stack.marks = events.marks;
-  const reads = await readTogether(refclocks.map((r) => (bounds) =>
-    readHistory(signal, TABLE, COLUMNS, r.name, null, bounds)));
-  // A chart per refclock and column, each against its own times: the
-  // refclocks are sampled at their own moments.
-  const drawn = refclocks.flatMap((r, n) =>
-    chartsOf(TABLE, reads[n].plots).map((d) => ({
+  const sources = [
+    ...refclocks.map((r) => ({ name: r.name, table: TABLE, columns: COLUMNS })),
+    ...receivers.map((r) => ({ name: r.name, table: RECEIVERS, columns: RECEIVER_COLUMNS })),
+  ];
+  const reads = await readTogether(sources.map((s) => (bounds) =>
+    readHistory(signal, s.table, s.columns, s.name, null, bounds)));
+  // A chart per refclock or receiver and column, each against its own
+  // times: each is read at its own moments.
+  const drawn = sources.flatMap((s, n) =>
+    chartsOf(s.table, reads[n].plots).map((d) => ({
       ...d,
       x: reads[n].at,
-      title: `${r.name}: ${label(d.column)}`,
-      lines: d.lines.map((l) => ({ ...l, name: r.name })),
+      title: `${s.name}: ${label(d.column)}`,
+      lines: d.lines.map((l) => ({ ...l, name: s.name })),
     })));
   const span = spanOf(reads);
-  drawStack(stack, { x: [], span, drawn, bands: ppsBands(events.events, span.from, span.to) },
-    "no refclock samples in this range");
+  drawStack(stack, { x: [], span, drawn, bands: journalBands(events.events, span.from, span.to) },
+    "no refclock samples or gpsd reports in this range");
 }
 
 rangeControl($("ranges"), soon);

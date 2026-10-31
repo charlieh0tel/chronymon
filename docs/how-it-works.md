@@ -187,6 +187,9 @@ events; a receiver gpsd says nothing of for 10 s has none.  gpsd
 unreachable, or going away, is `gpsd_down`, and `gpsd_up` once it
 answers again.
 
+The Refclocks page charts each receiver's satellites used and seen,
+PDOP and TDOP, and shades the spans without a fix and with gpsd down.
+
 ## chronyd's logs
 
 chronyd's logs give chronymon what its control socket cannot: every

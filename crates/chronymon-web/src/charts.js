@@ -42,6 +42,15 @@ const LABELS = {
   "ntp_sample.poll": ["Poll, log₂ s", 1],
   "ntp_sample.stratum": ["Stratum", 1],
   "selection.score": ["Selection score", 1, "the selected source's is 1"],
+  // gpsd's.
+  "gnss.mode": ["Fix mode", 1, "3 is 3D"],
+  "gnss.satellites_used": ["Satellites used", 1],
+  "gnss.satellites_seen": ["Satellites seen", 1],
+  "gnss.gdop": ["GDOP", 1],
+  "gnss.pdop": ["PDOP", 1],
+  "gnss.hdop": ["HDOP", 1],
+  "gnss.vdop": ["VDOP", 1],
+  "gnss.tdop": ["TDOP", 1],
   "selection.low_limit": ["Offset interval low, µs", 1e6],
   "selection.high_limit": ["Offset interval high, µs", 1e6],
   // chronyd's logs.  tracking.log's frequency and skew are in ppm, with
@@ -115,6 +124,23 @@ const ASINH_COLUMNS = new Set([
   "refclock_sample.cooked_offset",
 ]);
 
+// Columns of whole numbers, counts and codes, whose axes step by one at
+// the least: satellites used of 9.5 says nothing.  A bucket's mean can
+// still fall between, where the count changed within it.
+const WHOLE_COLUMNS = new Set([
+  "tracking.stratum",
+  "source_sample.poll",
+  "source_sample.stratum",
+  "source_sample.reachability",
+  "source_stats.samples",
+  "source_stats.runs",
+  "ntp_sample.poll",
+  "ntp_sample.stratum",
+  "gnss.mode",
+  "gnss.satellites_used",
+  "gnss.satellites_seen",
+]);
+
 const key = (table, column) => `${table}.${column}`;
 const columnName = (k) => (LABELS[k] ?? [k.split(".").at(-1), 1])[0];
 const label = (k) => {
@@ -163,8 +189,8 @@ function pointsFor(seconds) {
 const TICK_COUNT_WEIGHT = 0.3;
 
 // `room`, as `mostTicks` gives it, caps the gaps between labels, unless
-// no round step fits under it.
-function niceScale(min, max, target, room) {
+// no round step fits under it.  With `whole`, no step is less than one.
+function niceScale(min, max, target, room, whole = false) {
   if (!isFinite(min) || !isFinite(max)) return null;
   // A series that never moved still needs an axis with room around it.
   // "Never moved" cannot be exact equality: averaging the same number
@@ -177,7 +203,7 @@ function niceScale(min, max, target, room) {
   }
   const span = max - min;
   const aim = Math.min(target, room);
-  const mag = Math.pow(10, Math.floor(Math.log10(span / aim)));
+  const mag = Math.max(Math.pow(10, Math.floor(Math.log10(span / aim))), whole ? 1 : 0);
   // Under a cap, a step a decade up as well: a span just under a power
   // of ten otherwise has no round step that few ticks cover.
   return roundScale(min, max, span, mag, aim, Math.min(room, MOST_TICKS), [1, 2, 5, 10, 20, 50]) ??
@@ -247,14 +273,15 @@ function yAxis(k, values, height) {
     const asinh = asinhAxis(values, height);
     if (asinh) return asinh;
   }
-  return linearAxis(values, height);
+  return linearAxis(values, height, WHOLE_COLUMNS.has(k));
 }
 
-// A linear y axis, in the shape `yAxis` returns.
-function linearAxis(values, height) {
+// A linear y axis, in the shape `yAxis` returns; with `whole`, ticks on
+// whole numbers only.
+function linearAxis(values, height, whole = false) {
   const nice = !values.length
     ? null
-    : niceScale(Math.min(...values), Math.max(...values), tickTarget(height), mostTicks(height));
+    : niceScale(Math.min(...values), Math.max(...values), tickTarget(height), mostTicks(height), whole);
   const places = nice ? Math.max(0, -Math.floor(Math.log10(nice.step))) : 0;
   const ticks = [];
   if (nice) {
@@ -1153,57 +1180,61 @@ const notSynchronizedBands = (got) =>
     .flatMap(([key, text]) => (got[key] ?? []).map(([from, to]) => ({ from, to, text })))
     .sort((a, b) => a.from - b.from);
 
-// A PPS device's pulse missing or the device unreadable, and its pulse
-// flapping, shaded as not synchronized is, flapping in the amber of a
-// warning.
-const PPS_MISSING_BAND = NOT_SYNCHRONIZED_BAND;
-const PPS_FLAPPING_BAND = "#fbbf241f";
+// A PPS device's pulse missing or the device unreadable, a receiver
+// without a fix or gpsd unreachable, shaded as not synchronized is; a
+// pulse flapping in the amber of a warning.
+const MISSING_BAND = NOT_SYNCHRONIZED_BAND;
+const FLAPPING_BAND = "#fbbf241f";
 
-// The spans the PPS events journal, by the event starting one: the event
+// The spans the journal records, by the event starting one: the event
 // ending it, what the band says, and its color.  The daemon journals no
 // edge inside a flapping span, so the span is shaded whole.
-const PPS_SPANS = {
-  pps_lost: ["pps_back", "PPS missing", PPS_MISSING_BAND],
-  pps_flapping: ["pps_steady", "PPS flapping", PPS_FLAPPING_BAND],
-  pps_down: ["pps_up", "PPS device unreadable", PPS_MISSING_BAND],
+const JOURNAL_SPANS = {
+  pps_lost: ["pps_back", "PPS missing", MISSING_BAND],
+  pps_flapping: ["pps_steady", "PPS flapping", FLAPPING_BAND],
+  pps_down: ["pps_up", "PPS device unreadable", MISSING_BAND],
+  fix_lost: ["fix_regained", "No fix", MISSING_BAND],
+  gpsd_down: ["gpsd_up", "gpsd down", MISSING_BAND],
 };
 
-// The device a PPS event is of: its detail's first word, `pps2` of
-// `pps2: 3 edges missed`.
-const ppsDevice = (e) => (e.detail ?? "").split(":")[0];
+// What an event's span is of: gpsd, for its own; else the device its
+// detail names first, `ptp2:0` of `ptp2:0: 3 edges missed`,
+// `/dev/ttyACM0` of `/dev/ttyACM0: mode 1, status -`.
+const spanOwner = (e) =>
+  e.kind.startsWith("gpsd_") ? "gpsd" : (e.detail ?? "").split(/:(?: |$)/)[0];
 
-// The spans `events`, oldest first, journal of PPS devices, as bands
-// `{ from, to, text, color }` over `from` to `to`: one ending in the
-// range but begun before it starts at `from`; one not ended, at `to`.
-// A device going unreadable ends its other spans, as the daemon stops
-// counting them.
-function ppsBands(events, from, to) {
-  const starts = Object.fromEntries(Object.entries(PPS_SPANS).map(([start, [end]]) => [end, start]));
+// The spans `events`, oldest first, record, as bands `{ from, to, text,
+// color }` over `from` to `to`: one ending in the range but begun
+// before it starts at `from`; one not ended, at `to`.  A PPS device
+// going unreadable ends its other spans, as the daemon stops counting
+// them.
+function journalBands(events, from, to) {
+  const starts = Object.fromEntries(Object.entries(JOURNAL_SPANS).map(([start, [end]]) => [end, start]));
   const open = new Map();
   const bands = [];
-  const close = (device, start, at, detail) => {
-    const key = `${device}\n${start}`;
-    const [, words, color] = PPS_SPANS[start];
+  const close = (owner, start, at, detail) => {
+    const key = `${owner}\n${start}`;
+    const [, words, color] = JOURNAL_SPANS[start];
     bands.push({ from: open.get(key) ?? from, to: at, text: `${words}: ${detail}`, color });
     open.delete(key);
   };
   for (const e of events) {
-    const device = ppsDevice(e);
+    const owner = spanOwner(e);
     if (e.kind === "pps_down") {
       for (const start of ["pps_lost", "pps_flapping"]) {
-        if (open.has(`${device}\n${start}`)) close(device, start, e.at, device);
+        if (open.has(`${owner}\n${start}`)) close(owner, start, e.at, owner);
       }
     }
-    if (PPS_SPANS[e.kind]) {
-      const key = `${device}\n${e.kind}`;
+    if (JOURNAL_SPANS[e.kind]) {
+      const key = `${owner}\n${e.kind}`;
       if (!open.has(key)) open.set(key, e.at);
     } else if (starts[e.kind]) {
-      close(device, starts[e.kind], e.at, e.detail ?? device);
+      close(owner, starts[e.kind], e.at, e.detail || owner);
     }
   }
   for (const key of [...open.keys()]) {
-    const [device, start] = key.split("\n");
-    close(device, start, to, `${device}, still`);
+    const [owner, start] = key.split("\n");
+    close(owner, start, to, `${owner}, still`);
   }
   return bands.sort((a, b) => a.from - b.from);
 }
