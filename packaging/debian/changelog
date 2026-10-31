@@ -1,3 +1,14 @@
+chronymon (1.2.2~beta.1-1) unstable; urgency=medium
+
+  * The Temperature page fits tempcomp's coefficients: from a range
+    measured with the null line, every coefficient 0, Fit tempcomp
+    gives a linear and a quadratic tempcomp line for chrony.conf, with
+    comments of the sensor, range, points and each fit's quality.
+    chronymond reads the tempcomp line's sensor and interval from
+    chronyd's configuration.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 15:36:36 -0700
+
 chronymon (1.2.1-1) unstable; urgency=medium
 
   * COASTING only while the selected source has answered none of its
