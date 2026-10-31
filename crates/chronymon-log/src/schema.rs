@@ -95,6 +95,36 @@ pub(crate) const REFCLOCK_LOCKS: &str = "refclock_locks";
 /// configuration failed; empty, or none, when it did not.
 pub(crate) const CHRONY_CONFIG_ERROR: &str = "chrony_config_error";
 
+/// The `meta` key of chronyd's `tempcomp` sensor and its interval, as
+/// the daemon last read chronyd's configuration: its [`Tempcomp::stored`]
+/// text.  Empty, or none, when there is no `tempcomp`.
+pub(crate) const TEMPCOMP: &str = "tempcomp";
+
+/// A `tempcomp` directive's sensor, the file chronyd reads the
+/// temperature from, and how often, in seconds, as written: what a
+/// line with new coefficients keeps (`chrony.conf`, 4.3 to 4.9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tempcomp {
+    pub sensor: String,
+    pub interval: String,
+}
+
+impl Tempcomp {
+    /// As `meta` stores it: the sensor and the interval, a tab between.
+    pub(crate) fn stored(&self) -> String {
+        format!("{}\t{}", self.sensor, self.interval)
+    }
+
+    /// One from its [`stored`](Self::stored) text.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let (sensor, interval) = text.split_once('\t')?;
+        Some(Self {
+            sensor: sensor.to_owned(),
+            interval: interval.to_owned(),
+        })
+    }
+}
+
 /// The `meta` key of what the daemon's watchers find wrong now: a line
 /// per [`Trouble`], its [`Trouble::stored`] text.  Empty, or none, when
 /// nothing is.

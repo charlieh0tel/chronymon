@@ -37,6 +37,8 @@
   <h2>The clock's frequency against temperature</h2>
   <div id="scatter"></div>
   <div id="figures" class="muted"></div>
+  <div class="controls"><button id="fit" type="button" hidden>Fit tempcomp</button></div>
+  <div id="fits"></div>
 </div>
 
 <footer id="colophon"></footer>
@@ -74,6 +76,116 @@ const stack = {
 
 let scatterChart = null;
 
+// What the last scatter set against each other, for the fit: its pairs,
+// and whether tempcomp compensated nothing over them.  The fit, once
+// asked for, follows each read.
+let fitFrom = null;
+let fitting = false;
+
+// The most compensation chronyd takes, in ppm; past it a reading is
+// ignored (`chrony.conf`, tempcomp, 4.3 to 4.9).
+const TEMPCOMP_LIMIT = 10;
+
+// Significant figures of a fitted coefficient.
+const COEFFICIENT_FIGURES = 4;
+
+// The least squares polynomial of `degree`, 1 or 2, through `pairs`, x
+// already from T0: its coefficients, constant first.  x is scaled to
+// about 1 for the normal equations, then the coefficients back.
+function polynomial(pairs, degree) {
+  const scale = Math.max(...pairs.map((p) => Math.abs(p.x))) || 1;
+  const size = degree + 1;
+  const a = Array.from({ length: size }, () => new Array(size + 1).fill(0));
+  for (const { x, y } of pairs) {
+    const powers = Array.from({ length: size }, (_, n) => (x / scale) ** n);
+    for (let i = 0; i < size; i++) {
+      for (let j = 0; j < size; j++) a[i][j] += powers[i] * powers[j];
+      a[i][size] += powers[i] * y;
+    }
+  }
+  // Gaussian elimination, with partial pivoting.
+  for (let col = 0; col < size; col++) {
+    const pivot = a.slice(col).reduce((best, row, n) =>
+      Math.abs(row[col]) > Math.abs(a[best][col]) ? n + col : best, col);
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    if (Math.abs(a[col][col]) < Number.EPSILON) return null;
+    for (let row = col + 1; row < size; row++) {
+      const f = a[row][col] / a[col][col];
+      for (let k = col; k <= size; k++) a[row][k] -= f * a[col][k];
+    }
+  }
+  const c = new Array(size).fill(0);
+  for (let row = size - 1; row >= 0; row--) {
+    let s = a[row][size];
+    for (let k = row + 1; k < size; k++) s -= a[row][k] * c[k];
+    c[row] = s / a[row][row];
+  }
+  return c.map((v, n) => v / scale ** n);
+}
+
+// The root mean square of `values`.
+const rms = (values) => Math.sqrt(values.reduce((s, v) => s + v * v, 0) / values.length);
+
+// A time as a comment in chrony.conf says it, to the minute, in UTC.
+const utcMinute = (at) => new Date(at * 1000).toISOString().slice(0, 16).replace("T", " ");
+
+// A coefficient as chrony.conf takes it.
+const coefficient = (v) => String(Number(v.toPrecision(COEFFICIENT_FIGURES)));
+
+// The tempcomp lines that cancel the frequency's following the
+// temperature over the last scatter's pairs, linear and quadratic,
+// each with what it leaves of the frequency's spread.  The frequency
+// is how fast the clock runs, positive fast, and a positive
+// compensation runs it faster, so each coefficient is the fitted one
+// negated; T0, the mean temperature, has none, so k0 is 0.
+function drawFits() {
+  if (!fitting || !fitFrom) return;
+  const { pairs, uncompensated } = fitFrom;
+  if (!uncompensated) {
+    showHtml($("fits"), `<p class="muted">tempcomp compensated in this range, so the frequency here is ` +
+      `not the clock's own.  Fit from a range measured with the null line, every coefficient 0: ` +
+      `<code>tempcomp SENSOR INTERVAL 0 0 0 0</code>.</p>`);
+    return;
+  }
+  const t0 = Math.round(pairs.reduce((s, p) => s + p.x, 0) / pairs.length);
+  const from = pairs.map((p) => ({ x: p.x - t0, y: p.y }));
+  const mean = from.reduce((s, p) => s + p.y, 0) / from.length;
+  const spread = rms(from.map((p) => p.y - mean));
+  const sensor = lastStatus?.tempcomp;
+  if (!sensor) return;
+  const head = `tempcomp ${sensor.sensor} ${sensor.interval}`;
+  const times = pairs.map((p) => p.at);
+  // One block to paste: what both were fitted from, the sensor too, so
+  // the file says it later, then each fit, its quality in a comment
+  // above it, in ASCII, as chrony.conf is.
+  const groups = [["Linear", 1], ["Quadratic", 2]].flatMap(([name, degree]) => {
+    const c = polynomial(from, degree);
+    if (!c) return [];
+    const [k1, k2] = [-c[1], degree === 2 ? -c[2] : 0];
+    const left = rms(from.map(({ x, y }) => y - c.reduce((s, v, n) => s + v * x ** n, 0)));
+    // R^2, the share of the frequency's variance the fit accounts for,
+    // and R, its root: for the line, |r|.
+    const determined = spread > 0 ? 1 - (left / spread) ** 2 : null;
+    const most = Math.max(...from.map(({ x }) => Math.abs(k1 * x + k2 * x * x)));
+    return [[
+      `# ${name} fit: leaves ${ppm(left)} RMS of the frequency's ${ppm(spread)}` +
+        (determined == null
+          ? "."
+          : `, R ${Math.sqrt(Math.max(determined, 0)).toFixed(4)}, R^2 ${determined.toFixed(4)}.`),
+      ...(most > TEMPCOMP_LIMIT
+        ? [`# Compensates up to ${ppm(most)}, past chronyd's ${TEMPCOMP_LIMIT} ppm: readings past it are ignored.`]
+        : []),
+      `${head} ${t0} 0 ${coefficient(k1)} ${coefficient(k2)}`,
+    ].join("\n")];
+  });
+  const common = `# Fitted by chronymon from ${from.length} points of ${sensor.sensor}, ` +
+    `${utcMinute(Math.min(...times))} to ${utcMinute(Math.max(...times))} UTC.`;
+  showHtml($("fits"), `<pre class="tempcomp">${esc([common, ...groups].join("\n\n"))}</pre>` +
+    `<p class="muted">Each point a bucket of the range above, its mean temperature and frequency.  ` +
+    `In chrony.conf in place of the null line, keeping one of the two tempcomp lines: chronyd takes ` +
+    `the last.  Then restart chronyd.</p>`);
+}
+
 // The frequency as one series: the protocol's, or the log's where the
 // daemon was not recording.
 function frequencyValues(got) {
@@ -91,6 +203,9 @@ function drawScatter(temperature, frequency, points) {
     { read: frequency, values: frequencyValues(frequency) },
     points,
   );
+  fitFrom = null;
+  $("fit").hidden = true;
+  showHtml($("fits"), "");
   if (pairs.length < MIN_PAIRS) {
     showHtml($("figures"), "too few readings of both in this range to set against each other");
     return;
@@ -109,6 +224,10 @@ function drawScatter(temperature, frequency, points) {
   // then shows the clock's temperature uncorrected.
   const compensation = temperature.plots.find((p) => p.column === "compensation");
   const uncompensated = compensation.mean.every((v) => v == null || v === 0);
+  fitFrom = { pairs, uncompensated };
+  // Only for a tempcomp line chronymond read, which the fit replaces.
+  $("fit").hidden = !lastStatus?.tempcomp;
+  drawFits();
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} buckets` +
     (fit ? `; least squares ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
@@ -118,6 +237,9 @@ function drawScatter(temperature, frequency, points) {
 }
 
 async function load(signal) {
+  // The status says which tempcomp line the fit replaces; read here if
+  // the strip has not yet.
+  lastStatus ??= await ask("/api/status", signal);
   // Whether there are any at all, from the table's extent.
   const probe = await ask(`/api/history?table=${TEMPCOMP}&columns=temperature&points=16`, signal);
   if (probe.first == null) {
@@ -147,6 +269,10 @@ async function load(signal) {
   drawScatter(temperature, frequency, pointsFor(temperature.to - temperature.from));
 }
 
+$("fit").addEventListener("click", () => {
+  fitting = true;
+  drawFits();
+});
 rangeControl($("ranges"), soon);
 addEventListener("resize", soon);
 content({

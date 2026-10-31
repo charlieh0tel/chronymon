@@ -47,7 +47,9 @@ use crate::error::Result;
 use crate::schema::CHRONY_CONFIG_ERROR;
 use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
+use crate::schema::TEMPCOMP;
 use crate::schema::TROUBLES;
+use crate::schema::Tempcomp;
 use crate::schema::Trouble;
 use crate::text;
 
@@ -683,6 +685,20 @@ impl Reader {
             )
             .optional()?;
         Ok(stored.filter(|error| !error.is_empty()))
+    }
+
+    /// chronyd's `tempcomp` sensor, as the daemon last read its
+    /// configuration, if it has one.
+    pub fn tempcomp(&self) -> Result<Option<Tempcomp>> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![TEMPCOMP],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.as_deref().and_then(Tempcomp::parse))
     }
 
     /// What the daemon's watchers last found wrong.
@@ -2527,6 +2543,22 @@ mod tests {
             .write(|batch| batch.chrony_config_error(None))
             .expect("written");
         assert_eq!(db.reader().chrony_config_error().expect("read"), None);
+    }
+
+    #[test]
+    fn reads_the_tempcomp_sensor_last_recorded() {
+        let mut db = Database::new("tempcomp");
+        assert_eq!(db.reader().tempcomp().expect("read"), None);
+        let tempcomp = Tempcomp {
+            sensor: "/sys/class/hwmon/hwmon2/temp1_input".to_owned(),
+            interval: "30".to_owned(),
+        };
+        db.log
+            .write(|batch| batch.tempcomp(Some(&tempcomp)))
+            .expect("written");
+        assert_eq!(db.reader().tempcomp().expect("read"), Some(tempcomp));
+        db.log.write(|batch| batch.tempcomp(None)).expect("written");
+        assert_eq!(db.reader().tempcomp().expect("read"), None);
     }
 
     #[test]

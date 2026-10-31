@@ -252,6 +252,29 @@ ones too, then every 10 s.  One it cannot read, a damaged `.gz` say,
 is named once in its journal and tried again each time; the others,
 and the polling, go on.
 
+## Temperature compensation
+
+The Temperature page sets the clock's frequency against the
+temperature chronyd's `tempcomp` reads, from `tempcomp.log`.  To find
+the coefficients, measure first with the null line, every coefficient
+0, which logs the temperature and compensates nothing:
+
+    tempcomp SENSOR 30 0 0 0 0
+    log tracking tempcomp
+
+Once a range holds a good spread of temperatures, the page's Fit
+tempcomp gives a block to put in its place: a comment of the sensor,
+the range and the points fitted, then a linear and a quadratic line,
+each after a comment of how much of the frequency's spread it leaves
+and its R and R^2.  Keep one of the two lines; chronyd takes the last.
+In each, T0 is the mean temperature, k0 0, and k1 and k2 fitted, in
+the sensor's own units (millidegrees, for a Linux sensor).  The sensor
+and interval are the ones chronymond read from chronyd's
+configuration; without a `tempcomp` line read there, as with
+`--chrony-config none`, there is no fit.  A range tempcomp compensated
+in is not fitted.  On Ubuntu, AppArmor lets chronyd read a sensor only
+by a `hwmon*/temp*_input` path.
+
 ## Events
 
 The journal records, besides chronyd's own changes (reference and leap

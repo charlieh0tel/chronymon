@@ -1,6 +1,7 @@
 //! What chronymond needs from chronyd's configuration: its `makestep`,
-//! which decides when a correction is a step, and which refclocks are
-//! locked to which (`refclock ... lock`), which the web view pairs.
+//! which decides when a correction is a step, which refclocks are
+//! locked to which (`refclock ... lock`), which the web view pairs, and
+//! its `tempcomp` sensor, which a line of fitted coefficients keeps.
 //!
 //! Read as chronyd reads it (`CNF_ReadFile`, `conf.c`, and the
 //! `chrony.conf` documentation, 4.3 to 4.9): the main file, the files
@@ -32,6 +33,7 @@ use glob::Pattern;
 use chronymon::units::Seconds;
 use chronymon_control::report::ReferenceId;
 use chronymon_log::schema::RefclockLock;
+use chronymon_log::schema::Tempcomp;
 
 /// The correction recorded as a large offset when chronyd's
 /// configuration has no `makestep` threshold to go by.
@@ -122,6 +124,11 @@ const COMMENT: [char; 4] = ['!', ';', '#', '%'];
 /// `cmdparse.c`).
 const REFERENCE_ID_LENGTH: usize = 4;
 
+/// The words of a `tempcomp` directive after its name: its points-file
+/// form's, and its coefficients' (`parse_tempcomp`, `conf.c`).
+const TEMPCOMP_POINTS_WORDS: usize = 3;
+const TEMPCOMP_COEFFICIENTS_WORDS: usize = 6;
+
 /// How much of a refclock's driver name its default reference ID
 /// takes (`RCL_AddRefclock`, `refclock.c`).
 const DRIVER_PREFIX: usize = 3;
@@ -161,6 +168,8 @@ pub(crate) struct Config {
     pub(crate) make_step: Option<MakeStep>,
     /// Each `refclock`, in the order chronyd adds them.
     pub(crate) refclocks: Vec<Refclock>,
+    /// The last `tempcomp`'s sensor and interval, if any.
+    pub(crate) tempcomp: Option<Tempcomp>,
 }
 
 /// A `refclock` directive: the refclock's reference ID and the one its
@@ -213,6 +222,7 @@ impl Config {
             match directive.to_ascii_lowercase().as_str() {
                 "makestep" => self.make_step(&words),
                 "refclock" => self.refclock(&words),
+                "tempcomp" => self.tempcomp(&words),
                 "include" => {
                     let [pattern] = words[..] else {
                         return Err(malformed(index + 1, "include"));
@@ -243,6 +253,24 @@ impl Config {
             self.make_step = Some(MakeStep {
                 threshold: Seconds::new(threshold),
                 limit,
+            });
+        }
+    }
+
+    /// A `tempcomp SENSOR INTERVAL T0 K0 K1 K2` or `tempcomp SENSOR
+    /// INTERVAL POINTS` directive's sensor and interval; the last wins
+    /// (`parse_tempcomp`, `conf.c`).  chronyd refuses to start on any
+    /// other number of words.
+    fn tempcomp(&mut self, words: &[&str]) {
+        if let [sensor, interval, ..] = words
+            && matches!(
+                words.len(),
+                TEMPCOMP_POINTS_WORDS | TEMPCOMP_COEFFICIENTS_WORDS
+            )
+        {
+            self.tempcomp = Some(Tempcomp {
+                sensor: (*sensor).to_owned(),
+                interval: (*interval).to_owned(),
             });
         }
     }
@@ -313,6 +341,13 @@ impl fmt::Display for Config {
         }
         for lock in self.locks() {
             write!(f, ", {lock}")?;
+        }
+        if let Some(tempcomp) = &self.tempcomp {
+            write!(
+                f,
+                ", tempcomp {} every {} s",
+                tempcomp.sensor, tempcomp.interval
+            )?;
         }
         Ok(())
     }
@@ -494,6 +529,34 @@ mod tests {
         // Hidden from glob(3), as from chronyd.
         fs::write(conf_d.join(".hidden.conf"), "makestep 9 9\n").expect("written");
         assert_eq!(read(&main).make_step, Some(FIRST_THREE));
+        fs::remove_dir_all(&directory).expect("removed");
+    }
+
+    #[test]
+    fn keeps_the_last_tempcomps_sensor_in_either_form() {
+        let directory = directory("tempcomp");
+        let main = directory.join("chrony.conf");
+        let hwmon = "/sys/devices/platform/coretemp.0/hwmon/hwmon2/temp1_input";
+        let points = "/sys/class/hwmon/hwmon0/temp1_input";
+        fs::write(
+            &main,
+            format!(
+                "tempcomp {hwmon} 30 0 0 0 0\nTempComp {points} 15 /etc/chrony/tempcomp.points\n"
+            ),
+        )
+        .expect("written");
+        let sensor = |sensor: &str, interval: &str| {
+            Some(Tempcomp {
+                sensor: sensor.to_owned(),
+                interval: interval.to_owned(),
+            })
+        };
+        assert_eq!(read(&main).tempcomp, sensor(points, "15"));
+        // chronyd would refuse a line of any other length.
+        fs::write(&main, format!("tempcomp {hwmon} 30 0 0\n")).expect("written");
+        assert_eq!(read(&main).tempcomp, None);
+        fs::write(&main, format!("tempcomp {hwmon} 30 26000 0 0.000183 0\n")).expect("written");
+        assert_eq!(read(&main).tempcomp, sensor(hwmon, "30"));
         fs::remove_dir_all(&directory).expect("removed");
     }
 
