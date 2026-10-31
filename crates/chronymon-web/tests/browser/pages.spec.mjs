@@ -555,6 +555,38 @@ test("Refclocks: each refclock's offsets", async ({ page }) => {
   await expect(charts(page).first()).toBeVisible();
 });
 
+test("Refclocks: PPS spans the journal says are shaded, flapping in amber", async ({ page }) => {
+  // PPS events placed in the range the page asks about, the device
+  // missing one edge, then flapping, then going unreadable for good.
+  await page.route("**/api/events?*", async (route) => {
+    const response = await route.fetch();
+    const events = await response.json();
+    const to = Number(new URL(route.request().url()).searchParams.get("to") ?? Date.now() / 1000);
+    const at = (back) => to - back;
+    const pps = (kind, back, detail) => ({ at: at(back), kind, detail, source: null, source_id: null });
+    return route.fulfill({
+      response,
+      json: [
+        ...events,
+        pps("pps_lost", 3000, "ptp2:0"),
+        pps("pps_back", 2999, "ptp2:0: 1 edges missed"),
+        pps("pps_flapping", 2000, "ptp2:0"),
+        pps("pps_steady", 1500, "ptp2:0: 9 edges missed in 4 losses"),
+        pps("pps_down", 600, "ptp2:0: Permission denied (os error 13)"),
+      ].sort((a, b) => a.at - b.at),
+    });
+  });
+  await page.goto("/refclocks?last=21600");
+  await expect(charts(page).first()).toBeVisible();
+  await page.waitForFunction(() => !running);
+  const bands = await page.evaluate(() => stack.charts[0].chronymonBands().map(({ text, color }) => ({ text, color })));
+  expect(bands).toEqual([
+    { text: "PPS missing: ptp2:0: 1 edges missed", color: "#f871711f" },
+    { text: "PPS flapping: ptp2:0: 9 edges missed in 4 losses", color: "#fbbf241f" },
+    { text: "PPS device unreadable: ptp2, still", color: "#f871711f" },
+  ]);
+});
+
 test("Temperature: the series and the scatter", async ({ page }) => {
   await page.goto("/temperature?last=86400");
   await expect(charts(page).first()).toBeVisible();

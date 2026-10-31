@@ -452,9 +452,11 @@ directly.  In this order, each its own change:
 
 A device or gpsd named but absent is recorded as down, as chronyd is,
 and the daemon runs on.  On the web view, fix mode and pulse presence
-are bands over the Refclocks charts (a flapping span shaded whole,
-from `pps_flapping` to `pps_steady`, each missed edge a tick inside it
-where the zoom shows seconds), satellites and DOPs charts there,
+are bands over the Refclocks charts (pulses missing or a device
+unreadable in red, a flapping span in amber, shaded whole from
+`pps_flapping` to `pps_steady`: no edge inside it is journaled, so the
+ticks for each first planned have nothing to draw), satellites and
+DOPs charts there,
 and the events marked on every time axis.  apu-0 (gpsd and a PPS) is
 the test host.
 
