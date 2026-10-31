@@ -9,7 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-chronymon = { version = "1.2.2-beta.1", path = "../chronymon" }
+chronymon = { version = "1.2.2-beta.2", path = "../chronymon" }
 jiff = "0.2.38"
 thiserror = "2.0.21"
 
