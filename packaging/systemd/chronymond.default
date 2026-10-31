@@ -33,5 +33,10 @@
 # _chrony's group, or clock's where it exists.  None by default.
 #CHRONYMOND_PPS=/dev/ptp2
 
+# gpsd's address, host[:port], port 2947 by default, to record its
+# receivers' fix, satellites and dilutions of precision.  gpsd must run
+# with -n, as it does for chronyd.  None by default.
+#CHRONYMOND_GPSD=localhost
+
 # chronyd's PID file, which tells a restart from a crash.
 #CHRONYMOND_PID_FILE=/run/chrony/chronyd.pid

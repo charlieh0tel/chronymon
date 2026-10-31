@@ -440,11 +440,27 @@ directly.  In this order, each its own change:
    and the losses in between.  The journal says when it started
    flapping and when it stopped, not every flap.
 3. **gpsd**, only with `--gpsd ADDRESS`: its connection is its health
-   (`gpsd_*` events).  `?WATCH` for TPV's fix mode, SKY's satellites
-   used and seen and its DOPs, each a row only when changed, and its
-   PPS messages, a cross-check on the kernel's count.  Everyone running
-   gpsd for chronyd runs it with `-n`, so connecting starts nothing
-   that was not running.
+   (`gpsd_down`, `gpsd_up`).  `?WATCH` for its generic reports alone,
+   the same whatever the receiver (`gpsd_json(5)`, 3.25): TPV's fix
+   mode and status, and SKY's satellites used and seen and its DOPs,
+   in `gnss` (schema 7): a row when the mode or status changes, and
+   for satellites and DOPs at most once a minute, the DOPs compared to
+   0.1.  On apu-0 a satellite at the edge of use flipped the count
+   between 9 and 10, the DOPs with it, 6 rows in 30 s on change alone,
+   so about 17,000 a day; once a minute bounds it at 1,440.  Every other
+   class is read past: a u-blox's RAW and SUBFRAME, much of the
+   stream on apu-0, are the driver's own.  apu-0's gpsd 3.25 sends two
+   SKYs a second, one listing satellites, one of DOPs alone that
+   disagree with it (GDOP 2.06 against 0.33), so only a SKY listing
+   its satellites is taken.  A fix is a 3D one, or TPV status 7, a
+   timing receiver's surveyed-in position whatever its mode (apu-0's
+   NEO-M8T reports mode 3, status 7); `fix_lost` and `fix_regained`
+   once two TPVs agree, so one wavering is not two events, and no TPV
+   for 10 s is no fix.  Everyone running gpsd for chronyd runs it with
+   `-n`, so connecting starts nothing that was not running.  gpsd's PPS
+   messages, a cross-check on the kernel's count, are deferred: on
+   apu-0 the pulse goes to the NIC's pin, not to gpsd, which so has
+   none to report.
 4. **Steps seen on the clock**, beside `makestep`'s rule: the
    realtime clock moved against the monotonic one between polls past
    any slew.  Catches `chronyc makestep` and `-R`, which the rule

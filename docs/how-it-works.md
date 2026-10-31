@@ -169,6 +169,24 @@ missing or a device unreadable in red, flapping in amber, shaded whole,
 as no edge within it is journaled.  A single missed edge is a thin
 line.
 
+## gpsd
+
+`CHRONYMOND_GPSD=localhost` (or `host:port`) records what gpsd says of
+each receiver: whether it has a fix, and its satellites used and seen
+and its dilutions of precision, from gpsd's generic TPV and SKY
+reports, whatever the receiver.  A row is written when the fix's mode
+or status changes, and for satellites and dilutions, compared to 0.1,
+at most once a minute: a satellite at the edge of being used flips the
+count every few seconds.  gpsd must run with `-n`, as it
+does for chronyd, so connecting starts nothing.
+
+A fix is a 3D one, or a timing receiver's surveyed-in position, gpsd's
+status 7, whatever its mode.  `fix_lost` and `fix_regained` are
+journaled once two reports agree, so a fix wavering once is not two
+events; a receiver gpsd says nothing of for 10 s has none.  gpsd
+unreachable, or going away, is `gpsd_down`, and `gpsd_up` once it
+answers again.
+
 ## chronyd's logs
 
 chronyd's logs give chronymon what its control socket cannot: every
@@ -205,6 +223,8 @@ changes, sources added and removed):
 | `pps_lost`, `pps_back` | a PPS device missed an edge; its pulses landing again, and how many edges were missed |
 | `pps_flapping`, `pps_steady` | a loss within 60 s of the last; pulses unbroken for 60 s after, the edges missed and the losses |
 | `pps_down`, `pps_up` | a PPS device could not be read; could again |
+| `gpsd_down`, `gpsd_up` | gpsd could not be reached or went away; answered again |
+| `fix_lost`, `fix_regained` | a receiver gpsd reports had no fix, two reports in a row or none for 10 s; had one again |
 
 Between a leap change to unsynchronized and one from it, the clock's
 charts on Live and the kiosk break their lines and shade the span:

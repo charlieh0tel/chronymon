@@ -363,6 +363,10 @@ const EVENTS = {
   pps_steady: ["#4ade80", "PPS steady"],
   pps_down: ["#f87171", "PPS device unreadable"],
   pps_up: ["#4ade80", "PPS device readable"],
+  gpsd_down: ["#f87171", "gpsd down"],
+  gpsd_up: ["#4ade80", "gpsd up"],
+  fix_lost: ["#f87171", "fix lost"],
+  fix_regained: ["#4ade80", "fix regained"],
 };
 
 const eventColor = (kind) => (EVENTS[kind] ?? ["#8b929c"])[0];

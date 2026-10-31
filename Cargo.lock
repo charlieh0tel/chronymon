@@ -150,6 +150,7 @@ dependencies = [
  "glob",
  "jiff",
  "rusqlite",
+ "serde_json",
  "signal-hook",
  "thiserror",
 ]

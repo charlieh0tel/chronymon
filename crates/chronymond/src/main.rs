@@ -28,6 +28,8 @@ use signal_hook::iterator::Signals;
 
 use crate::collect::Collector;
 use crate::config::ConfigSource;
+use crate::gpsd::Address as GpsdAddress;
+use crate::gpsd::Gpsd;
 use crate::ingest::Ingest;
 use crate::lifecycle::Host;
 use crate::pps::Device as PpsDevice;
@@ -35,10 +37,12 @@ use crate::pps::Pps;
 
 mod collect;
 mod config;
+mod gpsd;
 mod host;
 mod ingest;
 mod lifecycle;
 mod pps;
+mod time;
 
 /// Options, each also settable in the environment, which is how
 /// `/etc/default/chronymond` sets them.
@@ -93,6 +97,12 @@ struct Cli {
     /// default.  A clock needs Linux 6.7 or later.
     #[arg(long, env = "CHRONYMOND_PPS", value_delimiter = ',')]
     pps: Vec<PpsDevice>,
+
+    /// gpsd's address, `host[:port]`, port 2947 by default, to record
+    /// its receivers' fix, satellites and dilutions of precision.  None
+    /// by default.
+    #[arg(long, env = "CHRONYMOND_GPSD")]
+    gpsd: Option<GpsdAddress>,
 
     /// chronyd's PID file, which tells a restart or a crash.
     #[arg(
@@ -189,6 +199,13 @@ fn run(cli: &Cli) -> Result<()> {
         let names: Vec<String> = cli.pps.iter().map(ToString::to_string).collect();
         eprintln!("chronymond: watching PPS {}", names.join(", "));
     }
+    let mut gpsd = match &cli.gpsd {
+        Some(address) => {
+            eprintln!("chronymond: watching gpsd at {address}");
+            Some(Gpsd::start(address).context("starting the gpsd thread")?)
+        }
+        None => None,
+    };
 
     let (stop, stopped) = mpsc::channel();
     let mut signals = Signals::new([SIGTERM, SIGINT]).context("watching for signals")?;
@@ -275,7 +292,8 @@ fn run(cli: &Cli) -> Result<()> {
         let process = host::chronyd(&cli.pid_file);
         log.write(|batch| {
             collector.record(batch, at, read, process)?;
-            pps.poll(batch, at)
+            pps.poll(batch, at)?;
+            gpsd.as_mut().map_or(Ok(()), |gpsd| gpsd.poll(batch, at))
         })?;
         if logs_read.elapsed() >= log_interval {
             let scan = ingest.scan(&mut log);
