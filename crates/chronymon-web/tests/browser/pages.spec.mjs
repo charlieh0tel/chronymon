@@ -180,20 +180,36 @@ const TROUBLES = [
 ];
 const CONFIG_ERROR = "/etc/chrony/chrony.conf: Permission denied (os error 13)";
 
-test("Live: what is wrong now is a pill each beside LIVE, worst first", async ({ page }) => {
-  await fakeStatus(page, { troubles: TROUBLES, chrony_config_error: CONFIG_ERROR });
+test("Live: what is wrong now is pills after LIVE, worst first, the readings aligned below", async ({ page }) => {
+  await fakeStatus(page, { troubles: TROUBLES, chrony_config_error: CONFIG_ERROR, on_backups: true });
   await page.goto("/");
-  const pills = page.locator("#status .pill");
-  await expect(pills).toHaveText(["LIVE", "gpsd down", "PPS missing pps0", "PPS flapping ptp2:0", "chrony.conf not read"]);
-  await expect(pills.nth(1)).toHaveClass(/\bdown\b/);
-  await expect(pills.nth(3)).toHaveClass(/\bstale\b/);
+  const pills = page.locator("#status .problems .pill");
+  await expect(pills).toHaveText(
+    ["gpsd down", "PPS missing pps0", "on backups", "PPS flapping ptp2:0", "chrony.conf not read"]);
+  await expect(pills.first()).toHaveClass(/\bdown\b/);
+  await expect(pills.nth(2)).toHaveClass(/\bstale\b/);
   await expect(pills.last()).toHaveAttribute("title", CONFIG_ERROR);
+  await expect(page.locator("#status .feed > .pill")).toHaveText("LIVE");
+  // Each row of readings starts where the first does, its columns under
+  // the first row's.
+  const lefts = await page.locator("#status .stat").evaluateAll((tiles) =>
+    tiles.map((t) => Math.round(t.getBoundingClientRect().left)));
+  const columns = new Set(lefts.slice(0, lefts.indexOf(Math.max(...lefts)) + 1));
+  for (const left of lefts) expect(columns).toContain(left);
 });
 
-test("Live: nothing wrong, no pill but LIVE", async ({ page }) => {
-  await fakeStatus(page, { troubles: [], chrony_config_error: null });
+test("Live: coasting is a pill, and the last update in amber", async ({ page }) => {
+  await fakeStatus(page, { troubles: [], chrony_config_error: null }, 600);
+  await page.goto("/");
+  await expect(page.locator("#status .problems .pill")).toHaveText(["coasting"]);
+  await expect(page.locator("#status .stat.warn", { hasText: "last update" })).toContainText("10 min ago");
+});
+
+test("Live: nothing wrong, no line of pills", async ({ page }) => {
+  await fakeStatus(page, { troubles: [], chrony_config_error: null, on_backups: false });
   await page.goto("/");
   await expect(page.locator("#status .pill")).toHaveText(["LIVE"]);
+  await expect(page.locator("#status .problems")).toHaveCount(0);
 });
 
 test("Live: charts, a readout under the cursor, and the events", async ({ page }) => {
@@ -472,6 +488,11 @@ const drawnSources = async (page, path) => {
   await page.waitForFunction(() => !running);
 };
 
+test("API: the synthetic clock, on its PPS, is not on backups", async ({ page }) => {
+  const status = await (await page.request.get("/api/status")).json();
+  expect(status.on_backups).toBe(false);
+});
+
 test("API: a refclock a PPS is locked to says which", async ({ page }) => {
   const sources = await (await page.request.get("/api/sources")).json();
   const lockedBy = Object.fromEntries(sources.map((s) => [s.name, s.locked_by]));
@@ -723,15 +744,7 @@ test("Kiosk: nothing wrong, no lines and no edge", async ({ page }) => {
 
 test("Kiosk: synchronized to other than its own refclock is on backups", async ({ page }) => {
   await page.setViewportSize(KIOSK_VIEWPORT);
-  await fakeStatus(page, {});
-  await page.route("**/api/sources", async (route) => {
-    const response = await route.fetch();
-    const sources = (await response.json()).map((s) => ({
-      ...s,
-      state: s.name === "ntp1.example.net" ? "selected" : s.state === "selected" ? "not_combined" : s.state,
-    }));
-    return route.fulfill({ response, json: sources });
-  });
+  await fakeStatus(page, { on_backups: true });
   await page.goto("/kiosk?last=86400");
   await expect(page.locator("#kiosk-mode")).toHaveText("on backups");
   await expect(page.locator("#kiosk-mode")).toHaveClass(/\bwarn\b/);
@@ -746,8 +759,6 @@ test("Kiosk and strip: no clock update for four update intervals is coasting", a
   await expect(page.locator("#kiosk-mode")).toHaveClass(/\bwarn\b/);
   // gpsd down is the worse, and edges the panel.
   await expect(page.locator("#kiosk-sync")).toHaveClass(/\bbad\b/);
-  await page.goto("/");
-  await expect(page.locator("#status .stat.warn", { hasText: "last update" })).toContainText("10 min ago");
 });
 
 // What in the kiosk overlaps or overflows, each in words: its panels

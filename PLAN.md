@@ -409,8 +409,11 @@ directly.  In this order, each its own change:
    the first listed.  Kept for the refclocks' locks, which the
    protocol does not give.  While a failure stands, the strip stays
    LIVE, polling being fine, with an amber pill saying chrony.conf was
-   not read, the error in its title (`meta` `chrony_config_error`), and
-   the kiosk says so under its sync state.
+   not read, the error in its title (`meta` `chrony_config_error`),
+   among the pills after LIVE on a line above the readings, which are
+   on a grid (mixed in with the readings, pills took their slots, and
+   LIVE's own slot left the rows misaligned), and the kiosk says so
+   under its sync state.
 2. **PPS from the kernel.**  Each device `--pps` names, none by
    default, read every poll, independent of gpsd and of chronyd's
    lock.  A pulse reaches chronyd's `refclocks.log` only once chronyd

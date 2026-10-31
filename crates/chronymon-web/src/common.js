@@ -320,6 +320,21 @@ function coasting(s) {
   return s.now - t.reference_time > quiet;
 }
 
+// Why the clock is said to be coasting, or on backups.
+const COASTING_HINT =
+  `No clock update for over ${COASTING_INTERVALS} update intervals: chronyd is coasting on its last frequency.`;
+const ON_BACKUPS_HINT = "chronyd is synchronized to other than its own refclocks.";
+
+// What chronyd's clock is doing that its figures alone do not say, as
+// `troublesOf` gives a trouble: coasting, or on backups; none unless
+// the feed is live and the clock synchronized.
+function clockStateOf(s) {
+  if (feedState(s)[0] !== "live" || !s.tracking || s.tracking.leap === "unsynchronized") return null;
+  if (coasting(s)) return { words: "coasting", owner: "", hint: COASTING_HINT, tone: "warn" };
+  if (s.on_backups) return { words: "on backups", owner: "", hint: ON_BACKUPS_HINT, tone: "warn" };
+  return null;
+}
+
 // The class of a pill in a trouble's tone.
 const TROUBLE_PILLS = { bad: "down", warn: "stale" };
 
@@ -347,8 +362,7 @@ function readings(s) {
     { k: "update interval", v: interval(v.last_update_interval) },
     { k: "leap", v: LEAP_NAMES[t.leap] ?? t.leap },
     coasting(s)
-      ? { k: "last update", v: `${age(s.now - t.reference_time)} ago`, tone: "warn",
-          hint: `No clock update for over ${COASTING_INTERVALS} update intervals: chronyd is coasting on its last frequency.` }
+      ? { k: "last update", v: `${age(s.now - t.reference_time)} ago`, tone: "warn", hint: COASTING_HINT }
       : { k: "last update", v: t.reference_time === null ? "none" : `${age(s.now - t.reference_time)} ago` },
   ];
 }
@@ -364,15 +378,20 @@ function render(s) {
   const why = s.status && s.status.state !== "up" && s.status.detail
     ? ` <span class="muted">${esc(s.status.detail)}</span>`
     : "";
-  const troubles = troublesOf(s).map((t) =>
-    ` <span class="pill ${TROUBLE_PILLS[t.tone]}"${t.hint ? ` title="${esc(t.hint)}"` : ""}>` +
+  // After the feed's state, worst first, on its line: the readings,
+  // on a grid of their own below, keep their places as these come and
+  // go.
+  const problems = [clockStateOf(s), ...troublesOf(s)].filter(Boolean)
+    .sort((a, b) => (a.tone === "bad" ? 0 : 1) - (b.tone === "bad" ? 0 : 1));
+  const troubles = problems.map((t) =>
+    `<span class="pill ${TROUBLE_PILLS[t.tone]}"${t.hint ? ` title="${esc(t.hint)}"` : ""}>` +
     `${esc(t.words)}${t.owner ? ` ${esc(t.owner)}` : ""}</span>`).join("");
   showHtml($("status"),
-    `<span class="pill ${state[0]}">${state[1]}</span>` +
+    `<div class="feed"><span class="pill ${state[0]}">${state[1]}</span>` +
     (s.status ? `<span class="muted" id="age">polled ${age(s.status.age)} ago</span>` : "") +
     why +
-    troubles +
-    readings(s).map(statTile).join(""));
+    (troubles ? `<span class="problems">${troubles}</span>` : "") + "</div>" +
+    `<div class="readings">${readings(s).map(statTile).join("")}</div>`);
 }
 
 // Paint the strip, or what the page shows in its place.

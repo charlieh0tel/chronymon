@@ -320,16 +320,6 @@ function showTiles(list) {
 // unsynchronized clock is wrong.
 const LEAP_TONES = { insert: "warn", delete: "warn", unsynchronized: "bad" };
 
-// Whether chronyd is synchronized to something other than its own
-// refclocks, as the sources last read say: a refclock is there, and
-// not the one selected.  A refclock another is locked to, an NMEA a
-// PPS numbers its pulses by, is the PPS's partner rather than a clock
-// of its own.
-function onBackups() {
-  const own = current(sources).filter((s) => s.mode === "refclock" && !paired(s));
-  return own.length > 0 && !own.some((s) => s.state === "selected");
-}
-
 // Whether the clock is synchronized, in a word, and how it should be
 // read: the feed's own state when that is not live.
 function syncOf(s) {
@@ -337,8 +327,8 @@ function syncOf(s) {
   if (state !== "live") return [words.toLowerCase(), state === "stale" ? "warn" : "bad"];
   if (!s.tracking) return ["no update yet", "warn"];
   if (s.tracking.leap === "unsynchronized") return ["unsynchronized", "bad"];
-  if (coasting(s)) return ["coasting", "warn"];
-  if (onBackups()) return ["on backups", "warn"];
+  const clock = clockStateOf(s);
+  if (clock) return [clock.words, clock.tone];
   return ["synchronized", ""];
 }
 
