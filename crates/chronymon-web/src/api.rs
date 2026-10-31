@@ -19,6 +19,7 @@ use chronymon_log::reader::Key;
 use chronymon_log::reader::MAX_POINTS;
 use chronymon_log::reader::MIN_POINTS;
 use chronymon_log::reader::Reader;
+use chronymon_log::reader::Source;
 use chronymon_log::reader::Table;
 use chronymon_log::reader::Values;
 use chronymon_log::reader::Window;
@@ -297,6 +298,24 @@ fn names(reader: &Reader) -> Result<HashMap<i64, String>> {
         .collect())
 }
 
+/// Whether chronyd is synchronized to other than its own refclocks, as
+/// `sources` last say: a refclock is there and none is selected.  A
+/// refclock in `paired`, by address, another is locked to, an NMEA a
+/// PPS numbers its pulses by, is the PPS's partner rather than a clock
+/// of its own.
+fn on_backups(sources: &[Source], paired: &[String]) -> bool {
+    let mut own = sources
+        .iter()
+        .filter(|s| !s.removed && s.mode == "refclock" && !paired.contains(&s.address))
+        .peekable();
+    own.peek().is_some()
+        && !own.any(|s| {
+            s.report
+                .as_ref()
+                .is_some_and(|(state, _)| state == "selected")
+        })
+}
+
 /// `/api/status`: the daemon's last poll and the newest clock update,
 /// with the reference's name.
 pub(crate) fn status(path: &Path) -> Result<Value> {
@@ -312,20 +331,25 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             })
         });
         let tracking = reader.latest_tracking()?;
+        let sources = reader.sources()?;
         // A refclock's address is its reference ID among the sources, but
         // tracking leaves it unspecified (chrony 4.6.1 `reference.c:959`).
         let reference_name = match &tracking {
             Some(t) if t.local() => Some(LOCAL_REFERENCE.to_owned()),
             Some(t) => {
                 let reference_id = format!("{:08X}", t.reference_id);
-                reader
-                    .sources()?
-                    .into_iter()
+                sources
+                    .iter()
                     .find(|s| s.address == t.reference_address || s.address == reference_id)
-                    .and_then(|s| s.name)
+                    .and_then(|s| s.name.clone())
             }
             None => None,
         };
+        let paired: Vec<String> = reader
+            .refclock_locks()?
+            .iter()
+            .map(|lock| lock.locked_to.to_string())
+            .collect();
         let tracking = tracking.map(|t| {
             json!({
                 // None while unsynchronized, which chronyd reports as 0.
@@ -343,6 +367,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "status": status,
             "tracking": tracking,
             "reference_name": reference_name,
+            "on_backups": on_backups(&sources, &paired),
             "chrony_config_error": reader.chrony_config_error()?,
             "troubles": reader
                 .troubles()?
@@ -721,6 +746,41 @@ mod tests {
                 "{locks:?}"
             );
         }
+    }
+
+    #[test]
+    fn on_backups_while_no_refclock_of_its_own_is_selected() {
+        let source = |address: &str, mode: &str, state: &str| Source {
+            id: 0,
+            address: address.to_owned(),
+            mode: mode.to_owned(),
+            name: None,
+            first_seen: 0,
+            last_seen: 0,
+            removed: false,
+            report: Some((state.to_owned(), Vec::new())),
+            selection: None,
+            stats: None,
+            ntp: None,
+        };
+        // A PPS locked to an NMEA, and an NTP server.
+        let paired = ["4E4D4541".to_owned()];
+        let sources = |pps: &str, ntp: &str| {
+            vec![
+                source("50505300", "refclock", pps),
+                source("4E4D4541", "refclock", "nonselectable"),
+                source("192.0.2.1", "client", ntp),
+            ]
+        };
+        assert!(!on_backups(&sources("selected", "not_combined"), &paired));
+        assert!(on_backups(&sources("nonselectable", "selected"), &paired));
+        // No refclock of its own: NTP is all there is.
+        assert!(!on_backups(
+            &sources("nonselectable", "selected")[1..],
+            &paired
+        ));
+        // An NMEA nothing is locked to is a refclock of its own.
+        assert!(on_backups(&sources("selected", "selected")[1..], &[]));
     }
 
     #[test]

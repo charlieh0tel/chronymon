@@ -23,8 +23,13 @@ body {
 h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--dim);
      text-transform: uppercase; letter-spacing: .08em; }
 
-/* Status strip: the few things worth seeing before anything else. */
-#status, #state { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline; }
+/* Status strip: the few things worth seeing before anything else.  The
+   feed's state and what is wrong on a line, then the readings on a
+   grid, so each column lines up from row to row; a column as wide as
+   a reading's widest value, `.stat .v`'s 11ch at its 22px. */
+#status { display: flex; flex-direction: column; gap: 12px; }
+.feed { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.readings, #state { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 26px; }
 /* A fixed column, so a reading that gets wider -- "-5 ns" to
    "+122.600 µs" -- does not shove every tile after it sideways.  In
    the value's own ch, which the column is as wide as. */
@@ -32,6 +37,8 @@ h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--dim);
 .stat .v { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.1; min-width: 11ch; }
 .stat .k { font-size: 11px; color: var(--dim); }
 .stat.warn .v { color: var(--warn); }
+/* What is wrong now, pills after the feed's. */
+.problems { display: flex; flex-wrap: wrap; gap: 6px 8px; }
 .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 #age { min-width: 18ch; font-variant-numeric: tabular-nums; }
 .live { background: #14532d; color: var(--ok); }

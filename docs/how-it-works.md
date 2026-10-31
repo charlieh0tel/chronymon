@@ -99,11 +99,10 @@ Under the sync state, a line for each thing wrong now that the clock's
 figures do not show, red or amber, worst first, and the panel edged in
 the worst one's color: a PPS pulse missing, flapping or its device
 unreadable, a receiver without a fix, gpsd down ("Now wrong" below),
-and chrony.conf not read.  The other pages' strip shows them as pills
-beside LIVE.  The sync state says ON BACKUPS, in amber, the panel edged amber too,
-while chronyd
-is synchronized to other than its own refclocks: a refclock is listed,
-not counting one another is locked to, and none is selected.  A
+and chrony.conf not read.  The sync state says ON BACKUPS, in amber,
+the panel edged amber too, while chronyd is synchronized to other than
+its own refclocks: a refclock is listed, not counting one another is
+locked to, and none is selected (`/api/status`'s `on_backups`).  A
 refclock kept only to be watched, `noselect` and paired to nothing,
 reads as one chronyd should be using.  It says COASTING, in amber, the
 panel edged amber, once chronyd has not updated the clock for four of
@@ -112,6 +111,11 @@ turns amber: chronyd keeps reporting a source selected after its
 samples stop, as a PPS locked to an NMEA whose gpsd went away, until
 another source's sample makes it choose again, and meanwhile the clock
 runs on its last frequency.
+
+The other pages' strip shows all of these, coasting and on backups
+too, as pills after LIVE, worst first, on a line of their own above
+the readings, which sit on a grid, each column lined up from row to
+row, and keep their places as the pills come and go.
 
 | Parameter | |
 | - | - |
