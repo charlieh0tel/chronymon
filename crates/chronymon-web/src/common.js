@@ -309,10 +309,15 @@ function render(s) {
   const why = s.status && s.status.state !== "up" && s.status.detail
     ? ` <span class="muted">${esc(s.status.detail)}</span>`
     : "";
+  // Polling is fine, but what chronyd was configured with may be stale.
+  const config = s.status?.state === "up" && s.chrony_config_error
+    ? ` <span class="muted" title="${esc(s.chrony_config_error)}">chrony.conf not read</span>`
+    : "";
   showHtml($("status"),
     `<span class="pill ${state[0]}">${state[1]}</span>` +
     (s.status ? `<span class="muted" id="age">polled ${age(s.status.age)} ago</span>` : "") +
     why +
+    config +
     readings(s).map(statTile).join(""));
 }
 
@@ -350,6 +355,8 @@ const EVENTS = {
   source_added: ["#a78bfa", "source added"],
   source_removed: ["#a78bfa", "source removed"],
   unsupported: ["#f87171", "unsupported reply"],
+  chrony_config_error: ["#fbbf24", "chrony.conf not read"],
+  chrony_config_read: ["#4ade80", "chrony.conf read again"],
 };
 
 const eventColor = (kind) => (EVENTS[kind] ?? ["#8b929c"])[0];

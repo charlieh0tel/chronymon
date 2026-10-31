@@ -25,6 +25,7 @@ use rusqlite::types::Value;
 use crate::chrony_log::Line;
 use crate::error::Error;
 use crate::error::Result;
+use crate::schema::CHRONY_CONFIG_ERROR;
 use crate::schema::INODE_KEY;
 use crate::schema::LOG_FILE_ASIDE;
 use crate::schema::LOG_FILE_BACK;
@@ -286,6 +287,20 @@ impl Batch<'_> {
     pub fn refclock_locks(&self, locks: &[RefclockLock]) -> Result<()> {
         let stored: Vec<String> = locks.iter().map(|lock| lock.stored()).collect();
         self.set_meta(REFCLOCK_LOCKS, &stored.join("\n"))
+    }
+
+    /// Whether the daemon's last read of chronyd's configuration, by
+    /// this run or an earlier one, failed.
+    pub fn chrony_config_failed(&self) -> Result<bool> {
+        Ok(self
+            .meta(CHRONY_CONFIG_ERROR)?
+            .is_some_and(|error| !error.is_empty()))
+    }
+
+    /// Record why the daemon's last read of chronyd's configuration
+    /// failed, or, `None`, that it did not.
+    pub fn chrony_config_error(&self, error: Option<&str>) -> Result<()> {
+        self.set_meta(CHRONY_CONFIG_ERROR, error.unwrap_or_default())
     }
 
     /// Record the daemon's view of chronyd as of `at`.

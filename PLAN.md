@@ -128,7 +128,9 @@ row or not: losing sync is no update.
 chronyd's configuration (`chrony.conf`, its `include` and `confdir`
 files, as `conf.c` reads them) gives `makestep` and the refclocks'
 `lock`s, read at start and again whenever chronyd starts, which is
-when chronyd reads it.
+when chronyd reads it.  Where chronyd would refuse to start, the read
+fails, and the daemon keeps what it read last (see "The receiver",
+step 1).
 
 A step or a large offset: an update's last offset past `makestep`'s
 threshold (1 s if none).  A step only as chronyd would make one: in
@@ -355,17 +357,23 @@ pulses discarded while the NMEA is invalid.  Whether the receiver has
 a fix and whether the pulse lands are asked of the receiver's side
 directly.  In this order, each its own change:
 
-1. **chronyd's configuration, loud.**  chrony has no configuration
+1. **chronyd's configuration, loud.**  Done.  chrony has no configuration
    reload: `chronyc reload sources` rereads only `sourcedir`, so
    reading at chronyd's start stays right.  Read as strictly as
    chronyd reads it: chronyd exits on a file it cannot open, the main
    one or one an `include` glob or `confdir` matched (`CNF_ReadFile`,
    `UTI_OpenFile` mode `'R'`, fatal), on a glob failing other than by
-   matching nothing, and past its include depth (4.8 `conf.c`).  Now
-   such a file is taken for an empty one, silently, and the empty
-   locks replace the `meta` row, unpairing all history.  Instead, a
-   failure keeps the last configuration and the `meta` row, logged and
-   journaled once per read, and the daemon runs on: a configuration
+   matching nothing, and past its include depth of 10 (4.8 `conf.c`;
+   glob(3)'s `GLOB_NOMAGIC | GLOB_ERR` tried on glibc: a pattern's
+   directory missing or unreadable fails, a pattern matching nothing
+   does not, a path with no pattern is read there or not).  Such a
+   file was taken for an empty one, silently, and the empty locks
+   replaced the `meta` row, unpairing all history; the reader also
+   matched only `*` in a last component, read dotfiles glob(3) hides,
+   and stopped short of chronyd's depth.  Now a failure keeps the last
+   configuration and the `meta` row, logged and journaled
+   (`chrony_config_error`) once per read, the next read that succeeds
+   journaled too (`chrony_config_read`), and the daemon runs on: a configuration
    chronyd refused leaves chronyd down, which is journaled already,
    and a fixed one is read when chronyd next starts.  Exiting was
    decided against: the unit's start limit (10 in 300 s) would leave
@@ -377,11 +385,12 @@ directly.  In this order, each its own change:
    with chronyd, whose stopping it records.  `--chrony-config none`
    for a chronyd given its directives on its command line (it then
    reads no file, 4.8 `main.c`) or reached over UDP on another host:
-   no locks, and steps seen on the clock alone.  `confdir`'s order
-   checked against `conf.c`.  Kept for the refclocks' locks, which the
+   no locks, and steps seen on the clock alone.  `confdir`'s order is
+   `search_dirs`': by file name, of a name in more than one directory
+   the first listed.  Kept for the refclocks' locks, which the
    protocol does not give.  While a failure stands, the strip stays
    LIVE, polling being fine, with a muted note that chrony.conf could
-   not be read, the error in its title.
+   not be read, the error in its title (`meta` `chrony_config_error`).
 2. **PPS from the kernel.**  Each device `--pps` names, none by
    default: its `/sys/class/pps/ppsN/assert` sequence read every poll,
    needing no privilege and independent of gpsd and of chronyd's lock.

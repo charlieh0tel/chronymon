@@ -15,8 +15,10 @@ chronymon-control = { version = "1.1.0", path = "../chronymon-control" }
 chronymon-log = { version = "1.1.0", path = "../chronymon-log" }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 flate2 = "1.1.10"
+glob = "0.3.4"
 jiff = "0.2.38"
 signal-hook = "0.4.5"
+thiserror = "2.0.21"
 
 [lints]
 workspace = true

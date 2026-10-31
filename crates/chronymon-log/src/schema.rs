@@ -90,6 +90,10 @@ pub(crate) const TRACKING_BACK: &str = "
 /// when none is locked.
 pub(crate) const REFCLOCK_LOCKS: &str = "refclock_locks";
 
+/// The `meta` key of why the daemon's last read of chronyd's
+/// configuration failed; empty, or none, when it did not.
+pub(crate) const CHRONY_CONFIG_ERROR: &str = "chrony_config_error";
+
 /// A refclock locked to another, `refclock ... lock REFID` in chronyd's
 /// configuration: its PPS samples are paired with the other's
 /// (`chrony.conf` documentation, 4.3 to 4.9).
