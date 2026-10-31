@@ -1,6 +1,7 @@
 //! The text the database stores for chronyd's enumerations, named in
 //! the schema's comments.
 
+use chronymon_control::report::Address;
 use chronymon_control::report::Leap;
 use chronymon_control::report::ReferenceId;
 use chronymon_control::report::SelectOptions;
@@ -25,9 +26,10 @@ pub(crate) fn leap_change(before: Leap, now: Leap) -> String {
 }
 
 /// A reference change's detail: the references before and after,
-/// "192.0.2.1 to 192.0.2.2", by address, or [`LOCAL_REFERENCE`] for
-/// chronyd's local reference, whose address is unspecified as an
-/// unsynchronized chronyd's is.
+/// "192.0.2.1 to GPS": an NTP source by address, a refclock, which has
+/// none, by its reference ID's text, [`LOCAL_REFERENCE`] for chronyd's
+/// local reference, and [`NO_REFERENCE`] for none, unsynchronized.
+/// Before 1.2.0 a refclock and none were both `-`.
 pub(crate) fn reference_change(before: &Tracking, now: &Tracking) -> String {
     format!(
         "{}{REFERENCE_CHANGE_TO}{}",
@@ -42,12 +44,18 @@ const REFERENCE_CHANGE_TO: &str = " to ";
 /// A reference change's text for chronyd's local reference.
 pub(crate) const LOCAL_REFERENCE: &str = "local";
 
+/// A reference change's text for no reference: chronyd unsynchronized.
+const NO_REFERENCE: &str = "none";
+
 /// `tracking`'s reference in a reference change's detail.
 fn reference(tracking: &Tracking) -> String {
-    if tracking.reference_id == ReferenceId::LOCAL {
-        LOCAL_REFERENCE.to_owned()
-    } else {
-        tracking.address.to_string()
+    match &tracking.address {
+        _ if tracking.reference_id == ReferenceId::LOCAL => LOCAL_REFERENCE.to_owned(),
+        Address::Unspecified => tracking
+            .reference_id
+            .text()
+            .unwrap_or_else(|| NO_REFERENCE.to_owned()),
+        address => address.to_string(),
     }
 }
 

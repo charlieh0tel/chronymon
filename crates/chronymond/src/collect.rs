@@ -1363,6 +1363,54 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_refclock_and_none_are_named() {
+        let mut db = Database::new("refclock-reference");
+        let mut collector = collector(&db, MAKE_STEP);
+        // A refclock has no address, only its reference ID; none has
+        // neither.
+        let refclock = Tracking {
+            reference_id: ReferenceId(u32::from_be_bytes(*b"GPS\0")),
+            address: Address::Unspecified,
+            stratum: 1,
+            ..tracking(1, 1e-6)
+        };
+        let none = Tracking {
+            address: Address::Unspecified,
+            ..unsynchronized(1e-6)
+        };
+        for (second, read) in [
+            (0, tracking(0, 1e-6)),
+            (1, refclock),
+            (2, none),
+            (3, tracking(3, 2e-6)),
+        ] {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(read, vec![]),
+                        Process::Running(100),
+                    )
+                })
+                .expect("recorded");
+        }
+        let mut statement = db
+            .reader
+            .prepare("SELECT detail FROM event WHERE kind = 'reference_change' ORDER BY rowid")
+            .expect("a query");
+        let details: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .map(|row| row.expect("a row"))
+            .collect();
+        assert_eq!(
+            details,
+            ["192.0.2.1 to GPS", "GPS to none", "none to 192.0.2.1"]
+        );
+    }
+
+    #[test]
     fn the_local_reference_is_named() {
         let mut db = Database::new("local-reference");
         let mut collector = collector(&db, MAKE_STEP);

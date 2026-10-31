@@ -428,16 +428,34 @@ const EVENTS = {
 const eventColor = (kind) => (EVENTS[kind] ?? ["#8b929c"])[0];
 const eventWords = (kind) => (EVENTS[kind] ?? [, kind])[1];
 
+// Each source's name by its address, as the sources last read say, for
+// an event's detail that names a source by address.
+let addressNames = new Map();
+
+// What separates a reference change's references in its detail.
+const REFERENCE_CHANGE_TO = " to ";
+
+// An event's detail as a reader takes it: a reference change's
+// references by their sources' names where known, "ntp1.example.net to
+// GPS"; none where it only repeats the source.
+function eventDetail(e) {
+  if (!e.detail || e.detail === e.source) return "";
+  if (e.kind !== "reference_change") return e.detail;
+  return e.detail.split(REFERENCE_CHANGE_TO).map((r) => addressNames.get(r) ?? r).join(REFERENCE_CHANGE_TO);
+}
+
 // An event as one line of text, for a chart's tip.
 const eventText = (e) =>
-  [eventWords(e.kind), e.source, e.detail].filter(Boolean).join(": ");
+  [eventWords(e.kind), e.source, eventDetail(e)].filter(Boolean).join(": ");
 
 // The events over the range, as the charts mark them: `{ at, text,
-// color }`, and the events themselves.
+// color }`, and the events themselves; the sources read with them, for
+// the names their details use.
 async function eventsFor(signal, from, to) {
   const q = new URLSearchParams({ limit: EVENT_ROWS });
   setBounds(q, { from, to });
-  const events = await ask("/api/events?" + q, signal);
+  const [events, sources] = await Promise.all([ask("/api/events?" + q, signal), ask("/api/sources", signal)]);
+  addressNames = new Map(sources.map((s) => [s.address, sourceName(s)]));
   return {
     events,
     marks: events.map((e) => ({ at: e.at, text: eventText(e), color: eventColor(e.kind) })),
@@ -457,7 +475,7 @@ function eventsTable(events, href) {
       : `<span class="note-link" data-at="${e.at}" title="Show the charts around it">${local(e.at)}</span>`;
     return `<tr><td>${when}</td>` +
       `<td><span style="color:${eventColor(e.kind)}">${esc(eventWords(e.kind))}</span></td>` +
-      `<td>${esc(e.source ?? "")}</td><td class="muted">${esc(e.detail ?? "")}</td></tr>`;
+      `<td>${esc(e.source ?? "")}</td><td class="muted">${esc(eventDetail(e))}</td></tr>`;
   });
   return `<table><thead><tr><th>when</th><th>what</th><th>source</th><th>detail</th></tr></thead>` +
     `<tbody>${rows.join("")}</tbody></table>`;
