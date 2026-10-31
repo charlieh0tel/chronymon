@@ -180,6 +180,18 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u)); font-variant-numeric: tab
                     text-transform: uppercase; white-space: nowrap; overflow: hidden; }
 #kiosk-sync .mode.warn { color: var(--warn); }
 #kiosk-sync .mode.bad { color: var(--bad); }
+/* What is wrong now, under the clock's state: a line each, large and
+   barred in its color, and the panel edged in the worst one's, to be
+   seen across a room. */
+#kiosk-sync.bad { border: calc(3 * var(--u)) solid var(--bad); }
+#kiosk-sync.warn { border: calc(3 * var(--u)) solid var(--warn); }
+#kiosk-troubles:empty { display: none; }
+#kiosk-troubles { display: flex; flex-direction: column; gap: calc(6 * var(--u)); margin-top: calc(12 * var(--u)); }
+.trouble { font-size: calc(30 * var(--u)); font-weight: 700; line-height: 1.15; color: var(--bad);
+           padding-left: calc(14 * var(--u)); border-left: calc(8 * var(--u)) solid currentColor;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trouble.warn { color: var(--warn); }
+.trouble .owner { font-weight: 400; font-size: calc(22 * var(--u)); color: var(--text); }
 #kiosk-sync .clock { font-size: calc(64 * var(--u)); line-height: 1.2; margin-top: calc(8 * var(--u));
                      font-variant-numeric: tabular-nums; white-space: nowrap; }
 #kiosk-sync .clock .muted { font-size: calc(24 * var(--u)); }

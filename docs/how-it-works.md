@@ -95,6 +95,18 @@ address.  A reload paints the last status, sources and
 events, kept in the browser's local storage and marked LAST SEEN,
 before the first poll answers; without storage it starts empty.
 
+Under the sync state, a line for each thing wrong now that the clock's
+figures do not show, red or amber, worst first, and the panel edged in
+the worst one's color: a PPS pulse missing, flapping or its device
+unreadable, a receiver without a fix, gpsd down ("Now wrong" below),
+and chrony.conf not read.  The other pages' strip shows them as pills
+beside LIVE.  The sync state says ON BACKUPS, in amber, the panel edged amber too,
+while chronyd
+is synchronized to other than its own refclocks: a refclock is listed,
+not counting one another is locked to, and none is selected.  A
+refclock kept only to be watched, `noselect` and paired to nothing,
+reads as one chronyd should be using.
+
 | Parameter | |
 | - | - |
 | `last` | range in seconds, default 86400 (`from`/`to` as on the other pages) |
@@ -122,7 +134,7 @@ It reads them as chronyd does, and where chronyd would refuse to start
 -- a file it cannot open, an `include` pattern's directory it cannot
 search, includes more than 10 deep -- chronymond keeps what it read
 last, pairing included, journals `chrony_config_error`, and the status
-strip says "chrony.conf not read" until a read succeeds, journaled
+strip and the kiosk say "chrony.conf not read" until a read succeeds, journaled
 `chrony_config_read`.  The daemon
 runs as `_chrony` and chronyd reads its configuration as root, so a
 file only root can read is one chronyd starts with and chronymond
@@ -164,7 +176,7 @@ outage.  A loss within 60 s of the last starts `pps_flapping`, and
 nothing more is journaled until pulses have run unbroken for 60 s:
 `pps_steady`, with the edges missed and the losses in between.
 
-The Refclocks page shades these spans behind its charts: a pulse
+The Refclocks page and the kiosk shade these spans behind their charts: a pulse
 missing or a device unreadable in red, flapping in amber, shaded whole,
 as no edge within it is journaled.  A single missed edge is a thin
 line.
@@ -189,6 +201,16 @@ answers again.
 
 The Refclocks page charts each receiver's satellites used and seen,
 PDOP and TDOP, and shades the spans without a fix and with gpsd down.
+
+## Now wrong
+
+What the PPS and gpsd watchers find wrong now, the spans they have
+journaled open and not yet closed, the daemon keeps in `meta`
+(`troubles`), written when it changes, so a page reads it with the
+status rather than from events that may be older than its range.  The
+strip and the kiosk show it while the feed is live, and the charts of
+Refclocks and the kiosk, over a range reaching now, shade a span open
+with no event in the range across all of it, as begun before.
 
 ## Steps
 

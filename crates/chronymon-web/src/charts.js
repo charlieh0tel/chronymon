@@ -1190,11 +1190,11 @@ const FLAPPING_BAND = "#fbbf241f";
 // ending it, what the band says, and its color.  The daemon journals no
 // edge inside a flapping span, so the span is shaded whole.
 const JOURNAL_SPANS = {
-  pps_lost: ["pps_back", "PPS missing", MISSING_BAND],
-  pps_flapping: ["pps_steady", "PPS flapping", FLAPPING_BAND],
-  pps_down: ["pps_up", "PPS device unreadable", MISSING_BAND],
-  fix_lost: ["fix_regained", "No fix", MISSING_BAND],
-  gpsd_down: ["gpsd_up", "gpsd down", MISSING_BAND],
+  pps_lost: ["pps_back", TROUBLES.pps_lost[0], MISSING_BAND],
+  pps_flapping: ["pps_steady", TROUBLES.pps_flapping[0], FLAPPING_BAND],
+  pps_down: ["pps_up", TROUBLES.pps_down[0], MISSING_BAND],
+  fix_lost: ["fix_regained", TROUBLES.fix_lost[0], MISSING_BAND],
+  gpsd_down: ["gpsd_up", TROUBLES.gpsd_down[0], MISSING_BAND],
 };
 
 // What an event's span is of: gpsd, for its own; else the device its
@@ -1207,10 +1207,12 @@ const spanOwner = (e) =>
 // color }` over `from` to `to`: one ending in the range but begun
 // before it starts at `from`; one not ended, at `to`.  A PPS device
 // going unreadable ends its other spans, as the daemon stops counting
-// them.
-function journalBands(events, from, to) {
+// them.  `troubles`, the status's, are the spans open now: one with no
+// event in the range began before it, and spans it whole.
+function journalBands(events, from, to, troubles = []) {
   const starts = Object.fromEntries(Object.entries(JOURNAL_SPANS).map(([start, [end]]) => [end, start]));
   const open = new Map();
+  const seen = new Set();
   const bands = [];
   const close = (owner, start, at, detail) => {
     const key = `${owner}\n${start}`;
@@ -1220,6 +1222,8 @@ function journalBands(events, from, to) {
   };
   for (const e of events) {
     const owner = spanOwner(e);
+    const start = JOURNAL_SPANS[e.kind] ? e.kind : starts[e.kind];
+    if (start) seen.add(`${owner}\n${start}`);
     if (e.kind === "pps_down") {
       for (const start of ["pps_lost", "pps_flapping"]) {
         if (open.has(`${owner}\n${start}`)) close(owner, start, e.at, owner);
@@ -1232,12 +1236,20 @@ function journalBands(events, from, to) {
       close(owner, starts[e.kind], e.at, e.detail || owner);
     }
   }
+  for (const { kind, owner } of troubles) {
+    const key = `${owner}\n${kind}`;
+    if (JOURNAL_SPANS[kind] && !seen.has(key)) open.set(key, from);
+  }
   for (const key of [...open.keys()]) {
     const [owner, start] = key.split("\n");
     close(owner, start, to, `${owner}, still`);
   }
   return bands.sort((a, b) => a.from - b.from);
 }
+
+// The status's troubles, the spans open now, for a range reaching now;
+// none for a fixed one, which they may have begun after.
+const troublesNow = () => (moving() ? lastStatus?.troubles ?? [] : []);
 
 // Each band across the plot area, from its start to its end, in its
 // color, or as not synchronized.

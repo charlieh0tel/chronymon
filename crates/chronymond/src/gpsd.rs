@@ -23,6 +23,7 @@ use std::thread;
 use std::time::Duration;
 
 use chronymon::event::EventKind;
+use chronymon_log::schema::Trouble;
 use chronymon_log::writer::Batch;
 use chronymon_log::writer::Gnss;
 use jiff::Timestamp;
@@ -63,6 +64,10 @@ const DOP_STEP: f64 = 0.1;
 /// flips the count, and the dilutions with it, every few seconds.  A
 /// change of fix mode or status is written at once.
 const SKY_EVERY: f64 = 60.0;
+
+/// What gpsd's own trouble, unreachable, is of: what the web view takes
+/// the owner of a `gpsd_` event's span to be.
+const GPSD: &str = "gpsd";
 
 /// gpsd's address, `host[:port]`.
 #[derive(Debug, Clone, PartialEq)]
@@ -339,6 +344,29 @@ impl Gpsd {
         Ok(())
     }
 
+    /// What is wrong now, as the spans the journal has open: gpsd
+    /// unreachable, and each receiver without a fix.
+    pub(crate) fn troubles(&self) -> Vec<Trouble> {
+        let down = (self.up == Some(false)).then(|| Trouble {
+            kind: EventKind::GpsdDown,
+            owner: GPSD.to_owned(),
+        });
+        let mut troubles: Vec<Trouble> = down
+            .into_iter()
+            .chain(
+                self.devices
+                    .iter()
+                    .filter(|(_, device)| device.fix == Some(false))
+                    .map(|(name, _)| Trouble {
+                        kind: EventKind::FixLost,
+                        owner: name.clone(),
+                    }),
+            )
+            .collect();
+        troubles.sort_by(|a, b| a.owner.cmp(&b.owner));
+        troubles
+    }
+
     /// Take in one message at `now`, and say what to journal.
     fn take(&mut self, now: f64, message: Message) -> Vec<(EventKind, String)> {
         let mut journal = Vec::new();
@@ -493,6 +521,27 @@ mod tests {
             .expect("events")
             .collect::<rusqlite::Result<_>>()
             .expect("events")
+    }
+
+    #[test]
+    fn the_troubles_are_gpsd_down_and_receivers_without_a_fix() {
+        let (mut gpsd, _send) = fed();
+        assert!(gpsd.troubles().is_empty());
+        gpsd.take(0.0, Message::Down("refused".to_owned()));
+        gpsd.take(1.0, Message::Up);
+        gpsd.take(1.0, tpv(1, None));
+        assert_eq!(
+            gpsd.troubles(),
+            [Trouble {
+                kind: EventKind::FixLost,
+                owner: ACM.to_owned()
+            }]
+        );
+        gpsd.take(2.0, Message::Down("refused".to_owned()));
+        assert_eq!(
+            gpsd.troubles().iter().map(|t| t.kind).collect::<Vec<_>>(),
+            [EventKind::FixLost, EventKind::GpsdDown]
+        );
     }
 
     #[test]

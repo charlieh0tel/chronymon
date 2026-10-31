@@ -22,6 +22,7 @@
   <div id="kiosk-head"><span class="muted">connecting...</span></div>
   <div class="panel" id="kiosk-sync">
     <div class="mode" id="kiosk-mode"></div>
+    <div id="kiosk-troubles"></div>
     <div class="clock" id="kiosk-clock"><span id="kiosk-time">--:--:--</span> <span class="muted">UTC</span>
       <span class="age" id="kiosk-age" hidden></span></div>
     <div class="muted" id="kiosk-date"></div>
@@ -319,6 +320,16 @@ function showTiles(list) {
 // unsynchronized clock is wrong.
 const LEAP_TONES = { insert: "warn", delete: "warn", unsynchronized: "bad" };
 
+// Whether chronyd is synchronized to something other than its own
+// refclocks, as the sources last read say: a refclock is there, and
+// not the one selected.  A refclock another is locked to, an NMEA a
+// PPS numbers its pulses by, is the PPS's partner rather than a clock
+// of its own.
+function onBackups() {
+  const own = current(sources).filter((s) => s.mode === "refclock" && !paired(s));
+  return own.length > 0 && !own.some((s) => s.state === "selected");
+}
+
 // Whether the clock is synchronized, in a word, and how it should be
 // read: the feed's own state when that is not live.
 function syncOf(s) {
@@ -326,7 +337,18 @@ function syncOf(s) {
   if (state !== "live") return [words.toLowerCase(), state === "stale" ? "warn" : "bad"];
   if (!s.tracking) return ["no update yet", "warn"];
   if (s.tracking.leap === "unsynchronized") return ["unsynchronized", "bad"];
+  if (onBackups()) return ["on backups", "warn"];
   return ["synchronized", ""];
+}
+
+// What is wrong now, a line each under the clock's state, the panel
+// edged in the worst one's color, or in amber `onBackups` alone.
+function drawTroubles(s, backups = false) {
+  const troubles = troublesOf(s);
+  showHtml($("kiosk-troubles"), troubles.map((t) =>
+    `<div class="trouble ${t.tone}"${t.hint ? ` title="${esc(t.hint)}"` : ""}>${esc(t.words)}` +
+    `${t.owner ? ` <span class="owner">${esc(t.owner)}</span>` : ""}</div>`).join(""));
+  update($("kiosk-sync"), "className", `panel ${troubles[0]?.tone ?? (backups ? "warn" : "")}`.trim());
 }
 
 // Paint a status; `cached` for the one kept by the last load, shown as
@@ -347,6 +369,7 @@ function renderKiosk(s, cached = false, cachedAge = 0) {
   const [sync, tone] = syncOf(s);
   update($("kiosk-mode"), "textContent", sync);
   update($("kiosk-mode"), "className", `mode ${tone}`);
+  drawTroubles(s, sync === "on backups");
   const r = Object.fromEntries(readings(s).map((x) => [x.k, x]));
   update($("kiosk-reference"), "textContent", r.reference?.v ?? "--");
   update($("kiosk-stratum"), "textContent", r.stratum ? `stratum ${r.stratum.v}` : "");
@@ -364,6 +387,7 @@ function lostKiosk(what, why) {
   showHtml($("kiosk-head"), `<span class="dot down"></span><span class="pill down">${esc(what)}</span>`);
   update($("kiosk-mode"), "textContent", what);
   update($("kiosk-mode"), "className", "mode bad");
+  drawTroubles({});
   update($("kiosk-update"), "textContent", why ?? "");
   if (clockFrom) clockFrom.live = false;
   drawClock();
@@ -482,8 +506,9 @@ async function load(signal) {
   // synchronized to one.
   offsets.shaded = false;
   const drawn = [...filledCharts("tracking", clock, KIOSK_FILLS), offsets];
-  drawStack(stack, { x: clock.at, span: spanOf([clock, overlay]), drawn, bands: notSynchronizedBands(clock) },
-    "no clock updates in this range");
+  const span = spanOf([clock, overlay]);
+  const bands = [...notSynchronizedBands(clock), ...journalBands(marked.events, span.from, span.to, troublesNow())];
+  drawStack(stack, { x: clock.at, span, drawn, bands }, "no clock updates in this range");
 
 }
 

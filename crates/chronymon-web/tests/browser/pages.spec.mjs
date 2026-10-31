@@ -160,19 +160,37 @@ test("Live: the strip reads the clock", async ({ page }) => {
   await expect(strip.locator(".stat", { hasText: "reference" })).toContainText("PPS");
 });
 
-test("Live: chrony.conf not read is a note beside LIVE, the error in its title", async ({ page }) => {
-  const error = "/etc/chrony/chrony.conf: Permission denied (os error 13)";
-  await page.route("**/api/status", async (route) => {
-    const response = await route.fetch();
-    const status = await response.json();
-    status.status.state = "up";
-    status.status.age = 1;
-    return route.fulfill({ response, json: { ...status, chrony_config_error: error } });
-  });
+// The status as the server says, live, with `patch`'s fields in place.
+const fakeStatus = (page, patch) => page.route("**/api/status", async (route) => {
+  const response = await route.fetch();
+  const status = await response.json();
+  status.status.state = "up";
+  status.status.age = 1;
+  return route.fulfill({ response, json: { ...status, ...patch } });
+});
+
+// The troubles of a host whose gpsd is down and whose PPS is missing.
+const TROUBLES = [
+  { kind: "gpsd_down", owner: "gpsd" },
+  { kind: "pps_flapping", owner: "ptp2:0" },
+  { kind: "pps_lost", owner: "pps0" },
+];
+const CONFIG_ERROR = "/etc/chrony/chrony.conf: Permission denied (os error 13)";
+
+test("Live: what is wrong now is a pill each beside LIVE, worst first", async ({ page }) => {
+  await fakeStatus(page, { troubles: TROUBLES, chrony_config_error: CONFIG_ERROR });
   await page.goto("/");
-  const strip = page.locator("#status");
-  await expect(strip.locator(".pill")).toHaveText("LIVE");
-  await expect(strip.locator(".muted", { hasText: "chrony.conf not read" })).toHaveAttribute("title", error);
+  const pills = page.locator("#status .pill");
+  await expect(pills).toHaveText(["LIVE", "gpsd down", "PPS missing pps0", "PPS flapping ptp2:0", "chrony.conf not read"]);
+  await expect(pills.nth(1)).toHaveClass(/\bdown\b/);
+  await expect(pills.nth(3)).toHaveClass(/\bstale\b/);
+  await expect(pills.last()).toHaveAttribute("title", CONFIG_ERROR);
+});
+
+test("Live: nothing wrong, no pill but LIVE", async ({ page }) => {
+  await fakeStatus(page, { troubles: [], chrony_config_error: null });
+  await page.goto("/");
+  await expect(page.locator("#status .pill")).toHaveText(["LIVE"]);
 });
 
 test("Live: charts, a readout under the cursor, and the events", async ({ page }) => {
@@ -673,6 +691,48 @@ test("Kiosk: the clock's state, its sources, events and charts, on one screen", 
   await expect(page.locator("nav")).toHaveCount(0);
   await expect(page.locator("#colophon")).toHaveCount(0);
   expect(await fits(page)).toBe(true);
+});
+
+test("Kiosk: what is wrong now is a line each under the clock's state, the panel edged", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await fakeStatus(page, { troubles: TROUBLES, chrony_config_error: CONFIG_ERROR });
+  await page.goto("/kiosk?last=86400");
+  const lines = page.locator("#kiosk-troubles .trouble");
+  await expect(lines).toHaveText(["gpsd down", "PPS missing pps0", "PPS flapping ptp2:0", "chrony.conf not read"]);
+  await expect(lines.first()).toHaveClass(/\bbad\b/);
+  await expect(lines.last()).toHaveClass(/\bwarn\b/);
+  await expect(page.locator("#kiosk-sync")).toHaveClass(/\bbad\b/);
+  // Begun before the range, with no event in it: shaded whole.
+  await page.waitForFunction(() => !running);
+  const texts = await page.evaluate(() => stack.charts[0].chronymonBands().map(({ text }) => text));
+  expect(texts).toContain("PPS missing: pps0, still");
+  expect(await fits(page)).toBe(true);
+});
+
+test("Kiosk: nothing wrong, no lines and no edge", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await fakeStatus(page, { troubles: [], chrony_config_error: null });
+  await page.goto("/kiosk?last=86400");
+  await expect(page.locator("#kiosk-mode")).toHaveText("synchronized");
+  await expect(page.locator("#kiosk-troubles .trouble")).toHaveCount(0);
+  await expect(page.locator("#kiosk-sync")).toHaveClass("panel");
+});
+
+test("Kiosk: synchronized to other than its own refclock is on backups", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await fakeStatus(page, {});
+  await page.route("**/api/sources", async (route) => {
+    const response = await route.fetch();
+    const sources = (await response.json()).map((s) => ({
+      ...s,
+      state: s.name === "ntp1.example.net" ? "selected" : s.state === "selected" ? "not_combined" : s.state,
+    }));
+    return route.fulfill({ response, json: sources });
+  });
+  await page.goto("/kiosk?last=86400");
+  await expect(page.locator("#kiosk-mode")).toHaveText("on backups");
+  await expect(page.locator("#kiosk-mode")).toHaveClass(/\bwarn\b/);
+  await expect(page.locator("#kiosk-sync")).toHaveClass(/\bwarn\b/);
 });
 
 // What in the kiosk overlaps or overflows, each in words: its panels

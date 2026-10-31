@@ -30,6 +30,7 @@ use std::thread;
 use std::time::Duration;
 
 use chronymon::event::EventKind;
+use chronymon_log::schema::Trouble;
 use chronymon_log::writer::Batch;
 use jiff::Timestamp;
 
@@ -238,6 +239,18 @@ impl Tracker {
             self.flapping = None;
         }
         journal
+    }
+
+    /// What is wrong with the pulse now, as the span the journal has
+    /// open for it: the device unreadable, the pulse flapping, or
+    /// missing.
+    pub(crate) fn trouble(&self) -> Option<EventKind> {
+        match self.pulse {
+            Pulse::Gone => Some(EventKind::PpsDown),
+            _ if self.flapping.is_some() => Some(EventKind::PpsFlapping),
+            Pulse::Missing { .. } => Some(EventKind::PpsLost),
+            Pulse::Unknown | Pulse::Arriving => None,
+        }
     }
 
     /// A loss starting: lost, or flapping if soon after the last.
@@ -534,6 +547,19 @@ impl Pps {
         (Self { watched }, refused)
     }
 
+    /// What is wrong with each device's pulse now.
+    pub(crate) fn troubles(&self) -> Vec<Trouble> {
+        self.watched
+            .iter()
+            .filter_map(|watched| {
+                watched.tracker.trouble().map(|kind| Trouble {
+                    kind,
+                    owner: watched.tracker.name.clone(),
+                })
+            })
+            .collect()
+    }
+
     /// Read every device at `at` and journal what changed.
     pub(crate) fn poll(
         &mut self,
@@ -676,6 +702,20 @@ mod tests {
             ),
             ["pps_up"]
         );
+    }
+
+    #[test]
+    fn the_trouble_is_the_span_open() {
+        let mut tracker = tracker();
+        assert_eq!(tracker.trouble(), None);
+        kinds(&mut tracker, 10.0, &[SILENT, SILENT]);
+        assert_eq!(tracker.trouble(), Some(EventKind::PpsLost));
+        kinds(&mut tracker, 12.0, &[edges(1, 1), edges(1, 2)]);
+        assert_eq!(tracker.trouble(), Some(EventKind::PpsFlapping));
+        tracker.observe(14.0, gone());
+        assert_eq!(tracker.trouble(), Some(EventKind::PpsDown));
+        kinds(&mut tracker, 15.0, &[edges(0, 0), edges(1, 0)]);
+        assert_eq!(tracker.trouble(), None);
     }
 
     #[test]

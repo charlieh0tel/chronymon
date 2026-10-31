@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+use chronymon::event::EventKind;
 use chronymon_control::report::ReferenceId;
 
 /// Bumped when the tables change shape, or what a column holds.  The
@@ -93,6 +94,37 @@ pub(crate) const REFCLOCK_LOCKS: &str = "refclock_locks";
 /// The `meta` key of why the daemon's last read of chronyd's
 /// configuration failed; empty, or none, when it did not.
 pub(crate) const CHRONY_CONFIG_ERROR: &str = "chrony_config_error";
+
+/// The `meta` key of what the daemon's watchers find wrong now: a line
+/// per [`Trouble`], its [`Trouble::stored`] text.  Empty, or none, when
+/// nothing is.
+pub(crate) const TROUBLES: &str = "troubles";
+
+/// Something a watcher finds wrong now, a span the journal has opened
+/// and not yet closed: the event opening it, and what it is of, a PPS
+/// device, a receiver, or gpsd.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trouble {
+    pub kind: EventKind,
+    pub owner: String,
+}
+
+impl Trouble {
+    /// As `meta` stores it: the event's name and the owner, a tab
+    /// between.
+    pub(crate) fn stored(&self) -> String {
+        format!("{}\t{}", self.kind.name(), self.owner)
+    }
+
+    /// One from its [`stored`](Self::stored) text.
+    pub(crate) fn parse(line: &str) -> Option<Self> {
+        let (kind, owner) = line.split_once('\t')?;
+        Some(Self {
+            kind: EventKind::from_name(kind)?,
+            owner: owner.to_owned(),
+        })
+    }
+}
 
 /// A refclock locked to another, `refclock ... lock REFID` in chronyd's
 /// configuration: its PPS samples are paired with the other's
