@@ -190,6 +190,7 @@ test("Live: what is wrong now is pills after LIVE, worst first, the readings ali
   await expect(pills.nth(2)).toHaveClass(/\bstale\b/);
   await expect(pills.last()).toHaveAttribute("title", CONFIG_ERROR);
   await expect(page.locator("#status .feed > .pill")).toHaveText("LIVE");
+  await expect(page.locator("#status")).toHaveClass(/\bbad\b/);
   // Each row of readings starts where the first does, its columns under
   // the first row's.
   const lefts = await page.locator("#status .stat").evaluateAll((tiles) =>
@@ -202,6 +203,7 @@ test("Live: coasting is a pill, and the last update in amber", async ({ page }) 
   await fakeStatus(page, { troubles: [], chrony_config_error: null }, 600);
   await page.goto("/");
   await expect(page.locator("#status .problems .pill")).toHaveText(["coasting"]);
+  await expect(page.locator("#status")).toHaveClass(/\bwarn\b/);
   await expect(page.locator("#status .stat.warn", { hasText: "last update" })).toContainText("10 min ago");
 });
 
@@ -210,6 +212,7 @@ test("Live: nothing wrong, no line of pills", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#status .pill")).toHaveText(["LIVE"]);
   await expect(page.locator("#status .problems")).toHaveCount(0);
+  await expect(page.locator("#status")).toHaveClass("panel");
 });
 
 test("Live: charts, a readout under the cursor, and the events", async ({ page }) => {

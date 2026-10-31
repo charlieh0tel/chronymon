@@ -115,7 +115,8 @@ runs on its last frequency.
 The other pages' strip shows all of these, coasting and on backups
 too, as pills after LIVE, worst first, on a line of their own above
 the readings, which sit on a grid, each column lined up from row to
-row, and keep their places as the pills come and go.
+row, and keep their places as the pills come and go.  The strip is
+edged in the worst one's color, red or amber, as the kiosk's panel is.
 
 | Parameter | |
 | - | - |
