@@ -337,18 +337,20 @@ function syncOf(s) {
   if (state !== "live") return [words.toLowerCase(), state === "stale" ? "warn" : "bad"];
   if (!s.tracking) return ["no update yet", "warn"];
   if (s.tracking.leap === "unsynchronized") return ["unsynchronized", "bad"];
+  if (coasting(s)) return ["coasting", "warn"];
   if (onBackups()) return ["on backups", "warn"];
   return ["synchronized", ""];
 }
 
 // What is wrong now, a line each under the clock's state, the panel
-// edged in the worst one's color, or in amber `onBackups` alone.
-function drawTroubles(s, backups = false) {
+// edged in the worst one's color, or in amber `edged` alone: coasting
+// or on backups.
+function drawTroubles(s, edged = false) {
   const troubles = troublesOf(s);
   showHtml($("kiosk-troubles"), troubles.map((t) =>
     `<div class="trouble ${t.tone}"${t.hint ? ` title="${esc(t.hint)}"` : ""}>${esc(t.words)}` +
     `${t.owner ? ` <span class="owner">${esc(t.owner)}</span>` : ""}</div>`).join(""));
-  update($("kiosk-sync"), "className", `panel ${troubles[0]?.tone ?? (backups ? "warn" : "")}`.trim());
+  update($("kiosk-sync"), "className", `panel ${troubles[0]?.tone ?? (edged ? "warn" : "")}`.trim());
 }
 
 // Paint a status; `cached` for the one kept by the last load, shown as
@@ -369,7 +371,7 @@ function renderKiosk(s, cached = false, cachedAge = 0) {
   const [sync, tone] = syncOf(s);
   update($("kiosk-mode"), "textContent", sync);
   update($("kiosk-mode"), "className", `mode ${tone}`);
-  drawTroubles(s, sync === "on backups");
+  drawTroubles(s, sync === "coasting" || sync === "on backups");
   const r = Object.fromEntries(readings(s).map((x) => [x.k, x]));
   update($("kiosk-reference"), "textContent", r.reference?.v ?? "--");
   update($("kiosk-stratum"), "textContent", r.stratum ? `stratum ${r.stratum.v}` : "");

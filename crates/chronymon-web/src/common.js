@@ -302,12 +302,31 @@ function troublesOf(s) {
   return [...watched, ...config].sort((a, b) => (a.tone === "bad" ? 0 : 1) - (b.tone === "bad" ? 0 : 1));
 }
 
+// How many of chronyd's update intervals may pass without a clock
+// update before the clock is said to be coasting, on its last
+// frequency with nothing steering it, and the least time that is, in
+// seconds, for an interval chronyd reports short or none.
+const COASTING_INTERVALS = 4;
+const COASTING_LEAST = 60;
+
+// Whether chronyd, synchronized, has not updated the clock for that
+// long: its source lost, as a PPS locked to an NMEA whose gpsd went
+// away, while it still reports it selected until another source's
+// sample makes it choose again.
+function coasting(s) {
+  const t = s.tracking;
+  if (!t || t.reference_time === null || t.leap === "unsynchronized") return false;
+  const quiet = Math.max(COASTING_INTERVALS * t.values.last_update_interval, COASTING_LEAST);
+  return s.now - t.reference_time > quiet;
+}
+
 // The class of a pill in a trouble's tone.
 const TROUBLE_PILLS = { bad: "down", warn: "stale" };
 
 // The strip's readings, each
 //   k, v  its name and its value as text
 //   hint  hover text, or undefined
+//   tone  "warn", or undefined
 function readings(s) {
   const t = s.tracking;
   if (!t) return [];
@@ -327,13 +346,16 @@ function readings(s) {
     { k: "root dispersion", v: seconds(v.root_dispersion) },
     { k: "update interval", v: interval(v.last_update_interval) },
     { k: "leap", v: LEAP_NAMES[t.leap] ?? t.leap },
-    { k: "last update", v: t.reference_time === null ? "none" : `${age(s.now - t.reference_time)} ago` },
+    coasting(s)
+      ? { k: "last update", v: `${age(s.now - t.reference_time)} ago`, tone: "warn",
+          hint: `No clock update for over ${COASTING_INTERVALS} update intervals: chronyd is coasting on its last frequency.` }
+      : { k: "last update", v: t.reference_time === null ? "none" : `${age(s.now - t.reference_time)} ago` },
   ];
 }
 
 // One reading as a tile: its value over its name.
 const statTile = (r) =>
-  `<span class="stat"${r.hint ? ` title="${esc(r.hint)}"` : ""}>` +
+  `<span class="stat${r.tone ? ` ${r.tone}` : ""}"${r.hint ? ` title="${esc(r.hint)}"` : ""}>` +
   `<span class="v">${esc(r.v)}</span><span class="k">${esc(r.k)}</span></span>`;
 
 // Paint the strip.

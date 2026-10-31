@@ -282,6 +282,12 @@ Journal, Distribution, Kiosk.
   day's range may not hold.  ON BACKUPS, amber, while chronyd is on
   other than its own refclocks: the state still reads synchronized
   with NTP standing in, which from across a room looks fine.
+  COASTING, amber, once the clock has gone four update intervals, a
+  minute at least, without an update: on draws, gpsd stopped left the
+  PPS locked to its NMEA without samples, and chronyd still reported
+  it selected, stratum 1, for minutes, until an NTP source's sample
+  made it choose again.  From chronyd's figures alone, so an NTP-only
+  host cut off shows it too.
   Each y axis is fitted to the bulk of what it draws (buckets' lowest
   and highest included): the 0.5% to 99.5%, Distribution's, and half
   that span again either side, past a normal spread's tails; the asinh

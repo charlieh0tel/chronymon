@@ -31,6 +31,7 @@ h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--dim);
 .stat { display: flex; flex-direction: column; gap: 2px; }
 .stat .v { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.1; min-width: 11ch; }
 .stat .k { font-size: 11px; color: var(--dim); }
+.stat.warn .v { color: var(--warn); }
 .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 #age { min-width: 18ch; font-variant-numeric: tabular-nums; }
 .live { background: #14532d; color: var(--ok); }

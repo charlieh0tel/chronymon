@@ -105,7 +105,13 @@ while chronyd
 is synchronized to other than its own refclocks: a refclock is listed,
 not counting one another is locked to, and none is selected.  A
 refclock kept only to be watched, `noselect` and paired to nothing,
-reads as one chronyd should be using.
+reads as one chronyd should be using.  It says COASTING, in amber, the
+panel edged amber, once chronyd has not updated the clock for four of
+its update intervals, a minute at least, and the strip's "last update"
+turns amber: chronyd keeps reporting a source selected after its
+samples stop, as a PPS locked to an NMEA whose gpsd went away, until
+another source's sample makes it choose again, and meanwhile the clock
+runs on its last frequency.
 
 | Parameter | |
 | - | - |
