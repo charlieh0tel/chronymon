@@ -1,3 +1,15 @@
+chronymon (1.2.1-1) unstable; urgency=medium
+
+  * COASTING only while the selected source has answered none of its
+    last 8 polls.  1.2.0 said so whenever four update intervals passed
+    without a clock update, which an NTP server missing a few long
+    polls does with nothing wrong; 1.2.0 was withdrawn.
+  * A long reference name keeps to its place: two cells in the strip,
+    cut short past them, and on the kiosk its line shrinks to fit.
+  * Otherwise as 1.2.0, below.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 14:31:32 -0700
+
 chronymon (1.2.0-1) unstable; urgency=medium
 
   * Upgrading: the database goes to schema 7 on first open, and 1.1.0's
