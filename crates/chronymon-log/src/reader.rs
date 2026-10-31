@@ -106,6 +106,8 @@ pub enum Table {
     RefclockSample,
     /// Temperature compensation, from `tempcomp.log`, likewise.
     TempcompSample,
+    /// What gpsd says of each receiver.
+    Gnss,
 }
 
 /// Which source's rows a per-source table is asked for: by the
@@ -130,7 +132,7 @@ impl Key {
 
 impl Table {
     /// Every chartable table.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Tracking,
         Self::SourceSample,
         Self::SourceStats,
@@ -141,6 +143,7 @@ impl Table {
         Self::LogStatistics,
         Self::RefclockSample,
         Self::TempcompSample,
+        Self::Gnss,
     ];
 
     /// Its name, as the schema and the web view's requests have it.
@@ -156,6 +159,7 @@ impl Table {
             Self::LogStatistics => "log_statistics",
             Self::RefclockSample => "refclock_sample",
             Self::TempcompSample => "tempcomp_sample",
+            Self::Gnss => "gnss",
         }
     }
 
@@ -184,6 +188,7 @@ impl Table {
             }
             Self::LogMeasurement | Self::LogStatistics => Some("source"),
             Self::RefclockSample => Some("reference"),
+            Self::Gnss => Some("device"),
         }
     }
 
@@ -205,7 +210,7 @@ impl Table {
     /// changes, while it records: a hole in it then is nothing having
     /// changed, not a gap.
     const fn recorded(self) -> bool {
-        matches!(self, Self::Tracking) || self.by_id()
+        matches!(self, Self::Tracking | Self::Gnss) || self.by_id()
     }
 
     /// The numeric columns that may be charted.  Checked against this
@@ -296,6 +301,16 @@ impl Table {
                 "driver_polls",
             ],
             Self::TempcompSample => &["temperature", "compensation"],
+            Self::Gnss => &[
+                "mode",
+                "satellites_used",
+                "satellites_seen",
+                "gdop",
+                "pdop",
+                "hdop",
+                "vdop",
+                "tdop",
+            ],
         }
     }
 

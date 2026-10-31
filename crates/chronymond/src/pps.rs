@@ -33,6 +33,9 @@ use chronymon::event::EventKind;
 use chronymon_log::writer::Batch;
 use jiff::Timestamp;
 
+use crate::time::NANOSECOND;
+use crate::time::seconds;
+
 /// The pulse's period: chronyd's `rate` default, 1 Hz (`refclock`
 /// documentation).
 const PERIOD: f64 = 1.0;
@@ -64,9 +67,6 @@ const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
 const EXTTS_EVENT: usize = 32;
 const EXTTS_NANOSECONDS: usize = 8;
 const EXTTS_INDEX: usize = 16;
-
-/// A nanosecond in seconds.
-const NANOSECOND: f64 = 1e-9;
 
 /// How many events one read takes at most.
 const EXTTS_EVENTS_PER_READ: usize = 16;
@@ -540,11 +540,7 @@ impl Pps {
         batch: &Batch<'_>,
         at: Timestamp,
     ) -> chronymon_log::error::Result<()> {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "to the microsecond, enough for edges a second apart"
-        )]
-        let now = at.as_nanosecond() as f64 * NANOSECOND;
+        let now = seconds(at);
         for watched in &mut self.watched {
             let reading = match (&mut watched.reader, &watched.device) {
                 (Reader::Pps(reader), Device::Pps(name)) => reader.read(name, now),

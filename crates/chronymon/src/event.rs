@@ -63,11 +63,20 @@ pub enum EventKind {
     PpsDown,
     /// It could again.
     PpsUp,
+    /// gpsd could not be reached, or went away.
+    GpsdDown,
+    /// gpsd reached again.
+    GpsdUp,
+    /// A receiver lost its fix, as gpsd reports it: less than a 3D fix
+    /// and not a surveyed-in position.
+    FixLost,
+    /// It has one again.
+    FixRegained,
 }
 
 impl EventKind {
     /// Every kind, for tests and for a reader decoding the stored name.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 29] = [
         Self::DaemonStart,
         Self::DaemonStop,
         Self::DaemonCrash,
@@ -93,6 +102,10 @@ impl EventKind {
         Self::PpsSteady,
         Self::PpsDown,
         Self::PpsUp,
+        Self::GpsdDown,
+        Self::GpsdUp,
+        Self::FixLost,
+        Self::FixRegained,
     ];
 
     /// The name stored for it and shown in the journal.
@@ -123,6 +136,10 @@ impl EventKind {
             Self::PpsSteady => "pps_steady",
             Self::PpsDown => "pps_down",
             Self::PpsUp => "pps_up",
+            Self::GpsdDown => "gpsd_down",
+            Self::GpsdUp => "gpsd_up",
+            Self::FixLost => "fix_lost",
+            Self::FixRegained => "fix_regained",
         }
     }
 

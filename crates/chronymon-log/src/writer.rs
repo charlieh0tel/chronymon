@@ -105,6 +105,25 @@ impl ChronydState {
     }
 }
 
+/// What gpsd says of one receiver, as `gnss` holds it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gnss {
+    /// TPV's fix mode: 0 unknown, 1 no fix, 2 2D, 3 3D.
+    pub mode: i64,
+    /// TPV's status, if given: 7 a surveyed-in position.
+    pub status: Option<i64>,
+    /// SKY's satellites used and seen.
+    pub satellites_used: Option<i64>,
+    pub satellites_seen: Option<i64>,
+    /// SKY's dilutions of precision: geometric, position, horizontal,
+    /// vertical, time.
+    pub gdop: Option<f64>,
+    pub pdop: Option<f64>,
+    pub hdop: Option<f64>,
+    pub vdop: Option<f64>,
+    pub tdop: Option<f64>,
+}
+
 /// A file as its file system knows it, the same across renames: its
 /// inode.  Not its device, whose number can change across boots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +320,29 @@ impl Batch<'_> {
     /// failed, or, `None`, that it did not.
     pub fn chrony_config_error(&self, error: Option<&str>) -> Result<()> {
         self.set_meta(CHRONY_CONFIG_ERROR, error.unwrap_or_default())
+    }
+
+    /// Record what gpsd says of `device` as of `at`.
+    pub fn gnss(&self, at: Timestamp, device: &str, gnss: &Gnss) -> Result<()> {
+        self.transaction.execute(
+            "INSERT INTO gnss (at, device, mode, status, satellites_used, satellites_seen,
+                 gdop, pdop, hdop, vdop, tdop)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                to_stored(at)?,
+                device,
+                gnss.mode,
+                gnss.status,
+                gnss.satellites_used,
+                gnss.satellites_seen,
+                gnss.gdop,
+                gnss.pdop,
+                gnss.hdop,
+                gnss.vdop,
+                gnss.tdop
+            ],
+        )?;
+        Ok(())
     }
 
     /// Record the daemon's view of chronyd as of `at`.
@@ -700,6 +742,7 @@ mod tests {
     use chronymon_control::report::SourceState;
 
     use super::*;
+    use crate::schema::GNSS;
 
     fn schema_version(log: &Log) -> i64 {
         log.connection
@@ -722,6 +765,47 @@ mod tests {
             schema_version(&Log::open(&path).expect("reopened")),
             VERSION
         );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn adds_gnss_to_schema_6() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v6-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let log = Log::open(&path).expect("created");
+            log.connection
+                .execute_batch(
+                    "DROP TABLE gnss;
+                     UPDATE meta SET value = '6' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let mut log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        const { assert!(VERSION >= GNSS) };
+        let gnss = Gnss {
+            mode: 3,
+            status: Some(7),
+            satellites_used: Some(9),
+            satellites_seen: Some(14),
+            gdop: Some(2.1),
+            pdop: Some(1.8),
+            hdop: Some(0.9),
+            vdop: Some(1.6),
+            tdop: Some(1.0),
+        };
+        let at = Timestamp::new(1_800_000_000, 0).expect("in range");
+        log.write(|batch| batch.gnss(at, "/dev/ttyACM0", &gnss))
+            .expect("written");
+        let rows: i64 = log
+            .connection
+            .query_row("SELECT COUNT(*) FROM gnss", [], |row| row.get(0))
+            .expect("counted");
+        assert_eq!(rows, 1);
         let _ = std::fs::remove_dir_all(&directory);
     }
 

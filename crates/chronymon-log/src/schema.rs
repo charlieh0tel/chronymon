@@ -13,7 +13,7 @@ use chronymon_control::report::ReferenceId;
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 6;
+pub const VERSION: i64 = 7;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
@@ -143,6 +143,10 @@ impl fmt::Display for RefclockLock {
 /// older database's `log_file` is rebuilt on open, of each inode the
 /// row last written.
 pub const INODE_KEY: i64 = 6;
+
+/// The first schema with `gnss`, what gpsd says of each receiver.  An
+/// older database gains it, empty, on open: no migration but `TABLES`.
+pub const GNSS: i64 = 7;
 
 /// An older schema's `log_file` renamed out of [`TABLES`]' way.
 pub(crate) const LOG_FILE_ASIDE: &str = "
@@ -473,6 +477,30 @@ pub(crate) const TABLES: &str = r"
     ) STRICT;
     CREATE UNIQUE INDEX IF NOT EXISTS tempcomp_sample_line ON tempcomp_sample (at,
         temperature, compensation);
+
+    -- What gpsd says of each receiver, by its device: a row when its
+    -- fix's mode or status changes, and for its satellites and
+    -- dilutions of precision, to 0.1, at most a minute apart
+    -- (gpsd_json(5), 3.25).  `mode` is TPV's: 0 unknown, 1 no fix, 2 2D, 3 3D;
+    -- `status` TPV's, absent when gpsd gives none: 7 a surveyed-in
+    -- position, a timing receiver's.  The rest from the last SKY that
+    -- listed its satellites; gpsd also sends SKYs of dilutions alone,
+    -- which can disagree with them.
+    CREATE TABLE IF NOT EXISTS gnss (
+        at              INTEGER NOT NULL,
+        device          TEXT    NOT NULL,
+        mode            INTEGER NOT NULL,
+        status          INTEGER,
+        satellites_used INTEGER,
+        satellites_seen INTEGER,
+        gdop            REAL,
+        pdop            REAL,
+        hdop            REAL,
+        vdop            REAL,
+        tdop            REAL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS gnss_device ON gnss(device, at);
+    CREATE INDEX IF NOT EXISTS gnss_at ON gnss(at);
 
     -- How far each log file has been read, by inode, which survives
     -- logrotate's renames: a file grown since is read from here, one of
