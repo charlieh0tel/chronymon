@@ -1,3 +1,11 @@
+chronymon (1.2.2~beta.3-1) unstable; urgency=medium
+
+  * A range tempcomp compensated in is fitted as any: chronyd reports
+    the frequency with the compensation undone.
+  * The Temperature page's scatter draws the linear and quadratic fits.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 16:33:33 -0700
+
 chronymon (1.2.2~beta.2-1) unstable; urgency=medium
 
   * The tempcomp fit opens in a dialog of the range shown, with Copy
