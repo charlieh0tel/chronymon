@@ -21,7 +21,9 @@ RestartPreventExitStatus=2
 # so the database is _chrony:chronymon and the web view, as chronymon,
 # can read it, and only read it: a reader able to write would leave
 # WAL files the daemon could not open.  _chrony as well, for chronyd's
-# log directory.
+# log directory, and PTP devices chrony's packaging gives it.  Where
+# group clock exists, the package's postinst adds it in a drop-in
+# (clock-group.conf), for PTP devices udev gives clock.
 User=_chrony
 Group=chronymon
 SupplementaryGroups=_chrony
@@ -36,7 +38,10 @@ ProtectSystem=strict
 ReadWritePaths=-/run/chrony
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# No devices but a PPS clock's, read for its pulse's events
+# (CHRONYMOND_PPS=/dev/ptpN), not PrivateDevices=, which hides them.
+DevicePolicy=closed
+DeviceAllow=char-ptp r
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

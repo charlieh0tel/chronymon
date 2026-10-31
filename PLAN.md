@@ -392,24 +392,53 @@ directly.  In this order, each its own change:
    LIVE, polling being fine, with a muted note that chrony.conf could
    not be read, the error in its title (`meta` `chrony_config_error`).
 2. **PPS from the kernel.**  Each device `--pps` names, none by
-   default: its `/sys/class/pps/ppsN/assert` sequence read every poll,
-   needing no privilege and independent of gpsd and of chronyd's lock.
+   default, read every poll, independent of gpsd and of chronyd's
+   lock.  A pulse reaches chronyd's `refclocks.log` only once chronyd
+   accepts it, after its lock and offset checks (4.8 `refclock.c`,
+   `RCL_AddCookedPulse`), so a gap there is a pulse missing or
+   refused, which the kernel tells apart.  Two kinds of device:
+   - `/dev/ppsN`: its `/sys/class/pps/ppsN/assert`, the last edge's
+     time and sequence, readable by anyone.
+   - `/dev/ptpN[:channel]`, a NIC's clock timestamping the pulse on a
+     pin (chrony's `refclock PHC ...:extpps`), channel 0 by default:
+     its external timestamp events, read as a second reader.  Linux
+     6.7 gave each open file its own queue of them, every channel
+     unmasked (`PTP_MASK_*`), so reading takes none from chronyd and
+     needs no ioctl; on an older kernel a reader would take chronyd's
+     events, so one is refused.  A plain blocking `read()` of 32-byte
+     `ptp_extts_event`s, on a thread of its own.  The daemon's unit allows
+     `char-ptp` read, `PrivateDevices=` given up for
+     `DevicePolicy=closed`.  Device groups differ: udev makes PTP
+     devices `root:clock` only from systemd 258 (af96ccf, by chrony's
+     maintainer, for linuxptp), Debian 13 defines `clock` but has no
+     such rule, Debian 12 and Ubuntu 24.04 neither, and apu-0's
+     (Debian 13) are `root:_chrony`, which the daemon's `_chrony`
+     reads.  So the package adds `clock` to the daemon, in a drop-in,
+     only where the group exists; it creates no group, which would own
+     nothing and only let the unit start.  A device the daemon cannot
+     read is `pps_down`, saying why.
+   apu-0 (Debian 13, kernel 6.12, igb) takes its GPS pulse on
+   `ptp2`'s pin 0, so it watches `ptp2`.  The PPS source the igb
+   driver registers for `ptp2`, `pps2`, stayed within a few
+   microseconds of each second over 30 s, but whether it is the pulse
+   or the clock's own second is not settled; `/dev/ptpN` is what to
+   watch for such a clock.
    Stored only as changes: the device present or gone, pulses arriving
    or missing, `pps_*` events.  Not every edge: chronyd's PPS samples
    already carry the offsets.  A single missed edge counts: not judged
    by the count between polls, which a 1 Hz poll of a 1 Hz pulse sees
-   as 0 or 2, but by the sequence against the time between asserts,
-   and the last assert's age at each poll: past 1.5 s, half a period's
-   slack for the poll's jitter, the edge is missed.  An event per
-   change of state, not per edge: `pps_lost` at the first missed edge,
-   then nothing while pulses stay missing, `pps_back` with the count
-   missed when they resume.  An edge missed among good ones is a lost
-   and back a second apart.  Flapping is capped: a second loss within
-   a settling window, 60 s, of the last `pps_back` is `pps_flapping`,
-   once, and nothing more until pulses have run unbroken for the
-   window, then `pps_steady` with the edges missed and the losses in
-   between.  The journal says when it started flapping and when it
-   stopped, not every flap.
+   as 0 or 2, but by the edges' times against their count, and, while
+   none come, the last one's age at each poll: past 1.5 s, half a
+   period's slack for the poll's jitter, the edge is missed.  An event
+   per change of state, not per edge: `pps_lost` at the first missed
+   edge, then nothing while pulses stay missing, `pps_back` with the
+   count missed when they resume.  An edge missed among good ones is
+   a lost and back a second apart.  Flapping is capped: a second loss
+   within a settling window, 60 s, of the last `pps_back` is
+   `pps_flapping`, once, and nothing more until pulses have run
+   unbroken for the window, then `pps_steady` with the edges missed
+   and the losses in between.  The journal says when it started
+   flapping and when it stopped, not every flap.
 3. **gpsd**, only with `--gpsd ADDRESS`: its connection is its health
    (`gpsd_*` events).  `?WATCH` for TPV's fix mode, SKY's satellites
    used and seen and its DOPs, each a row only when changed, and its

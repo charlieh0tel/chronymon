@@ -357,6 +357,12 @@ const EVENTS = {
   unsupported: ["#f87171", "unsupported reply"],
   chrony_config_error: ["#fbbf24", "chrony.conf not read"],
   chrony_config_read: ["#4ade80", "chrony.conf read again"],
+  pps_lost: ["#f87171", "PPS edge missed"],
+  pps_back: ["#4ade80", "PPS back"],
+  pps_flapping: ["#f87171", "PPS flapping"],
+  pps_steady: ["#4ade80", "PPS steady"],
+  pps_down: ["#f87171", "PPS device unreadable"],
+  pps_up: ["#4ade80", "PPS device readable"],
 };
 
 const eventColor = (kind) => (EVENTS[kind] ?? ["#8b929c"])[0];

@@ -30,12 +30,15 @@ use crate::collect::Collector;
 use crate::config::ConfigSource;
 use crate::ingest::Ingest;
 use crate::lifecycle::Host;
+use crate::pps::Device as PpsDevice;
+use crate::pps::Pps;
 
 mod collect;
 mod config;
 mod host;
 mod ingest;
 mod lifecycle;
+mod pps;
 
 /// Options, each also settable in the environment, which is how
 /// `/etc/default/chronymond` sets them.
@@ -83,6 +86,13 @@ struct Cli {
     /// Seconds between reads of chronyd's logs.
     #[arg(long, env = "CHRONYMOND_LOG_INTERVAL", default_value_t = 10.0)]
     log_interval: f64,
+
+    /// PPS devices to watch for missed edges, comma-separated:
+    /// `/dev/ppsN`, or `/dev/ptpN[:channel]`, a clock timestamping the
+    /// pulse on a pin (chrony's `refclock PHC ...:extpps`), channel 0 by
+    /// default.  A clock needs Linux 6.7 or later.
+    #[arg(long, env = "CHRONYMOND_PPS", value_delimiter = ',')]
+    pps: Vec<PpsDevice>,
 
     /// chronyd's PID file, which tells a restart or a crash.
     #[arg(
@@ -171,6 +181,14 @@ fn run(cli: &Cli) -> Result<()> {
         cli.socket,
         collector.config()
     );
+    let (mut pps, refused) = Pps::new(&cli.pps);
+    for refusal in &refused {
+        eprintln!("chronymond: {refusal}");
+    }
+    if !cli.pps.is_empty() {
+        let names: Vec<String> = cli.pps.iter().map(ToString::to_string).collect();
+        eprintln!("chronymond: watching PPS {}", names.join(", "));
+    }
 
     let (stop, stopped) = mpsc::channel();
     let mut signals = Signals::new([SIGTERM, SIGINT]).context("watching for signals")?;
@@ -255,7 +273,10 @@ fn run(cli: &Cli) -> Result<()> {
             state = Some(ChronydState::Up);
         }
         let process = host::chronyd(&cli.pid_file);
-        log.write(|batch| collector.record(batch, at, read, process))?;
+        log.write(|batch| {
+            collector.record(batch, at, read, process)?;
+            pps.poll(batch, at)
+        })?;
         if logs_read.elapsed() >= log_interval {
             let scan = ingest.scan(&mut log);
             if scan.bad_lines > 0 {

@@ -26,5 +26,12 @@
 #CHRONYMOND_CHRONY_LOGS=/var/log/chrony
 #CHRONYMOND_LOG_INTERVAL=10
 
+# PPS devices to watch for missed edges, comma-separated: /dev/ppsN,
+# or /dev/ptpN[:channel], a clock timestamping the pulse on a pin
+# (chrony's `refclock PHC /dev/ptpN:extpps`), channel 0 by default.  A
+# clock needs Linux 6.7 or later, and its device must be readable by
+# _chrony's group, or clock's where it exists.  None by default.
+#CHRONYMOND_PPS=/dev/ptp2
+
 # chronyd's PID file, which tells a restart from a crash.
 #CHRONYMOND_PID_FILE=/run/chrony/chronyd.pid
