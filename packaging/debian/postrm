@@ -6,6 +6,8 @@ set -e
 case "$1" in
 purge)
     rm -rf /var/lib/chronymon
+    rm -f /etc/systemd/system/chronymond.service.d/clock-group.conf
+    rmdir --ignore-fail-on-non-empty /etc/systemd/system/chronymond.service.d 2>/dev/null || true
     ;;
 esac
 

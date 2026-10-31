@@ -49,11 +49,25 @@ pub enum EventKind {
     ChronyConfigError,
     /// chronyd's configuration read again after a failure.
     ChronyConfigRead,
+    /// A PPS device's pulse stopped landing: an edge missed.
+    PpsLost,
+    /// Its pulses landing again, after so many edges missed.
+    PpsBack,
+    /// A loss soon after the last: losses from here until pulses run
+    /// unbroken a while are one flapping span.
+    PpsFlapping,
+    /// Pulses unbroken a while after flapping: the edges missed and the
+    /// losses in the span.
+    PpsSteady,
+    /// A PPS device could not be read.
+    PpsDown,
+    /// It could again.
+    PpsUp,
 }
 
 impl EventKind {
     /// Every kind, for tests and for a reader decoding the stored name.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 25] = [
         Self::DaemonStart,
         Self::DaemonStop,
         Self::DaemonCrash,
@@ -73,6 +87,12 @@ impl EventKind {
         Self::Unsupported,
         Self::ChronyConfigError,
         Self::ChronyConfigRead,
+        Self::PpsLost,
+        Self::PpsBack,
+        Self::PpsFlapping,
+        Self::PpsSteady,
+        Self::PpsDown,
+        Self::PpsUp,
     ];
 
     /// The name stored for it and shown in the journal.
@@ -97,6 +117,12 @@ impl EventKind {
             Self::Unsupported => "unsupported",
             Self::ChronyConfigError => "chrony_config_error",
             Self::ChronyConfigRead => "chrony_config_read",
+            Self::PpsLost => "pps_lost",
+            Self::PpsBack => "pps_back",
+            Self::PpsFlapping => "pps_flapping",
+            Self::PpsSteady => "pps_steady",
+            Self::PpsDown => "pps_down",
+            Self::PpsUp => "pps_up",
         }
     }
 

@@ -129,6 +129,41 @@ file only root can read is one chronyd starts with and chronymond
 cannot read.  `CHRONYMOND_CHRONY_CONFIG=none` reads nothing: no
 pairing, and every large correction a large offset.
 
+## PPS edges
+
+chronyd logs a pulse only once it accepts it, after its lock and
+offset checks, so a gap in its samples is a pulse missing or refused.
+chronymond can watch the pulse where the kernel sees it, before
+chronyd, and journal every missed edge: `CHRONYMOND_PPS`, comma
+separated, none by default.
+
+- `/dev/ppsN`: read through `/sys/class/pps/ppsN/assert`, the last
+  edge's time and sequence, which anyone can read.
+- `/dev/ptpN[:channel]`: a network card's clock timestamping the
+  pulse on a pin, as chrony's `refclock PHC /dev/ptpN:extpps` uses it,
+  channel 0 by default.  chronymond reads the clock's timestamp events
+  as a second reader.  From Linux 6.7 each reader has its own queue
+  of them, so reading takes none from chronyd; on an older kernel
+  chronymond refuses the device.  The daemon must be able to read it.
+  From systemd 258, udev makes PTP devices `root:clock`, and where
+  group `clock` exists the package adds it to the daemon in a drop-in,
+  `/etc/systemd/system/chronymond.service.d/clock-group.conf`.  Where
+  chrony's packaging makes them `root:_chrony`, as Debian 13's appear,
+  the daemon's `_chrony` reads them.  Elsewhere, `root:root` on Debian
+  12 and Ubuntu 24.04 without chrony's rule, the device needs a group
+  the daemon is in; `pps_down` says why it could not be read.
+
+A network card's clock with a PPS output may also register a
+`/dev/ppsN` for it, named after the clock (`/sys/class/pps/ppsN/name`
+says `ptp2`).  That may be the clock's own second rather than the
+pulse on its pin, so for such a clock watch `/dev/ptpN`.
+
+A single missed edge is journaled: `pps_lost`, then `pps_back` with
+how many edges were missed, once pulses land again, however long the
+outage.  A loss within 60 s of the last starts `pps_flapping`, and
+nothing more is journaled until pulses have run unbroken for 60 s:
+`pps_steady`, with the edges missed and the losses in between.
+
 ## chronyd's logs
 
 chronyd's logs give chronymon what its control socket cannot: every
@@ -162,6 +197,9 @@ changes, sources added and removed):
 | `daemon_start`, `daemon_stop`, `daemon_crash` | chronymond's own |
 | `unsupported` | a reply or log layout this version cannot read |
 | `chrony_config_error`, `chrony_config_read` | chronyd's configuration could not be read as chronyd reads it, what was read last kept; read again after that |
+| `pps_lost`, `pps_back` | a PPS device missed an edge; its pulses landing again, and how many edges were missed |
+| `pps_flapping`, `pps_steady` | a loss within 60 s of the last; pulses unbroken for 60 s after, the edges missed and the losses |
+| `pps_down`, `pps_up` | a PPS device could not be read; could again |
 
 Between a leap change to unsynchronized and one from it, the clock's
 charts on Live and the kiosk break their lines and shade the span:

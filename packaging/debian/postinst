@@ -11,6 +11,21 @@ configure)
             --gecos "chronymon web view" \
             chronymon
     fi
+    # PTP devices are root:clock from systemd 258 (udev's
+    # 50-udev-default.rules), so the daemon joins clock where there is
+    # one, to read a PPS clock's events.  Not named in the unit: a
+    # supplementary group missing stops a unit starting, and Debian 12
+    # and Ubuntu 24.04 have none.  Where devices are chrony's
+    # (root:_chrony), the unit's _chrony already reads them.
+    dropin=/etc/systemd/system/chronymond.service.d/clock-group.conf
+    if getent group clock >/dev/null && [ ! -e "$dropin" ]; then
+        mkdir -p "${dropin%/*}"
+        printf '%s\n' \
+            "# Made by chronymon's postinst, as group clock exists: PTP" \
+            "# devices are root:clock, read for CHRONYMOND_PPS=/dev/ptpN." \
+            "[Service]" \
+            "SupplementaryGroups=clock" > "$dropin"
+    fi
     # StateDirectory= makes this only when the daemon first starts;
     # made here, with the same owner and mode, the web view can start
     # first.
