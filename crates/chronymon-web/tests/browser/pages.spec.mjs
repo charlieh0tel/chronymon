@@ -191,20 +191,43 @@ test("Live: what is wrong now is pills after LIVE, worst first, the readings ali
   await expect(pills.last()).toHaveAttribute("title", CONFIG_ERROR);
   await expect(page.locator("#status .feed > .pill")).toHaveText("LIVE");
   await expect(page.locator("#status")).toHaveClass(/\bbad\b/);
-  // Each row of readings starts where the first does, its columns under
-  // the first row's.
-  const lefts = await page.locator("#status .stat").evaluateAll((tiles) =>
-    tiles.map((t) => Math.round(t.getBoundingClientRect().left)));
-  const columns = new Set(lefts.slice(0, lefts.indexOf(Math.max(...lefts)) + 1));
-  for (const left of lefts) expect(columns).toContain(left);
+  // Each reading starts on one of the grid's columns, so every row's
+  // line up.
+  const { starts, lefts } = await page.locator("#status .readings").evaluate((grid) => {
+    const style = getComputedStyle(grid);
+    const widths = style.gridTemplateColumns.split(" ").map(parseFloat);
+    const gap = parseFloat(style.columnGap);
+    const origin = grid.getBoundingClientRect().left + parseFloat(style.paddingLeft);
+    const starts = widths.map((_, n) => Math.round(origin + widths.slice(0, n).reduce((a, w) => a + w + gap, 0)));
+    const lefts = [...grid.children].map((t) => Math.round(t.getBoundingClientRect().left));
+    return { starts, lefts };
+  });
+  for (const left of lefts) expect(starts).toContain(left);
 });
 
 test("Live: coasting is a pill, and the last update in amber", async ({ page }) => {
-  await fakeStatus(page, { troubles: [], chrony_config_error: null }, 600);
+  await fakeStatus(page, { troubles: [], chrony_config_error: null, selected_unreachable: true }, 600);
   await page.goto("/");
   await expect(page.locator("#status .problems .pill")).toHaveText(["coasting"]);
   await expect(page.locator("#status")).toHaveClass(/\bwarn\b/);
   await expect(page.locator("#status .stat.warn", { hasText: "last update" })).toContainText("10 min ago");
+});
+
+test("Live: a source missing a few polls, the last update long ago, is not coasting", async ({ page }) => {
+  await fakeStatus(page, { troubles: [], chrony_config_error: null, selected_unreachable: false }, 1800);
+  await page.goto("/");
+  await expect(page.locator("#status .stat", { hasText: "last update" })).toContainText("30 min ago");
+  await expect(page.locator("#status .problems")).toHaveCount(0);
+  await expect(page.locator("#status .stat.warn")).toHaveCount(0);
+});
+
+test("Live: a long reference name keeps to its cell, the stratum clear of it", async ({ page }) => {
+  await fakeStatus(page, { reference_name: "time-a.long-hostname.example.org" });
+  await page.goto("/");
+  const cell = (k) => page.locator("#status .stat", { has: page.locator(".k", { hasText: new RegExp(`^${k}$`) }) });
+  const [reference, stratum] = await Promise.all([cell("reference").locator(".v").boundingBox(),
+    cell("stratum").boundingBox()]);
+  expect(reference.x + reference.width).toBeLessThanOrEqual(stratum.x);
 });
 
 test("Live: nothing wrong, no line of pills", async ({ page }) => {
@@ -756,7 +779,7 @@ test("Kiosk: synchronized to other than its own refclock is on backups", async (
 
 test("Kiosk and strip: no clock update for four update intervals is coasting", async ({ page }) => {
   await page.setViewportSize(KIOSK_VIEWPORT);
-  await fakeStatus(page, { troubles: [{ kind: "gpsd_down", owner: "gpsd" }] }, 600);
+  await fakeStatus(page, { troubles: [{ kind: "gpsd_down", owner: "gpsd" }], selected_unreachable: true }, 600);
   await page.goto("/kiosk?last=86400");
   await expect(page.locator("#kiosk-mode")).toHaveText("coasting");
   await expect(page.locator("#kiosk-mode")).toHaveClass(/\bwarn\b/);

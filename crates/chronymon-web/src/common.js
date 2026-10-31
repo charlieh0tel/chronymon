@@ -302,27 +302,21 @@ function troublesOf(s) {
   return [...watched, ...config].sort((a, b) => (a.tone === "bad" ? 0 : 1) - (b.tone === "bad" ? 0 : 1));
 }
 
-// How many of chronyd's update intervals may pass without a clock
-// update before the clock is said to be coasting, on its last
-// frequency with nothing steering it, and the least time that is, in
-// seconds, for an interval chronyd reports short or none.
-const COASTING_INTERVALS = 4;
-const COASTING_LEAST = 60;
-
-// Whether chronyd, synchronized, has not updated the clock for that
-// long: its source lost, as a PPS locked to an NMEA whose gpsd went
-// away, while it still reports it selected until another source's
-// sample makes it choose again.
+// Whether chronyd, synchronized, is coasting, on its last frequency
+// with nothing steering it: its selected source has answered none of
+// its last 8 polls, as a PPS locked to an NMEA whose gpsd went away,
+// and chronyd keeps it selected until it is stale beside the sources
+// still answering.  Not the time since the last update, which a
+// server missing a few 1024 s polls stretches past an hour.
 function coasting(s) {
   const t = s.tracking;
   if (!t || t.reference_time === null || t.leap === "unsynchronized") return false;
-  const quiet = Math.max(COASTING_INTERVALS * t.values.last_update_interval, COASTING_LEAST);
-  return s.now - t.reference_time > quiet;
+  return Boolean(s.selected_unreachable);
 }
 
 // Why the clock is said to be coasting, or on backups.
 const COASTING_HINT =
-  `No clock update for over ${COASTING_INTERVALS} update intervals: chronyd is coasting on its last frequency.`;
+  "chronyd's selected source answered none of its last 8 polls: the clock is coasting on its last frequency.";
 const ON_BACKUPS_HINT = "chronyd is synchronized to other than its own refclocks.";
 
 // What chronyd's clock is doing that its figures alone do not say, as
@@ -342,6 +336,7 @@ const TROUBLE_PILLS = { bad: "down", warn: "stale" };
 //   k, v  its name and its value as text
 //   hint  hover text, or undefined
 //   tone  "warn", or undefined
+//   wide  true for a value as long as a host name
 function readings(s) {
   const t = s.tracking;
   if (!t) return [];
@@ -350,7 +345,7 @@ function readings(s) {
     ? `${s.reference_name}`
     : t.reference_address;
   return [
-    { k: "reference", v: reference, hint: `${t.reference_address}, reference ID ${t.reference_id}` },
+    { k: "reference", v: reference, wide: true, hint: `${reference}: ${t.reference_address}, reference ID ${t.reference_id}` },
     { k: "stratum", v: String(t.stratum) },
     { k: "last offset", v: seconds(v.last_offset, true), hint: "The offset measured on the last clock update." },
     { k: "RMS offset", v: seconds(v.rms_offset), hint: "A long-term average of the offset." },
@@ -369,7 +364,7 @@ function readings(s) {
 
 // One reading as a tile: its value over its name.
 const statTile = (r) =>
-  `<span class="stat${r.tone ? ` ${r.tone}` : ""}"${r.hint ? ` title="${esc(r.hint)}"` : ""}>` +
+  `<span class="stat${r.tone ? ` ${r.tone}` : ""}${r.wide ? " wide" : ""}"${r.hint ? ` title="${esc(r.hint)}"` : ""}>` +
   `<span class="v">${esc(r.v)}</span><span class="k">${esc(r.k)}</span></span>`;
 
 // Paint the strip.

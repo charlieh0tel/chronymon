@@ -276,18 +276,17 @@ Journal, Distribution, Kiosk.
   room; no colophon, as smartclock's has none.
   What is wrong now, PPS, gpsd, a fix, chrony.conf, is a large line
   each under the sync state and the panel edged in its color: an
-  event in the list scrolls away while the trouble goes on, and a user
-  took chronymon for broken with gpsd simply not running.  The daemon
+  event in the list scrolls away while the trouble goes on.  The daemon
   keeps it (`meta` `troubles`), not the page from events, which a
   day's range may not hold.  ON BACKUPS, amber, while chronyd is on
   other than its own refclocks: the state still reads synchronized
   with NTP standing in, which from across a room looks fine.
-  COASTING, amber, once the clock has gone four update intervals, a
-  minute at least, without an update: on draws, gpsd stopped left the
-  PPS locked to its NMEA without samples, and chronyd still reported
-  it selected, stratum 1, for minutes, until an NTP source's sample
-  made it choose again.  From chronyd's figures alone, so an NTP-only
-  host cut off shows it too.
+  COASTING, amber, while the selected source has answered none of its
+  last 8 polls: chronyd keeps it selected, the clock unsteered, until
+  it is stale beside the sources still answering (4.8 `sources.c`;
+  `maxunreach`, from 4.8, bounds it).  Not the time since the last
+  update: a server missing a few long polls stretches that past half
+  an hour with nothing wrong.
   Each y axis is fitted to the bulk of what it draws (buckets' lowest
   and highest included): the 0.5% to 99.5%, Distribution's, and half
   that span again either side, past a normal spread's tails; the asinh
@@ -411,8 +410,7 @@ directly.  In this order, each its own change:
    LIVE, polling being fine, with an amber pill saying chrony.conf was
    not read, the error in its title (`meta` `chrony_config_error`),
    among the pills after LIVE on a line above the readings, which are
-   on a grid (mixed in with the readings, pills took their slots, and
-   LIVE's own slot left the rows misaligned), and the kiosk says so
+   on a grid so their columns line up, and the kiosk says so
    under its sync state.
 2. **PPS from the kernel.**  Each device `--pps` names, none by
    default, read every poll, independent of gpsd and of chronyd's
@@ -509,8 +507,7 @@ unreadable in red, a flapping span in amber, shaded whole from
 ticks for each first planned have nothing to draw), satellites and
 DOPs charts there,
 and the events marked on every time axis.  apu-0 (gpsd and a PPS) is
-the test host.  All four are in 1.2.0, tested there and on draws (a
-PPS and gpsd on a Raspberry Pi).
+the test host.
 
 ## Open questions
 
