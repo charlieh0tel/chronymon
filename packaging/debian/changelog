@@ -1,3 +1,28 @@
+chronymon (1.2.0-1) unstable; urgency=medium
+
+  * Upgrading: the database goes to schema 7 on first open, and 1.1.0's
+    daemon will not open it again.  chrony.conf is now read as strictly
+    as chronyd reads it; one that cannot be read leaves the last good
+    one in use, and the Journal and every page say so.
+  * --pps watches PPS edges where the kernel sees them, /dev/ppsN or a
+    PTP clock's pin, and journals pulses lost, flapping and down.
+  * --gpsd records each receiver's fix, satellites and dilutions of
+    precision, and journals fixes lost and regained and gpsd down.
+  * Steps on the clock that makestep's rule did not say are journaled
+    as clock_step, a rule's step the clock did not take as step_unseen.
+  * What is wrong now stays on screen while it lasts: on the kiosk, a
+    large line each under the sync state, the panel edged red or amber;
+    on every other page, pills after LIVE, the strip edged likewise.
+    The kiosk says COASTING while chronyd has gone four update
+    intervals without updating the clock, and ON BACKUPS while it is
+    on other than its own refclocks; the strip says so too.
+  * Reference changes say from what to what, a refclock by its
+    reference ID, and the kiosk's list shows each event's detail.
+  * The daemon starts whenever chrony starts.
+  * Betas are GitHub pre-releases, never in the APT repository.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 13:45:00 -0700
+
 chronymon (1.2.0~beta.4-1) unstable; urgency=medium
 
   * The strip shows coasting and on backups as pills, with what is

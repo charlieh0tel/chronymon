@@ -509,7 +509,8 @@ unreadable in red, a flapping span in amber, shaded whole from
 ticks for each first planned have nothing to draw), satellites and
 DOPs charts there,
 and the events marked on every time axis.  apu-0 (gpsd and a PPS) is
-the test host.
+the test host.  All four are in 1.2.0, tested there and on draws (a
+PPS and gpsd on a Raspberry Pi).
 
 ## Open questions
 
