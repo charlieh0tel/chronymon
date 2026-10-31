@@ -25,6 +25,10 @@ or from the [APT repository](https://github.com/charlieh0tel/apt-repo):
 
     sudo apt install ./chronymon_<version>_amd64.deb
 
+Betas, tagged like `v1.2.0-beta.1`, are
+[pre-releases](https://github.com/charlieh0tel/chronymon/releases) on
+GitHub only, never in the APT repository.
+
 To build the package yourself, with
 [cargo-deb](https://github.com/kornelski/cargo-deb):
 
