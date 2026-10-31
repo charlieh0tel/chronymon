@@ -160,12 +160,15 @@ test("Live: the strip reads the clock", async ({ page }) => {
   await expect(strip.locator(".stat", { hasText: "reference" })).toContainText("PPS");
 });
 
-// The status as the server says, live, with `patch`'s fields in place.
-const fakeStatus = (page, patch) => page.route("**/api/status", async (route) => {
+// The status as the server says, live, the clock updated a second ago,
+// with `patch`'s fields in place, and `since` seconds since that
+// update if given.
+const fakeStatus = (page, patch, since = 1) => page.route("**/api/status", async (route) => {
   const response = await route.fetch();
   const status = await response.json();
   status.status.state = "up";
   status.status.age = 1;
+  status.tracking.reference_time = status.now - since;
   return route.fulfill({ response, json: { ...status, ...patch } });
 });
 
@@ -733,6 +736,18 @@ test("Kiosk: synchronized to other than its own refclock is on backups", async (
   await expect(page.locator("#kiosk-mode")).toHaveText("on backups");
   await expect(page.locator("#kiosk-mode")).toHaveClass(/\bwarn\b/);
   await expect(page.locator("#kiosk-sync")).toHaveClass(/\bwarn\b/);
+});
+
+test("Kiosk and strip: no clock update for four update intervals is coasting", async ({ page }) => {
+  await page.setViewportSize(KIOSK_VIEWPORT);
+  await fakeStatus(page, { troubles: [{ kind: "gpsd_down", owner: "gpsd" }] }, 600);
+  await page.goto("/kiosk?last=86400");
+  await expect(page.locator("#kiosk-mode")).toHaveText("coasting");
+  await expect(page.locator("#kiosk-mode")).toHaveClass(/\bwarn\b/);
+  // gpsd down is the worse, and edges the panel.
+  await expect(page.locator("#kiosk-sync")).toHaveClass(/\bbad\b/);
+  await page.goto("/");
+  await expect(page.locator("#status .stat.warn", { hasText: "last update" })).toContainText("10 min ago");
 });
 
 // What in the kiosk overlaps or overflows, each in words: its panels
