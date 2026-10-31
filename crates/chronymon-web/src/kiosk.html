@@ -365,6 +365,7 @@ function renderKiosk(s, cached = false, cachedAge = 0) {
   const r = Object.fromEntries(readings(s).map((x) => [x.k, x]));
   update($("kiosk-reference"), "textContent", r.reference?.v ?? "--");
   update($("kiosk-stratum"), "textContent", r.stratum ? `stratum ${r.stratum.v}` : "");
+  fitReference();
   // The count last, so that its width changing moves nothing after it.
   update($("kiosk-update"), "textContent", r["last update"]
     ? `updated every ${r["update interval"].v}, last ${r["last update"].v}`
@@ -372,6 +373,27 @@ function renderKiosk(s, cached = false, cachedAge = 0) {
   showTiles(KIOSK_TILES.filter((k) => r[k]).map((k) =>
     tile(k, r[k].v, k === "leap" ? LEAP_TONES[s.tracking.leap] ?? "" : "")));
   stale(state !== "live");
+}
+
+// The least the reference line's type is shrunk to, of its size, for a
+// name too long to fit, as a server's host name may be; past that it is
+// cut short.
+const REFERENCE_LEAST = 0.5;
+
+// What the reference line was last fitted to: its text and the scale.
+let referenceFitted = null;
+
+// The reference line, and its stratum after it, shrunk to fit the panel
+// if they do not, once for each text and scale.
+function fitReference() {
+  const line = document.querySelector("#kiosk-sync .reference");
+  const key = `${line.textContent}|${innerWidth}x${innerHeight}`;
+  if (key === referenceFitted) return;
+  referenceFitted = key;
+  line.style.fontSize = "";
+  if (line.scrollWidth <= line.clientWidth) return;
+  const full = parseFloat(getComputedStyle(line).fontSize);
+  line.style.fontSize = `${Math.max(full * line.clientWidth / line.scrollWidth, full * REFERENCE_LEAST)}px`;
 }
 
 function lostKiosk(what, why) {

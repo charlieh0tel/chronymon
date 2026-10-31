@@ -15,9 +15,16 @@
 //! for a while and then recording beside the log: the log fills the
 //! charts only while the daemon was stopped.
 //!
-//!     cargo run -p chronymon-web --example synthetic -- DATABASE [HOURS]
+//!     cargo run -p chronymon-web --example synthetic -- DATABASE [HOURS [HOST]]
 //!
-//! The readings end now, so the live page shows them as current.
+//! The readings end now, so the live page shows them as current.  HOST
+//! says how they end, as a kind of host the pages must read right:
+//! `pps` (the default) synchronized to its PPS; `ntp`, its refclocks
+//! gone and its selected server, the long-named one, missing its last
+//! 4 polls of 512 s, half an hour since an update, which is not
+//! coasting; `gpsd-stopped`, gpsd down and the PPS locked to its NMEA
+//! without samples, chronyd keeping it selected, coasting; `backups`,
+//! just started, an NTP server selected before the PPS.
 
 use std::env;
 use std::error::Error;
@@ -45,10 +52,44 @@ use chronymon_log::chrony_log::RefclockLine;
 use chronymon_log::chrony_log::TempcompLine;
 use chronymon_log::chrony_log::TrackingLine;
 use chronymon_log::schema::RefclockLock;
+use chronymon_log::schema::Trouble;
+use chronymon_log::writer::Batch;
 use chronymon_log::writer::ChronydState;
 use chronymon_log::writer::Gnss;
 use chronymon_log::writer::Log;
 use jiff::Timestamp;
+
+/// How the readings end: the kind of host, at the end of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Host {
+    Pps,
+    Ntp,
+    GpsdStopped,
+    Backups,
+}
+
+impl Host {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "pps" => Some(Self::Pps),
+            "ntp" => Some(Self::Ntp),
+            "gpsd-stopped" => Some(Self::GpsdStopped),
+            "backups" => Some(Self::Backups),
+            _ => None,
+        }
+    }
+}
+
+/// The `ntp` host's poll of its selected server, in seconds, and its
+/// reachability, the last 4 polls lost.
+const NTP_HOST_POLL: i64 = 512;
+const NTP_HOST_REACH: u16 = 0o360;
+/// Seconds since the clock's last update, on the `ntp` host and on the
+/// `gpsd-stopped` one.
+const NTP_HOST_QUIET: i64 = 1800;
+const GPSD_STOPPED_FOR: i64 = 600;
+/// The `backups` host's reachability of its PPS, its first 4 polls in.
+const BACKUPS_PPS_REACH: u16 = 0o17;
 
 /// Hours of readings when none are asked for.
 const DEFAULT_HOURS: i64 = 48;
@@ -290,12 +331,18 @@ fn logged(second: i64, frequency: f64, noise: &mut Noise) -> Line {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let path = PathBuf::from(args.next().ok_or("usage: synthetic DATABASE [HOURS]")?);
+    let usage = "usage: synthetic DATABASE [HOURS [pps|ntp|gpsd-stopped|backups]]";
+    let path = PathBuf::from(args.next().ok_or(usage)?);
     let hours = args
         .next()
         .map(|h| h.to_string_lossy().parse::<i64>())
         .transpose()?
         .unwrap_or(DEFAULT_HOURS);
+    let host = args
+        .next()
+        .map(|h| Host::parse(&h.to_string_lossy()).ok_or(usage))
+        .transpose()?
+        .unwrap_or(Host::Pps);
     let mut log = Log::open(&path)?;
     let end = Timestamp::now().as_second();
     let span = hours * 3600;
@@ -695,6 +742,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             batch.source_report(seen, ids[n], &report)?;
         }
+        end_as(batch, host, end, &feeds, &ids, &reports)?;
         batch.status(
             at(end).expect("in range"),
             ChronydState::Up,
@@ -708,4 +756,117 @@ fn main() -> Result<(), Box<dyn Error>> {
         path.display()
     );
     Ok(())
+}
+
+/// End the readings as `host` would: its sources' last reports, the
+/// clock's last update, and what the watchers find, at `end`, over
+/// what the run wrote.  `reports` is each feed's last.
+fn end_as(
+    batch: &Batch<'_>,
+    host: Host,
+    end: i64,
+    feeds: &[Feed],
+    ids: &[i64],
+    reports: &[Option<SourceData>],
+) -> chronymon_log::error::Result<()> {
+    let at = |second: i64| Timestamp::new(second, 0).expect("in range");
+    let index = |name: &str| feeds.iter().position(|f| f.name == name).expect("a feed");
+    let (pps, nmea) = (index("PPS"), index("NMEA"));
+    // Each source's report as it ends: `selected` chronyd's choice, and
+    // a reachability for some.
+    let report = |selected: usize, reach: &[(usize, u16)]| -> chronymon_log::error::Result<()> {
+        for (n, last) in reports.iter().enumerate() {
+            let Some(last) = last else { continue };
+            let state = if n == selected {
+                SourceState::Selected
+            } else if feeds[n].noselect {
+                SourceState::Nonselectable
+            } else {
+                SourceState::NotCombined
+            };
+            let reachability = reach
+                .iter()
+                .find(|(r, _)| *r == n)
+                .map_or(last.reachability, |(_, reach)| *reach);
+            let state = if reachability == 0 && n != selected {
+                SourceState::Nonselectable
+            } else {
+                state
+            };
+            batch.source_report(
+                at(end),
+                ids[n],
+                &SourceData {
+                    state,
+                    reachability,
+                    ..*last
+                },
+            )?;
+        }
+        Ok(())
+    };
+    // The clock's last update, `quiet` seconds ago, from `feed`.
+    let tracking = |feed: &Feed, stratum: u16, quiet: i64, interval: i64| Tracking {
+        reference_id: ReferenceId(feed.reference_id),
+        address: match feed.mode {
+            SourceMode::Refclock => Address::Unspecified,
+            _ => feed.address,
+        },
+        stratum,
+        leap: Leap::Normal,
+        reference_time: at(end - quiet),
+        current_correction: Seconds::new(1e-6),
+        last_offset: Seconds::new(2e-6),
+        rms_offset: Seconds::new(4e-5),
+        frequency: Ppm::new(-12.4),
+        residual_frequency: Ppm::new(0.001),
+        skew: Ppm::new(0.05),
+        root_delay: Seconds::new(0.02),
+        root_dispersion: Seconds::new(0.004),
+        last_update_interval: Seconds::new(interval as f64),
+    };
+    match host {
+        Host::Pps => Ok(()),
+        Host::Ntp => {
+            let selected = index("time-a.long-hostname.example.org");
+            for n in [pps, nmea] {
+                batch.event(
+                    at(end - NTP_HOST_QUIET * 2),
+                    EventKind::SourceRemoved,
+                    Some(ids[n]),
+                    Some(&feeds[n].address.to_string()),
+                )?;
+            }
+            report(selected, &[(selected, NTP_HOST_REACH)])?;
+            batch.tracking_report(
+                at(end),
+                &tracking(&feeds[selected], 2, NTP_HOST_QUIET, NTP_HOST_POLL),
+            )
+        }
+        Host::GpsdStopped => {
+            batch.event(
+                at(end - GPSD_STOPPED_FOR),
+                EventKind::GpsdDown,
+                None,
+                Some("gpsd closed the connection"),
+            )?;
+            batch.troubles(&[Trouble {
+                kind: EventKind::GpsdDown,
+                owner: "gpsd".to_owned(),
+            }])?;
+            report(pps, &[(pps, 0), (nmea, 0)])?;
+            batch.tracking_report(
+                at(end),
+                &tracking(&feeds[pps], 1, GPSD_STOPPED_FOR, UPDATE_EVERY),
+            )
+        }
+        Host::Backups => {
+            let selected = index("ntp1.example.net");
+            report(selected, &[(pps, BACKUPS_PPS_REACH)])?;
+            batch.tracking_report(
+                at(end),
+                &tracking(&feeds[selected], 2, UPDATE_EVERY, POLL_EVERY),
+            )
+        }
+    }
 }

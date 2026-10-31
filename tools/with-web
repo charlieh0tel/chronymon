@@ -15,6 +15,10 @@ PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.63.0-noble
 DEJAVU=/usr/share/fonts/truetype/dejavu
 # Hours of synthetic readings, longer than the 24 h windows tested.
 HOURS=48
+# The other kinds of host the synthetic data ends as, each served too,
+# for their state rather than their history, so a few hours.
+HOSTS=(ntp gpsd-stopped backups)
+HOST_HOURS=6
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 tests="$repo/crates/chronymon-web/tests/browser"
@@ -31,10 +35,23 @@ FULL_PORT=$(free_port)
 MISSING_PORT=$(free_port)
 export CHRONYMON_WEB_FULL="http://127.0.0.1:$FULL_PORT"
 export CHRONYMON_WEB_MISSING="http://127.0.0.1:$MISSING_PORT"
+# Each host's server, CHRONYMON_WEB_NTP and the like.
+declare -A HOST_PORTS
+host_vars=()
+for host in "${HOSTS[@]}"; do
+    HOST_PORTS[$host]=$(free_port)
+    var=CHRONYMON_WEB_$(echo "$host" | tr 'a-z-' 'A-Z_')
+    export "$var=http://127.0.0.1:${HOST_PORTS[$host]}"
+    host_vars+=(-e "$var")
+done
 "$cargo" build -q -p chronymon-web --bins --examples
 mkdir -p "$work"
 rm -f "$work"/full.sqlite*
 target/debug/examples/synthetic "$work/full.sqlite" "$HOURS"
+for host in "${HOSTS[@]}"; do
+    rm -f "$work/$host.sqlite"*
+    target/debug/examples/synthetic "$work/$host.sqlite" "$HOST_HOURS" "$host"
+done
 
 pids=()
 cleanup() {
@@ -54,6 +71,9 @@ serve() {
 }
 serve "$FULL_PORT" "$work/full.sqlite"
 serve "$MISSING_PORT" "$work/missing.sqlite"
+for host in "${HOSTS[@]}"; do
+    serve "${HOST_PORTS[$host]}" "$work/$host.sqlite"
+done
 
 # Natively only with `make web-deps`'s Chromium: a container run leaves
 # node_modules without it.
@@ -68,7 +88,7 @@ else
     fonts=()
     [ -d "$DEJAVU" ] && fonts=(-v "$DEJAVU:$DEJAVU:ro")
     docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
-        -e CHRONYMON_WEB_FULL -e CHRONYMON_WEB_MISSING "${fonts[@]}" \
+        -e CHRONYMON_WEB_FULL -e CHRONYMON_WEB_MISSING "${host_vars[@]}" "${fonts[@]}" \
         -v "$repo:$repo" -w "$tests" "$PLAYWRIGHT_IMAGE" \
         sh -c 'npm ci --no-fund --no-audit --loglevel=error && exec "$@"' sh "$@"
 fi
