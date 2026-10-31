@@ -347,6 +347,79 @@ Journal, Distribution, Kiosk.
 - A Prometheus exporter.
 - Every packet from `measurements.log` on the Sources page.
 
+### The receiver, decided 2026-10-30
+
+chronyd's reports show a refclock's effect, not its cause: a PPS's
+reach falling to 0 is a pulse not arriving, or, with `lock NMEA`,
+pulses discarded while the NMEA is invalid.  Whether the receiver has
+a fix and whether the pulse lands are asked of the receiver's side
+directly.  In this order, each its own change:
+
+1. **chronyd's configuration, loud.**  chrony has no configuration
+   reload: `chronyc reload sources` rereads only `sourcedir`, so
+   reading at chronyd's start stays right.  Read as strictly as
+   chronyd reads it: chronyd exits on a file it cannot open, the main
+   one or one an `include` glob or `confdir` matched (`CNF_ReadFile`,
+   `UTI_OpenFile` mode `'R'`, fatal), on a glob failing other than by
+   matching nothing, and past its include depth (4.8 `conf.c`).  Now
+   such a file is taken for an empty one, silently, and the empty
+   locks replace the `meta` row, unpairing all history.  Instead, a
+   failure keeps the last configuration and the `meta` row, logged and
+   journaled once per read, and the daemon runs on: a configuration
+   chronyd refused leaves chronyd down, which is journaled already,
+   and a fixed one is read when chronyd next starts.  Exiting was
+   decided against: the unit's start limit (10 in 300 s) would leave
+   the daemon failed before chrony's fix, and chronyd reads its
+   configuration as root, the daemon as `_chrony`, so a file chronyd
+   reads the daemon may not.  The unit is also `WantedBy=
+   chrony.service`, so every start of chrony starts the daemon too, if
+   it is not running; not `PartOf=` or `BindsTo=`, which would stop it
+   with chronyd, whose stopping it records.  `--chrony-config none`
+   for a chronyd given its directives on its command line (it then
+   reads no file, 4.8 `main.c`) or reached over UDP on another host:
+   no locks, and steps seen on the clock alone.  `confdir`'s order
+   checked against `conf.c`.  Kept for the refclocks' locks, which the
+   protocol does not give.  While a failure stands, the strip stays
+   LIVE, polling being fine, with a muted note that chrony.conf could
+   not be read, the error in its title.
+2. **PPS from the kernel.**  Each device `--pps` names, none by
+   default: its `/sys/class/pps/ppsN/assert` sequence read every poll,
+   needing no privilege and independent of gpsd and of chronyd's lock.
+   Stored only as changes: the device present or gone, pulses arriving
+   or missing, `pps_*` events.  Not every edge: chronyd's PPS samples
+   already carry the offsets.  A single missed edge counts: not judged
+   by the count between polls, which a 1 Hz poll of a 1 Hz pulse sees
+   as 0 or 2, but by the sequence against the time between asserts,
+   and the last assert's age at each poll: past 1.5 s, half a period's
+   slack for the poll's jitter, the edge is missed.  An event per
+   change of state, not per edge: `pps_lost` at the first missed edge,
+   then nothing while pulses stay missing, `pps_back` with the count
+   missed when they resume.  An edge missed among good ones is a lost
+   and back a second apart.  Flapping is capped: a second loss within
+   a settling window, 60 s, of the last `pps_back` is `pps_flapping`,
+   once, and nothing more until pulses have run unbroken for the
+   window, then `pps_steady` with the edges missed and the losses in
+   between.  The journal says when it started flapping and when it
+   stopped, not every flap.
+3. **gpsd**, only with `--gpsd ADDRESS`: its connection is its health
+   (`gpsd_*` events).  `?WATCH` for TPV's fix mode, SKY's satellites
+   used and seen and its DOPs, each a row only when changed, and its
+   PPS messages, a cross-check on the kernel's count.  Everyone running
+   gpsd for chronyd runs it with `-n`, so connecting starts nothing
+   that was not running.
+4. **Steps seen on the clock**, beside `makestep`'s rule: the
+   realtime clock moved against the monotonic one between polls past
+   any slew.  Catches `chronyc makestep` and `-R`, which the rule
+   cannot see; where the two disagree, journaled.
+
+A device or gpsd named but absent is recorded as down, as chronyd is,
+and the daemon runs on.  On the web view, fix mode and pulse presence
+are bands over the Refclocks charts (a flapping span shaded whole,
+from `pps_flapping` to `pps_steady`, each missed edge a tick inside it
+where the zoom shows seconds), satellites and DOPs charts there,
+and the events marked on every time axis.  apu-0 (gpsd and a PPS) is
+the test host.
+
 ## Open questions
 
 - Before 1.0.0 a reference change to the local reference was
@@ -360,7 +433,8 @@ Journal, Distribution, Kiosk.
   indexes, `refclock_sample` at 1 Hz most.  Key on a hash of the line?
 - `log_file` rows for files long gone are never pruned.
 - chronyd's `-R` disables makestep's limit, unseen here; read it from
-  `/proc/<pid>/cmdline`?
+  `/proc/<pid>/cmdline`?  Steps seen on the clock (Later) would
+  answer it.
 - The copies of smartclock's web assets and HTTP crate: share them
   before they drift.
 - The kiosk's `chronyd@host` head line can't be seen on the user's TV
