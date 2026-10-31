@@ -51,4 +51,8 @@ MemoryDenyWriteExecute=yes
 LockPersonality=yes
 
 [Install]
-WantedBy=multi-user.target
+# Started by chrony starting, too: if this has stopped (its start limit
+# reached, say, while chrony was broken), chrony coming back brings it
+# back.  Not PartOf= or BindsTo=, which would stop it with chronyd,
+# whose stopping it records.
+WantedBy=multi-user.target chrony.service
