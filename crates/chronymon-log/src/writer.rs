@@ -39,6 +39,8 @@ use crate::schema::TABLES;
 use crate::schema::TRACKING_ASIDE;
 use crate::schema::TRACKING_BACK;
 use crate::schema::TRACKING_REPORT;
+use crate::schema::TROUBLES;
+use crate::schema::Trouble;
 use crate::schema::VERSION;
 use crate::schema::WHOLE_LINES;
 use crate::text;
@@ -320,6 +322,13 @@ impl Batch<'_> {
     /// failed, or, `None`, that it did not.
     pub fn chrony_config_error(&self, error: Option<&str>) -> Result<()> {
         self.set_meta(CHRONY_CONFIG_ERROR, error.unwrap_or_default())
+    }
+
+    /// Record what the daemon's watchers find wrong now, in place of
+    /// what was recorded before.
+    pub fn troubles(&self, troubles: &[Trouble]) -> Result<()> {
+        let stored: Vec<String> = troubles.iter().map(Trouble::stored).collect();
+        self.set_meta(TROUBLES, &stored.join("\n"))
     }
 
     /// Record what gpsd says of `device` as of `at`.

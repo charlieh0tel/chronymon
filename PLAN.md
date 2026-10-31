@@ -274,6 +274,14 @@ Journal, Distribution, Kiosk.
   eight names in its title wrapped onto the chart.  Events moved right,
   under the charts their marks are on, so eight sources leave them
   room; no colophon, as smartclock's has none.
+  What is wrong now, PPS, gpsd, a fix, chrony.conf, is a large line
+  each under the sync state and the panel edged in its color: an
+  event in the list scrolls away while the trouble goes on, and a user
+  took chronymon for broken with gpsd simply not running.  The daemon
+  keeps it (`meta` `troubles`), not the page from events, which a
+  day's range may not hold.  ON BACKUPS, amber, while chronyd is on
+  other than its own refclocks: the state still reads synchronized
+  with NTP standing in, which from across a room looks fine.
   Each y axis is fitted to the bulk of what it draws (buckets' lowest
   and highest included): the 0.5% to 99.5%, Distribution's, and half
   that span again either side, past a normal spread's tails; the asinh
@@ -392,8 +400,9 @@ directly.  In this order, each its own change:
    `search_dirs`': by file name, of a name in more than one directory
    the first listed.  Kept for the refclocks' locks, which the
    protocol does not give.  While a failure stands, the strip stays
-   LIVE, polling being fine, with a muted note that chrony.conf could
-   not be read, the error in its title (`meta` `chrony_config_error`).
+   LIVE, polling being fine, with an amber pill saying chrony.conf was
+   not read, the error in its title (`meta` `chrony_config_error`), and
+   the kiosk says so under its sync state.
 2. **PPS from the kernel.**  Each device `--pps` names, none by
    default, read every poll, independent of gpsd and of chronyd's
    lock.  A pulse reaches chronyd's `refclocks.log` only once chronyd

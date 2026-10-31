@@ -108,7 +108,7 @@ async function load(signal) {
       lines: d.lines.map((l) => ({ ...l, name: s.name })),
     })));
   const span = spanOf(reads);
-  drawStack(stack, { x: [], span, drawn, bands: journalBands(events.events, span.from, span.to) },
+  drawStack(stack, { x: [], span, drawn, bands: journalBands(events.events, span.from, span.to, troublesNow()) },
     "no refclock samples or gpsd reports in this range");
 }
 

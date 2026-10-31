@@ -47,6 +47,8 @@ use crate::error::Result;
 use crate::schema::CHRONY_CONFIG_ERROR;
 use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
+use crate::schema::TROUBLES;
+use crate::schema::Trouble;
 use crate::text;
 
 /// Fewest buckets worth drawing, and the most a chart can show.
@@ -681,6 +683,23 @@ impl Reader {
             )
             .optional()?;
         Ok(stored.filter(|error| !error.is_empty()))
+    }
+
+    /// What the daemon's watchers last found wrong.
+    pub fn troubles(&self) -> Result<Vec<Trouble>> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![TROUBLES],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored
+            .unwrap_or_default()
+            .lines()
+            .filter_map(Trouble::parse)
+            .collect())
     }
 
     /// chronyd's latest `tracking` report: its `tracking_report` row,
@@ -2508,6 +2527,28 @@ mod tests {
             .write(|batch| batch.chrony_config_error(None))
             .expect("written");
         assert_eq!(db.reader().chrony_config_error().expect("read"), None);
+    }
+
+    #[test]
+    fn reads_the_troubles_last_recorded() {
+        let mut db = Database::new("troubles");
+        assert_eq!(db.reader().troubles().expect("read"), []);
+        let troubles = [
+            Trouble {
+                kind: EventKind::GpsdDown,
+                owner: "gpsd".to_owned(),
+            },
+            Trouble {
+                kind: EventKind::PpsLost,
+                owner: "ptp2:0".to_owned(),
+            },
+        ];
+        db.log
+            .write(|batch| batch.troubles(&troubles))
+            .expect("written");
+        assert_eq!(db.reader().troubles().expect("read"), troubles);
+        db.log.write(|batch| batch.troubles(&[])).expect("written");
+        assert_eq!(db.reader().troubles().expect("read"), []);
     }
 
     #[test]

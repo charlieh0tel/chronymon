@@ -344,6 +344,11 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "tracking": tracking,
             "reference_name": reference_name,
             "chrony_config_error": reader.chrony_config_error()?,
+            "troubles": reader
+                .troubles()?
+                .into_iter()
+                .map(|t| json!({ "kind": t.kind.name(), "owner": t.owner }))
+                .collect::<Vec<_>>(),
         }))
     })
 }

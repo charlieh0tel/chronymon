@@ -18,6 +18,7 @@ use chronymon_control::client::DEFAULT_SOCKET;
 use chronymon_control::client::Server;
 use chronymon_control::error::Error as ControlError;
 use chronymon_control::error::Status;
+use chronymon_log::schema::Trouble;
 use chronymon_log::writer::ChronydState;
 use chronymon_log::writer::Log;
 use clap::Parser;
@@ -244,6 +245,9 @@ fn run(cli: &Cli) -> Result<()> {
 
     let mut state = None;
     let mut steps = Steps::default();
+    // What the watchers found wrong, as last recorded; none before the
+    // first poll, which records it whatever an earlier run left.
+    let mut troubles: Option<Vec<Trouble>> = None;
     let mut next = Instant::now();
     // Why the loop stopped, if not for a signal.
     let mut failed = None;
@@ -295,15 +299,27 @@ fn run(cli: &Cli) -> Result<()> {
             state = Some(ChronydState::Up);
         }
         let process = host::chronyd(&cli.pid_file);
-        log.write(|batch| {
+        let recorded = log.write(|batch| {
             collector.record(batch, at, read, process)?;
             for (when, kind, detail) in steps.observe(at, clocks, collector.take_step()) {
                 eprintln!("chronymond: {}: {detail}", kind.name());
                 batch.event(when, kind, None, Some(&detail))?;
             }
             pps.poll(batch, at)?;
-            gpsd.as_mut().map_or(Ok(()), |gpsd| gpsd.poll(batch, at))
+            if let Some(gpsd) = gpsd.as_mut() {
+                gpsd.poll(batch, at)?;
+            }
+            let now: Vec<Trouble> = pps
+                .troubles()
+                .into_iter()
+                .chain(gpsd.as_ref().map(Gpsd::troubles).unwrap_or_default())
+                .collect();
+            if troubles.as_ref() != Some(&now) {
+                batch.troubles(&now)?;
+            }
+            Ok(now)
         })?;
+        troubles = Some(recorded);
         if logs_read.elapsed() >= log_interval {
             let scan = ingest.scan(&mut log);
             if scan.bad_lines > 0 {

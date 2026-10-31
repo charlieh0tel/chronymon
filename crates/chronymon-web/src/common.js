@@ -272,6 +272,39 @@ function feedState(s) {
   return ["down", "CHRONYD DOWN"];
 }
 
+// What a watcher's trouble, the span its event opens, is called, by
+// that event, and whether it is bad or a warning: the same words the
+// charts' bands say.
+const TROUBLES = {
+  pps_lost: ["PPS missing", "bad"],
+  pps_flapping: ["PPS flapping", "warn"],
+  pps_down: ["PPS device unreadable", "bad"],
+  fix_lost: ["No fix", "bad"],
+  gpsd_down: ["gpsd down", "bad"],
+};
+
+// What is wrong now that the clock's own figures do not show, each
+//   words, owner  what it is called and what it is of, as text
+//   hint          hover text, or undefined
+//   tone          "bad" or "warn"
+// The watchers' troubles, worst first, and chrony.conf not read, while
+// the daemon is writing; none when it is not, as then nothing it last
+// said is current.
+function troublesOf(s) {
+  if (!s.status || s.status.age > STALE_AFTER) return [];
+  const watched = (s.troubles ?? []).map(({ kind, owner }) => {
+    const [words, tone] = TROUBLES[kind] ?? [kind, "bad"];
+    return { words, owner: owner === "gpsd" ? "" : owner, tone };
+  });
+  const config = s.chrony_config_error
+    ? [{ words: "chrony.conf not read", owner: "", hint: s.chrony_config_error, tone: "warn" }]
+    : [];
+  return [...watched, ...config].sort((a, b) => (a.tone === "bad" ? 0 : 1) - (b.tone === "bad" ? 0 : 1));
+}
+
+// The class of a pill in a trouble's tone.
+const TROUBLE_PILLS = { bad: "down", warn: "stale" };
+
 // The strip's readings, each
 //   k, v  its name and its value as text
 //   hint  hover text, or undefined
@@ -309,15 +342,14 @@ function render(s) {
   const why = s.status && s.status.state !== "up" && s.status.detail
     ? ` <span class="muted">${esc(s.status.detail)}</span>`
     : "";
-  // Polling is fine, but what chronyd was configured with may be stale.
-  const config = s.status?.state === "up" && s.chrony_config_error
-    ? ` <span class="muted" title="${esc(s.chrony_config_error)}">chrony.conf not read</span>`
-    : "";
+  const troubles = troublesOf(s).map((t) =>
+    ` <span class="pill ${TROUBLE_PILLS[t.tone]}"${t.hint ? ` title="${esc(t.hint)}"` : ""}>` +
+    `${esc(t.words)}${t.owner ? ` ${esc(t.owner)}` : ""}</span>`).join("");
   showHtml($("status"),
     `<span class="pill ${state[0]}">${state[1]}</span>` +
     (s.status ? `<span class="muted" id="age">polled ${age(s.status.age)} ago</span>` : "") +
     why +
-    config +
+    troubles +
     readings(s).map(statTile).join(""));
 }
 
