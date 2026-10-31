@@ -689,6 +689,74 @@ test("Temperature: the series and the scatter", async ({ page }) => {
   expect(Number(squared)).toBeCloseTo(Number(r) ** 2, 2);
 });
 
+// The tempcomp lines the Temperature page's fit gives, each as words.
+const fittedLines = async (page) =>
+  (await page.locator("#fits pre.tempcomp").textContent()).split("\n")
+    .filter((line) => line.startsWith("tempcomp ")).map((line) => line.trim().split(/\s+/));
+
+test("Temperature: the fit gives tempcomp lines that cancel the synthetic clock's curve", async ({ page }) => {
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await page.locator("#fit").click();
+  await expect(page.locator("#fits pre.tempcomp")).toHaveCount(1);
+  const [linear, quadratic] = await fittedLines(page);
+  // As the synthetic chronyd's tempcomp line has them.
+  for (const line of [linear, quadratic]) {
+    expect(line.slice(0, 3)).toEqual(["tempcomp", "/sys/devices/platform/coretemp.0/hwmon/hwmon2/temp1_input", "30"]);
+    expect(Math.abs(Number(line[3]) - 41000)).toBeLessThan(1000);
+    expect(line[4]).toBe("0");
+  }
+  // The synthetic clock runs faster by 8.75e-5 ppm a millidegree, bent
+  // by -2e-9 a millidegree squared: the compensation is its negative.
+  expect(Number(linear[5])).toBeCloseTo(-8.75e-5, 6);
+  expect(linear[6]).toBe("0");
+  expect(Number(quadratic[5])).toBeCloseTo(-8.75e-5, 6);
+  expect(Number(quadratic[6]) / 2e-9).toBeGreaterThan(0.8);
+  expect(Number(quadratic[6]) / 2e-9).toBeLessThan(1.2);
+  // In ASCII: a comment of what both were fitted from, sensor and
+  // range, a blank line, then each fit's quality and its line; the
+  // quadratic leaves less of the spread than the line.
+  const text = await page.locator("#fits pre.tempcomp").textContent();
+  const groups = text.split("\n\n");
+  expect(groups).toHaveLength(3);
+  expect(groups[0]).toMatch(new RegExp("^# Fitted by chronymon from \\d+ points of " +
+    "/sys/devices/platform/coretemp\\.0/hwmon/hwmon2/temp1_input, " +
+    "\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d to \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC\\.$"));
+  for (const [n, name] of ["Linear", "Quadratic"].entries()) {
+    expect(groups[n + 1]).toMatch(new RegExp(`^# ${name} fit: leaves [\\d.]+ ppm RMS of the frequency's ` +
+      `[\\d.]+ ppm, R 0\\.\\d{4}, R\\^2 0\\.\\d{4}\\.\ntempcomp `));
+  }
+  expect(/^[\x20-\x7e\n]*$/.test(text)).toBe(true);
+  const left = groups.slice(1).map((g) => Number(g.match(/leaves ([\d.]+) ppm/)[1]));
+  expect(left[1]).toBeLessThan(left[0]);
+});
+
+test("Temperature: no fit without a tempcomp line chronymond read", async ({ page }) => {
+  await page.route("**/api/status", async (route) => {
+    const response = await route.fetch();
+    return route.fulfill({ response, json: { ...(await response.json()), tempcomp: null } });
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await expect(page.locator("#fit")).toBeHidden();
+});
+
+test("Temperature: compensated readings are not fitted", async ({ page }) => {
+  await page.route("**/api/history?*", async (route) => {
+    const response = await route.fetch();
+    const got = await response.json();
+    for (const plot of got.plots ?? []) {
+      if (plot.column === "compensation") plot.mean = plot.mean.map((v) => (v == null ? v : 0.1));
+    }
+    return route.fulfill({ response, json: got });
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await page.locator("#fit").click();
+  await expect(page.locator("#fits")).toContainText("tempcomp compensated in this range");
+  await expect(page.locator("#fits pre.tempcomp")).toHaveCount(0);
+});
+
 test("Journal: the synthetic run's events", async ({ page }) => {
   await page.goto("/journal?last=all");
   const events = page.locator("#events");

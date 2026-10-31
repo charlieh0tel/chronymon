@@ -36,10 +36,12 @@ use crate::schema::META;
 use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
 use crate::schema::TABLES;
+use crate::schema::TEMPCOMP;
 use crate::schema::TRACKING_ASIDE;
 use crate::schema::TRACKING_BACK;
 use crate::schema::TRACKING_REPORT;
 use crate::schema::TROUBLES;
+use crate::schema::Tempcomp;
 use crate::schema::Trouble;
 use crate::schema::VERSION;
 use crate::schema::WHOLE_LINES;
@@ -322,6 +324,15 @@ impl Batch<'_> {
     /// failed, or, `None`, that it did not.
     pub fn chrony_config_error(&self, error: Option<&str>) -> Result<()> {
         self.set_meta(CHRONY_CONFIG_ERROR, error.unwrap_or_default())
+    }
+
+    /// Record chronyd's `tempcomp` sensor, or that it has none, as its
+    /// configuration now says.
+    pub fn tempcomp(&self, tempcomp: Option<&Tempcomp>) -> Result<()> {
+        self.set_meta(
+            TEMPCOMP,
+            &tempcomp.map(Tempcomp::stored).unwrap_or_default(),
+        )
     }
 
     /// Record what the daemon's watchers find wrong now, in place of

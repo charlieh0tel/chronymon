@@ -389,6 +389,9 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "reference_name": reference_name,
             "on_backups": on_backups(&sources, &paired),
             "selected_unreachable": selected_unreachable(&sources),
+            "tempcomp": reader
+                .tempcomp()?
+                .map(|t| json!({ "sensor": t.sensor, "interval": t.interval })),
             "chrony_config_error": reader.chrony_config_error()?,
             "troubles": reader
                 .troubles()?
