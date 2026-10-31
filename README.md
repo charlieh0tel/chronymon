@@ -64,7 +64,12 @@ environment.
     make test-web     # browser tests
     make screenshots  # docs/images
 
-The browser targets use Node after `make web-deps`, else Docker.
+The browser targets use Node after `make web-deps`, else Docker.  The
+synthetic data can end as other kinds of host, `ntp`, `gpsd-stopped`
+or `backups` (`synthetic -- DATABASE HOURS HOST`), and the browser
+tests read each through the real server: what its strip and kiosk say,
+and that nothing in them overflows or overlaps at phone, laptop and
+television sizes.
 
 ## License
 

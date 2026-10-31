@@ -5,7 +5,7 @@
 import { expect, test } from "@playwright/test";
 
 import { routeCdn } from "./cdn.mjs";
-import { MISSING } from "./playwright.config.mjs";
+import { BACKUPS_HOST, GPSD_STOPPED_HOST, MISSING, NTP_HOST } from "./playwright.config.mjs";
 
 const PAGES = [
   { path: "/", name: "Live" },
@@ -1135,4 +1135,119 @@ test("Distribution: all is every reading, not the latest hour's", async ({ page 
   expect(all).toBe(whole.count);
   // 48 h of the daemon's rows, against a day's.
   expect(all).toBeGreaterThan(1.5 * day);
+});
+
+// ------------------------------------------------- kinds of host
+//
+// The synthetic data ended as other kinds of host (examples/synthetic.rs
+// `Host`), read through the real server: only the poll's age is made
+// fresh, as no daemon writes to it.
+
+// The synthetic data's kinds of host, by name: where it is served, and
+// what the strip's problem pills, the kiosk's sync state and its
+// panel's edge should say of it.
+const HOSTS = {
+  pps: { base: "", pills: [], mode: "synchronized", edge: "panel" },
+  ntp: { base: NTP_HOST, pills: [], mode: "synchronized", edge: "panel" },
+  "gpsd-stopped": { base: GPSD_STOPPED_HOST, pills: ["gpsd down", "coasting"], mode: "coasting", edge: "panel bad" },
+  backups: { base: BACKUPS_HOST, pills: ["on backups"], mode: "on backups", edge: "panel warn" },
+};
+
+// The status, as the server says, with its poll a second old.
+const freshPoll = (page) => page.route("**/api/status", async (route) => {
+  const response = await route.fetch();
+  const status = await response.json();
+  status.status.age = 1;
+  return route.fulfill({ response, json: status });
+});
+
+// Phone, laptop and television.
+const SIZES = [{ width: 390, height: 844 }, { width: 1280, height: 800 }, { width: 1920, height: 1080 }];
+
+// What in the strip overflows or overlaps, each in words: every pill
+// and reading inside it, the readings clear of one another, no text
+// spilling from its box but by an ellipsis, and the page no wider than
+// the window.
+const stripFaults = (page) => page.evaluate(() => {
+  const faults = [];
+  const SLACK = 0.5;
+  const label = (el) => `${el.className || el.tagName.toLowerCase()} "${el.textContent.slice(0, 40)}"`;
+  const strip = document.getElementById("status");
+  const box = strip.getBoundingClientRect();
+  const inside = (a, b) => a.left >= b.left - SLACK && a.top >= b.top - SLACK &&
+    a.right <= b.right + SLACK && a.bottom <= b.bottom + SLACK;
+  const apart = (a, b) => a.right <= b.left + SLACK || b.right <= a.left + SLACK ||
+    a.bottom <= b.top + SLACK || b.bottom <= a.top + SLACK;
+  const parts = [...strip.querySelectorAll(".pill, .stat, #age")];
+  for (const el of parts) {
+    if (!inside(el.getBoundingClientRect(), box)) faults.push(`${label(el)} outside the strip`);
+  }
+  const tiles = [...strip.querySelectorAll(".stat")];
+  tiles.forEach((a, n) => {
+    for (const b of tiles.slice(n + 1)) {
+      if (!apart(a.getBoundingClientRect(), b.getBoundingClientRect())) faults.push(`${label(a)} overlaps ${label(b)}`);
+    }
+  });
+  for (const el of strip.querySelectorAll(".pill, .stat .v, .stat .k, #age")) {
+    const style = getComputedStyle(el);
+    const clipped = style.overflow === "hidden" || style.overflowX === "hidden";
+    if (clipped) {
+      if (el.scrollWidth > el.clientWidth + SLACK && style.textOverflow !== "ellipsis") faults.push(`${label(el)} cut short`);
+      continue;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const own = el.getBoundingClientRect();
+    if ([...range.getClientRects()].some((r) => r.width > 0 && !inside(r, own))) faults.push(`${label(el)} spills out`);
+  }
+  if (document.documentElement.scrollWidth > innerWidth + SLACK) faults.push("the page scrolls sideways");
+  return faults;
+});
+
+for (const [name, host] of Object.entries(HOSTS)) {
+  test(`Hosts: ${name}: the strip's problems and its edge`, async ({ page }) => {
+    await freshPoll(page);
+    await page.goto(`${host.base}/`);
+    await expect(page.locator("#status .feed > .pill")).toHaveText("LIVE");
+    await expect(page.locator("#status .problems .pill")).toHaveText(host.pills);
+    await expect(page.locator("#status")).toHaveClass(host.edge);
+  });
+
+  test(`Hosts: ${name}: the kiosk's state and its edge`, async ({ page }) => {
+    await page.setViewportSize(KIOSK_VIEWPORT);
+    await freshPoll(page);
+    await page.goto(`${host.base}/kiosk`);
+    await expect(page.locator("#kiosk-mode")).toHaveText(host.mode);
+    await expect(page.locator("#kiosk-sync")).toHaveClass(host.edge);
+  });
+
+  for (const size of SIZES) {
+    test(`Hosts: ${name}: at ${size.width}x${size.height}, nothing in the strip overflows or overlaps`, async ({ page }) => {
+      await page.setViewportSize(size);
+      await freshPoll(page);
+      await page.goto(`${host.base}/`);
+      await expect(page.locator("#status .stat").first()).toBeVisible();
+      await expect(page.locator("#status .problems .pill")).toHaveCount(host.pills.length);
+      expect(await stripFaults(page)).toEqual([]);
+    });
+  }
+
+  for (const size of [KIOSK_VIEWPORT, { width: 1280, height: 720 }]) {
+    test(`Hosts: ${name}: the kiosk at ${size.width}x${size.height}, nothing overlaps or overflows`, async ({ page }) => {
+      await page.setViewportSize(size);
+      await freshPoll(page);
+      await page.goto(`${host.base}/kiosk`);
+      await expect(page.locator("#kiosk-mode")).toHaveText(host.mode);
+      await expect(charts(page).first()).toBeVisible();
+      await page.waitForFunction(() => !running);
+      expect(await kioskFaults(page)).toEqual([]);
+    });
+  }
+}
+
+test("Hosts: ntp: half an hour since the last update, the server only missing polls, is not amber", async ({ page }) => {
+  await freshPoll(page);
+  await page.goto(`${NTP_HOST}/`);
+  await expect(page.locator("#status .stat", { hasText: "last update" })).toContainText(/^30 min ago/);
+  await expect(page.locator("#status .stat.warn")).toHaveCount(0);
 });

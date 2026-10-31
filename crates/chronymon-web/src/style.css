@@ -223,7 +223,7 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u)); font-variant-numeric: tab
                           position: absolute; right: calc(12 * var(--u)); bottom: calc(12 * var(--u)); }
 #kiosk-sync .reference { font-size: calc(36 * var(--u)); line-height: 1.2; margin-top: calc(10 * var(--u));
                          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#kiosk-sync .reference .muted { font-size: calc(24 * var(--u)); }
+#kiosk-sync .reference .muted { font-size: 0.667em; }
 #kiosk-sync > .muted { font-size: calc(18 * var(--u)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #kiosk-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: calc(14 * var(--u)) calc(20 * var(--u)); }
 .tile { display: flex; flex-direction: column; min-width: 0; }
