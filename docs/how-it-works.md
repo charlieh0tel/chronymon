@@ -39,6 +39,12 @@ records its stop, and exits with an error; systemd restarts it 5 s
 later, with `/run/chrony` writable.  Both tested in a systemd
 container.
 
+The unit is wanted by chrony's as well as by boot
+(`WantedBy=chrony.service`): each start of chrony starts chronymond if
+it is not running, such as after its start limit was reached while
+chrony was broken.  It is not stopped with chrony, whose stopping it
+records.
+
 ## Over UDP
 
 chronymond can ask chronyd's UDP command port instead of its socket:
