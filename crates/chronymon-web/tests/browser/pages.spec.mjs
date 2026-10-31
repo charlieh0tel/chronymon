@@ -1316,6 +1316,7 @@ for (const [name, host] of Object.entries(HOSTS)) {
 test("Hosts: ntp: half an hour since the last update, the server only missing polls, is not amber", async ({ page }) => {
   await freshPoll(page);
   await page.goto(`${NTP_HOST}/`);
-  await expect(page.locator("#status .stat", { hasText: "last update" })).toContainText(/^30 min ago/);
+  // Half an hour when written, and more by the time a slow runner reads it.
+  await expect(page.locator("#status .stat", { hasText: "last update" })).toContainText(/^3\d min ago/);
   await expect(page.locator("#status .stat.warn")).toHaveCount(0);
 });
