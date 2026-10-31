@@ -164,6 +164,11 @@ outage.  A loss within 60 s of the last starts `pps_flapping`, and
 nothing more is journaled until pulses have run unbroken for 60 s:
 `pps_steady`, with the edges missed and the losses in between.
 
+The Refclocks page shades these spans behind its charts: a pulse
+missing or a device unreadable in red, flapping in amber, shaded whole,
+as no edge within it is journaled.  A single missed edge is a thin
+line.
+
 ## chronyd's logs
 
 chronyd's logs give chronymon what its control socket cannot: every

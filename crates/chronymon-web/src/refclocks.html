@@ -94,7 +94,9 @@ async function load(signal) {
       title: `${r.name}: ${label(d.column)}`,
       lines: d.lines.map((l) => ({ ...l, name: r.name })),
     })));
-  drawStack(stack, { x: [], span: spanOf(reads), drawn }, "no refclock samples in this range");
+  const span = spanOf(reads);
+  drawStack(stack, { x: [], span, drawn, bands: ppsBands(events.events, span.from, span.to) },
+    "no refclock samples in this range");
 }
 
 rangeControl($("ranges"), soon);

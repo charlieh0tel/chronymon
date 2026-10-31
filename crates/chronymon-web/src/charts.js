@@ -1153,14 +1153,70 @@ const notSynchronizedBands = (got) =>
     .flatMap(([key, text]) => (got[key] ?? []).map(([from, to]) => ({ from, to, text })))
     .sort((a, b) => a.from - b.from);
 
-// Each band across the plot area, from its start to its end.
+// A PPS device's pulse missing or the device unreadable, and its pulse
+// flapping, shaded as not synchronized is, flapping in the amber of a
+// warning.
+const PPS_MISSING_BAND = NOT_SYNCHRONIZED_BAND;
+const PPS_FLAPPING_BAND = "#fbbf241f";
+
+// The spans the PPS events journal, by the event starting one: the event
+// ending it, what the band says, and its color.  The daemon journals no
+// edge inside a flapping span, so the span is shaded whole.
+const PPS_SPANS = {
+  pps_lost: ["pps_back", "PPS missing", PPS_MISSING_BAND],
+  pps_flapping: ["pps_steady", "PPS flapping", PPS_FLAPPING_BAND],
+  pps_down: ["pps_up", "PPS device unreadable", PPS_MISSING_BAND],
+};
+
+// The device a PPS event is of: its detail's first word, `pps2` of
+// `pps2: 3 edges missed`.
+const ppsDevice = (e) => (e.detail ?? "").split(":")[0];
+
+// The spans `events`, oldest first, journal of PPS devices, as bands
+// `{ from, to, text, color }` over `from` to `to`: one ending in the
+// range but begun before it starts at `from`; one not ended, at `to`.
+// A device going unreadable ends its other spans, as the daemon stops
+// counting them.
+function ppsBands(events, from, to) {
+  const starts = Object.fromEntries(Object.entries(PPS_SPANS).map(([start, [end]]) => [end, start]));
+  const open = new Map();
+  const bands = [];
+  const close = (device, start, at, detail) => {
+    const key = `${device}\n${start}`;
+    const [, words, color] = PPS_SPANS[start];
+    bands.push({ from: open.get(key) ?? from, to: at, text: `${words}: ${detail}`, color });
+    open.delete(key);
+  };
+  for (const e of events) {
+    const device = ppsDevice(e);
+    if (e.kind === "pps_down") {
+      for (const start of ["pps_lost", "pps_flapping"]) {
+        if (open.has(`${device}\n${start}`)) close(device, start, e.at, device);
+      }
+    }
+    if (PPS_SPANS[e.kind]) {
+      const key = `${device}\n${e.kind}`;
+      if (!open.has(key)) open.set(key, e.at);
+    } else if (starts[e.kind]) {
+      close(device, starts[e.kind], e.at, e.detail ?? device);
+    }
+  }
+  for (const key of [...open.keys()]) {
+    const [device, start] = key.split("\n");
+    close(device, start, to, `${device}, still`);
+  }
+  return bands.sort((a, b) => a.from - b.from);
+}
+
+// Each band across the plot area, from its start to its end, in its
+// color, or as not synchronized.
 function drawBands(u, bands) {
   const [lo, hi] = [u.scales.x.min, u.scales.x.max];
   const { ctx } = u;
   ctx.save();
-  ctx.fillStyle = NOT_SYNCHRONIZED_BAND;
-  for (const { from, to } of bands) {
+  for (const { from, to, color } of bands) {
     if (to < lo || from > hi) continue;
+    ctx.fillStyle = color ?? NOT_SYNCHRONIZED_BAND;
     const left = u.valToPos(Math.max(from, lo), "x", true);
     const right = u.valToPos(Math.min(to, hi), "x", true);
     ctx.fillRect(left, u.bbox.top, Math.max(right - left, devicePixelRatio), u.bbox.height);
