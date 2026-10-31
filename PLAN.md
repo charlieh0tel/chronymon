@@ -264,8 +264,9 @@ Journal, Distribution, Kiosk.
   tempcomp gives the `tempcomp` line to paste, linear and quadratic,
   chrony's formula going no further, in that unit, the sensor and
   interval read from chronyd's configuration (`meta` `tempcomp`).
-  Only an uncompensated range is fitted: with tempcomp at work the
-  frequency is not the clock's own.
+  Any range is fitted: chronyd reports the frequency with tempcomp's
+  compensation undone (`LCL_ReadAbsoluteFrequency`), so it is the
+  clock's own whatever the coefficients.
 - A page whose table is empty says why: chronyd logs refclocks and
   tempcomp only when told to.
 - **Kiosk**: smartclock's, one summary page, with `?inset=` and
