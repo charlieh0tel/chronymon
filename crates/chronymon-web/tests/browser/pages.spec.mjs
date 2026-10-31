@@ -160,6 +160,21 @@ test("Live: the strip reads the clock", async ({ page }) => {
   await expect(strip.locator(".stat", { hasText: "reference" })).toContainText("PPS");
 });
 
+test("Live: chrony.conf not read is a note beside LIVE, the error in its title", async ({ page }) => {
+  const error = "/etc/chrony/chrony.conf: Permission denied (os error 13)";
+  await page.route("**/api/status", async (route) => {
+    const response = await route.fetch();
+    const status = await response.json();
+    status.status.state = "up";
+    status.status.age = 1;
+    return route.fulfill({ response, json: { ...status, chrony_config_error: error } });
+  });
+  await page.goto("/");
+  const strip = page.locator("#status");
+  await expect(strip.locator(".pill")).toHaveText("LIVE");
+  await expect(strip.locator(".muted", { hasText: "chrony.conf not read" })).toHaveAttribute("title", error);
+});
+
 test("Live: charts, a readout under the cursor, and the events", async ({ page }) => {
   await page.goto("/?last=86400");
   await expect(charts(page).first()).toBeVisible();

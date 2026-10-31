@@ -343,6 +343,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "status": status,
             "tracking": tracking,
             "reference_name": reference_name,
+            "chrony_config_error": reader.chrony_config_error()?,
         }))
     })
 }

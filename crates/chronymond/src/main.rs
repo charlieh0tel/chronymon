@@ -27,6 +27,7 @@ use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
 use crate::collect::Collector;
+use crate::config::ConfigSource;
 use crate::ingest::Ingest;
 use crate::lifecycle::Host;
 
@@ -60,13 +61,14 @@ struct Cli {
     interval: f64,
 
     /// chronyd's configuration, for its `makestep` and its refclocks'
-    /// locks; read again whenever chronyd restarts.
+    /// locks; read again whenever chronyd restarts.  `none` for a
+    /// chronyd configured on its command line or on another host.
     #[arg(
         long,
         env = "CHRONYMOND_CHRONY_CONFIG",
         default_value = "/etc/chrony/chrony.conf"
     )]
-    chrony_config: PathBuf,
+    chrony_config: ConfigSource,
 
     /// chronyd's log directory, read for what the control protocol does
     /// not give: every sample, refclocks, tempcomp, and history from

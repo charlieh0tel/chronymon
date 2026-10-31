@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::path::PathBuf;
 
 use chronymon::event::EventKind;
 use chronymon_control::client::Client;
@@ -24,6 +23,7 @@ use chronymon_log::writer::ChronydState;
 use jiff::Timestamp;
 
 use crate::config::Config;
+use crate::config::ConfigSource;
 use crate::config::DEFAULT_LARGE_OFFSET;
 use crate::host::Process;
 
@@ -164,8 +164,9 @@ struct Seen {
 /// changed.
 #[derive(Debug)]
 pub(crate) struct Collector {
-    /// chronyd's configuration file, and what it said when last read.
-    chrony_config: PathBuf,
+    /// Where chronyd's configuration is read from, and what it said when
+    /// last read successfully: empty before.
+    chrony_config: ConfigSource,
     config: Config,
     /// chronyd's clock updates since it started, as far as seen; `None`
     /// when it was running before they could be counted.
@@ -185,10 +186,19 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
-    /// A collector going by chronyd's configuration at `chrony_config`.
-    pub(crate) fn new(chrony_config: PathBuf) -> Self {
+    /// A collector going by chronyd's configuration from
+    /// `chrony_config`.  One that cannot be read is said so, and read
+    /// again when chronyd is first seen.
+    pub(crate) fn new(chrony_config: ConfigSource) -> Self {
+        let config = match &chrony_config {
+            ConfigSource::File(path) => Config::read(path).unwrap_or_else(|e| {
+                eprintln!("chronymond: chronyd's configuration: {e}");
+                Config::default()
+            }),
+            ConfigSource::None => Config::default(),
+        };
         Self {
-            config: Config::read(&chrony_config),
+            config,
             chrony_config,
             updates: None,
             state: None,
@@ -206,14 +216,40 @@ impl Collector {
     }
 
     /// Read chronyd's configuration again, as chronyd does on starting,
-    /// and record its refclocks' locks.
-    fn reread_config(&mut self, batch: &Batch<'_>) -> chronymon_log::error::Result<()> {
-        let config = Config::read(&self.chrony_config);
-        if config != self.config {
-            eprintln!("chronymond: chronyd's configuration now {config}");
+    /// and record its refclocks' locks.  One that cannot be read leaves
+    /// what was read last, and the locks recorded, as they were: a
+    /// configuration taken for empty would unpair all history.
+    fn reread_config(
+        &mut self,
+        batch: &Batch<'_>,
+        at: Timestamp,
+    ) -> chronymon_log::error::Result<()> {
+        let ConfigSource::File(path) = &self.chrony_config else {
+            return Ok(());
+        };
+        match Config::read(path) {
+            Ok(config) => {
+                if config != self.config {
+                    eprintln!("chronymond: chronyd's configuration now {config}");
+                }
+                self.config = config;
+                batch.refclock_locks(&self.config.locks())?;
+                if batch.chrony_config_failed()? {
+                    eprintln!("chronymond: chronyd's configuration read again");
+                    batch.event(at, EventKind::ChronyConfigRead, None, None)?;
+                }
+                batch.chrony_config_error(None)
+            }
+            Err(e) => {
+                let detail = e.to_string();
+                eprintln!(
+                    "chronymond: chronyd's configuration: {detail}: keeping {}",
+                    self.config
+                );
+                batch.event(at, EventKind::ChronyConfigError, None, Some(&detail))?;
+                batch.chrony_config_error(Some(&detail))
+            }
         }
-        self.config = config;
-        batch.refclock_locks(&self.config.locks())
     }
 
     /// Read every report, and the names of sources not named before.
@@ -271,7 +307,7 @@ impl Collector {
                     started = true;
                 }
                 if started {
-                    self.reread_config(batch)?;
+                    self.reread_config(batch, at)?;
                 }
                 self.state = Some(ChronydState::Up);
                 self.pid = pid.or(self.pid);
@@ -592,12 +628,12 @@ pub(crate) mod tests {
     fn collector(db: &Database, config: &str) -> Collector {
         let path = db.directory().join("chrony.conf");
         std::fs::write(&path, config).expect("written");
-        Collector::new(path)
+        Collector::new(ConfigSource::File(path))
     }
 
     /// A collector with no configuration to read.
     fn unconfigured() -> Collector {
-        Collector::new(PathBuf::new())
+        Collector::new(ConfigSource::None)
     }
 
     fn tracking(reference_second: i64, last_offset: f64) -> Tracking {
@@ -903,6 +939,64 @@ pub(crate) mod tests {
         assert_eq!(locks(&db).as_deref(), Some("50505300 4E4D4541"));
         poll(&mut db, 4, snapshot(fresh(), vec![]), 200);
         assert_eq!(locks(&db).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn keeps_the_last_configuration_it_could_read() {
+        let mut db = Database::new("config-unreadable");
+        let paired = "refclock SHM 0 refid NMEA\nrefclock PPS /dev/pps0 refid PPS lock NMEA\n";
+        let mut collector = collector(&db, paired);
+        let meta = |db: &Database, key: &str| -> Option<String> {
+            db.reader
+                .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+                    row.get(0)
+                })
+                .ok()
+        };
+        let count = |db: &Database, kind: &str| -> i64 {
+            db.reader
+                .query_row(
+                    "SELECT COUNT(*) FROM event WHERE kind = ?1",
+                    [kind],
+                    |row| row.get(0),
+                )
+                .expect("counted")
+        };
+        let errors = |db: &Database| count(db, "chrony_config_error");
+        let mut poll = |db: &mut Database, second, pid| {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(fresh(), vec![]),
+                        Process::Running(pid),
+                    )
+                })
+                .expect("recorded");
+        };
+        let locks = "50505300 4E4D4541";
+        poll(&mut db, 0, 100);
+        assert_eq!(meta(&db, "refclock_locks").as_deref(), Some(locks));
+        assert_eq!(meta(&db, "chrony_config_error").as_deref(), Some(""));
+        // Gone when chronyd restarts: not taken for empty, which would
+        // unpair all history.
+        let path = db.directory().join("chrony.conf");
+        std::fs::remove_file(&path).expect("removed");
+        poll(&mut db, 1, 200);
+        assert_eq!(meta(&db, "refclock_locks").as_deref(), Some(locks));
+        assert!(meta(&db, "chrony_config_error").is_some_and(|e| e.contains("chrony.conf")));
+        assert_eq!(errors(&db), 1);
+        // Once per read: not again while chronyd runs on.
+        poll(&mut db, 2, 200);
+        assert_eq!(errors(&db), 1);
+        // Back, and read when chronyd next starts.
+        std::fs::write(&path, MAKE_STEP).expect("written");
+        poll(&mut db, 3, 300);
+        assert_eq!(meta(&db, "refclock_locks").as_deref(), Some(""));
+        assert_eq!(meta(&db, "chrony_config_error").as_deref(), Some(""));
+        assert_eq!(errors(&db), 1);
+        assert_eq!(count(&db, "chrony_config_read"), 1);
     }
 
     /// chronyd answering with `sources`, by index.

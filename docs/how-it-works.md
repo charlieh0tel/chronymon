@@ -112,6 +112,17 @@ pairing from `chrony.conf`, its `include` and `confdir` files too
 (`CHRONYMOND_CHRONY_CONFIG`), when it starts and whenever chronyd
 starts again, as chronyd reads it only then.
 
+It reads them as chronyd does, and where chronyd would refuse to start
+-- a file it cannot open, an `include` pattern's directory it cannot
+search, includes more than 10 deep -- chronymond keeps what it read
+last, pairing included, journals `chrony_config_error`, and the status
+strip says "chrony.conf not read" until a read succeeds, journaled
+`chrony_config_read`.  The daemon
+runs as `_chrony` and chronyd reads its configuration as root, so a
+file only root can read is one chronyd starts with and chronymond
+cannot read.  `CHRONYMOND_CHRONY_CONFIG=none` reads nothing: no
+pairing, and every large correction a large offset.
+
 ## chronyd's logs
 
 chronyd's logs give chronymon what its control socket cannot: every
@@ -144,6 +155,7 @@ changes, sources added and removed):
 | `host_crash` | the last boot ended without a shutdown: power loss, hard reset, or a kernel crash (said so when pstore holds a record) |
 | `daemon_start`, `daemon_stop`, `daemon_crash` | chronymond's own |
 | `unsupported` | a reply or log layout this version cannot read |
+| `chrony_config_error`, `chrony_config_read` | chronyd's configuration could not be read as chronyd reads it, what was read last kept; read again after that |
 
 Between a leap change to unsynchronized and one from it, the clock's
 charts on Live and the kiosk break their lines and shade the span:

@@ -44,6 +44,7 @@ use rusqlite::types::Value;
 
 use crate::error::Error;
 use crate::error::Result;
+use crate::schema::CHRONY_CONFIG_ERROR;
 use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
 use crate::text;
@@ -651,6 +652,20 @@ impl Reader {
             .lines()
             .filter_map(RefclockLock::parse)
             .collect())
+    }
+
+    /// Why the daemon's last read of chronyd's configuration failed, if
+    /// it did.
+    pub fn chrony_config_error(&self) -> Result<Option<String>> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![CHRONY_CONFIG_ERROR],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.filter(|error| !error.is_empty()))
     }
 
     /// chronyd's latest `tracking` report: its `tracking_report` row,
@@ -2461,6 +2476,23 @@ mod tests {
             .write(|batch| batch.refclock_locks(&[]))
             .expect("written");
         assert_eq!(db.reader().refclock_locks().expect("locks"), []);
+    }
+
+    #[test]
+    fn reads_the_last_configuration_error() {
+        let mut db = Database::new("config-error");
+        assert_eq!(db.reader().chrony_config_error().expect("read"), None);
+        db.log
+            .write(|batch| batch.chrony_config_error(Some("chrony.conf: denied")))
+            .expect("written");
+        assert_eq!(
+            db.reader().chrony_config_error().expect("read").as_deref(),
+            Some("chrony.conf: denied")
+        );
+        db.log
+            .write(|batch| batch.chrony_config_error(None))
+            .expect("written");
+        assert_eq!(db.reader().chrony_config_error().expect("read"), None);
     }
 
     #[test]

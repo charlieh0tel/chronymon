@@ -44,11 +44,16 @@ pub enum EventKind {
     SourceRemoved,
     /// chronyd sent a reply this version cannot decode.
     Unsupported,
+    /// chronyd's configuration could not be read as chronyd reads it;
+    /// the daemon goes on with what it read last.
+    ChronyConfigError,
+    /// chronyd's configuration read again after a failure.
+    ChronyConfigRead,
 }
 
 impl EventKind {
     /// Every kind, for tests and for a reader decoding the stored name.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::DaemonStart,
         Self::DaemonStop,
         Self::DaemonCrash,
@@ -66,6 +71,8 @@ impl EventKind {
         Self::SourceAdded,
         Self::SourceRemoved,
         Self::Unsupported,
+        Self::ChronyConfigError,
+        Self::ChronyConfigRead,
     ];
 
     /// The name stored for it and shown in the journal.
@@ -88,6 +95,8 @@ impl EventKind {
             Self::SourceAdded => "source_added",
             Self::SourceRemoved => "source_removed",
             Self::Unsupported => "unsupported",
+            Self::ChronyConfigError => "chrony_config_error",
+            Self::ChronyConfigRead => "chrony_config_read",
         }
     }
 

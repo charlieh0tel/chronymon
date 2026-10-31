@@ -16,7 +16,9 @@
 # chronyd's configuration, read for its makestep, which decides when a
 # correction is recorded as a step rather than a large offset, and its
 # refclocks' locks, which pair an NMEA with its PPS.  Read again
-# whenever chronyd restarts.
+# whenever chronyd restarts; one that cannot be read leaves what was
+# read last.  `none` for a chronyd given its directives on its command
+# line, or reached over UDP on another host.
 #CHRONYMOND_CHRONY_CONFIG=/etc/chrony/chrony.conf
 
 # chronyd's log directory, and seconds between reads of it.  chronyd
