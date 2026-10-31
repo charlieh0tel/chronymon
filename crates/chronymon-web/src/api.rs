@@ -298,6 +298,26 @@ fn names(reader: &Reader) -> Result<HashMap<i64, String>> {
         .collect())
 }
 
+/// The selected source's `reachability`, from its report: chronyd's
+/// last 8 polls of it, a bit each, set if it answered.
+const REACHABILITY: &str = "reachability";
+
+/// Whether chronyd's selected source, as `sources` last say, has
+/// answered none of its last 8 polls: chronyd keeps it selected, and
+/// the clock unsteered, until it is stale beside the sources still
+/// answering (4.8 `sources.c` `SRC_SelectSource`), which can be hours.
+/// A source missing a few polls is ordinary loss, not this.
+fn selected_unreachable(sources: &[Source]) -> bool {
+    sources.iter().any(|s| {
+        s.report.as_ref().is_some_and(|(state, values)| {
+            state == "selected"
+                && values
+                    .iter()
+                    .any(|(name, value)| *name == REACHABILITY && *value == 0.0)
+        })
+    })
+}
+
 /// Whether chronyd is synchronized to other than its own refclocks, as
 /// `sources` last say: a refclock is there and none is selected.  A
 /// refclock in `paired`, by address, another is locked to, an NMEA a
@@ -368,6 +388,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "tracking": tracking,
             "reference_name": reference_name,
             "on_backups": on_backups(&sources, &paired),
+            "selected_unreachable": selected_unreachable(&sources),
             "chrony_config_error": reader.chrony_config_error()?,
             "troubles": reader
                 .troubles()?
@@ -746,6 +767,31 @@ mod tests {
                 "{locks:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_selected_source_unreachable_only_once_it_answers_none_of_8_polls() {
+        let source = |state: &str, reachability: f64| Source {
+            id: 0,
+            address: "192.0.2.1".to_owned(),
+            mode: "client".to_owned(),
+            name: None,
+            first_seen: 0,
+            last_seen: 0,
+            removed: false,
+            report: Some((state.to_owned(), vec![(REACHABILITY, reachability)])),
+            selection: None,
+            stats: None,
+            ntp: None,
+        };
+        assert!(selected_unreachable(&[source("selected", 0.0)]));
+        // 0o360: its last 4 polls lost, ordinary loss on tare.
+        assert!(!selected_unreachable(&[source(
+            "selected",
+            f64::from(0o360)
+        )]));
+        assert!(!selected_unreachable(&[source("not_combined", 0.0)]));
+        assert!(!selected_unreachable(&[]));
     }
 
     #[test]

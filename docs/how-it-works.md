@@ -105,12 +105,13 @@ its own refclocks: a refclock is listed, not counting one another is
 locked to, and none is selected (`/api/status`'s `on_backups`).  A
 refclock kept only to be watched, `noselect` and paired to nothing,
 reads as one chronyd should be using.  It says COASTING, in amber, the
-panel edged amber, once chronyd has not updated the clock for four of
-its update intervals, a minute at least, and the strip's "last update"
-turns amber: chronyd keeps reporting a source selected after its
-samples stop, as a PPS locked to an NMEA whose gpsd went away, until
-another source's sample makes it choose again, and meanwhile the clock
-runs on its last frequency.
+panel edged amber, and the strip's "last update" turns amber, while
+the source chronyd has selected answered none of its last 8 polls
+(`/api/status`'s `selected_unreachable`): chronyd keeps such a source
+selected, as a PPS locked to an NMEA whose gpsd went away, until it is
+stale beside the sources still answering, which can be hours, and
+meanwhile the clock runs on its last frequency.  A source missing a
+few polls is not coasting, however long since the last update.
 
 The other pages' strip shows all of these, coasting and on backups
 too, as pills after LIVE, worst first, on a line of their own above
@@ -279,8 +280,7 @@ changes, sources added and removed):
 
 A reference change says from what to what: an NTP source by address,
 shown by its name where the sources have one, a refclock by its
-reference ID (`GPS`), `local`, or `none` while unsynchronized; before
-1.2.0 a refclock and none were both `-`.  The kiosk's list shows each
+reference ID (`GPS`), `local`, or `none` while unsynchronized.  The kiosk's list shows each
 event's source and detail after it, as the Journal does.
 
 Between a leap change to unsynchronized and one from it, the clock's
