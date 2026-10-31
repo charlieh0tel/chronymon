@@ -26,6 +26,8 @@ use signal_hook::consts::SIGINT;
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
+use crate::clock::Reading;
+use crate::clock::Steps;
 use crate::collect::Collector;
 use crate::config::ConfigSource;
 use crate::gpsd::Address as GpsdAddress;
@@ -35,6 +37,7 @@ use crate::lifecycle::Host;
 use crate::pps::Device as PpsDevice;
 use crate::pps::Pps;
 
+mod clock;
 mod collect;
 mod config;
 mod gpsd;
@@ -240,11 +243,13 @@ fn run(cli: &Cli) -> Result<()> {
     let mut logs_read = Instant::now();
 
     let mut state = None;
+    let mut steps = Steps::default();
     let mut next = Instant::now();
     // Why the loop stopped, if not for a signal.
     let mut failed = None;
     loop {
         let at = Timestamp::now();
+        let clocks = Reading::now();
         // A fresh socket after any failure: chronyd may have restarted.
         let read = match client
             .take()
@@ -292,6 +297,10 @@ fn run(cli: &Cli) -> Result<()> {
         let process = host::chronyd(&cli.pid_file);
         log.write(|batch| {
             collector.record(batch, at, read, process)?;
+            for (when, kind, detail) in steps.observe(at, clocks, collector.take_step()) {
+                eprintln!("chronymond: {}: {detail}", kind.name());
+                batch.event(when, kind, None, Some(&detail))?;
+            }
             pps.poll(batch, at)?;
             gpsd.as_mut().map_or(Ok(()), |gpsd| gpsd.poll(batch, at))
         })?;

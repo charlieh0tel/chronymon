@@ -183,6 +183,9 @@ pub(crate) struct Collector {
     sources_read: bool,
     /// Configured names, asked once per source.
     names: HashMap<IpAddr, String>,
+    /// The offset of a step `makestep`'s rule said this poll, until
+    /// taken.
+    step: Option<f64>,
 }
 
 impl Collector {
@@ -207,6 +210,7 @@ impl Collector {
             sources: HashMap::new(),
             sources_read: false,
             names: HashMap::new(),
+            step: None,
         }
     }
 
@@ -374,7 +378,7 @@ impl Collector {
     /// A step or a large offset, for an update's correction past the
     /// threshold: a step only where `makestep` allows one.
     fn record_correction(
-        &self,
+        &mut self,
         batch: &Batch<'_>,
         at: Timestamp,
         tracking: &Tracking,
@@ -395,8 +399,16 @@ impl Collector {
         } else {
             EventKind::LargeOffset
         };
+        if kind == EventKind::Step {
+            self.step = Some(tracking.last_offset.get());
+        }
         let detail = format!("{} s", tracking.last_offset.get());
         batch.event(at, kind, None, Some(&detail))
+    }
+
+    /// The offset of a step `makestep`'s rule said since last taken.
+    pub(crate) const fn take_step(&mut self) -> Option<f64> {
+        self.step.take()
     }
 
     fn record_sources(
@@ -853,6 +865,34 @@ pub(crate) mod tests {
                 .expect("recorded");
         }
         db.events()
+    }
+
+    #[test]
+    fn hands_the_rules_steps_to_the_clocks_check() {
+        let mut db = Database::new("take-step");
+        let mut collector = collector(&db, MAKE_STEP);
+        let mut poll = |db: &mut Database, second, tracking| {
+            db.log
+                .write(|batch| {
+                    collector.record(
+                        batch,
+                        at(second),
+                        snapshot(tracking, vec![]),
+                        Process::Running(100),
+                    )
+                })
+                .expect("recorded");
+            collector.take_step()
+        };
+        assert_eq!(poll(&mut db, 0, fresh()), None);
+        assert_eq!(poll(&mut db, 1, tracking(1, 1.5)), Some(1.5));
+        // Taken: not again until another.
+        assert_eq!(poll(&mut db, 2, tracking(1, 1.5)), None);
+        // Past the limit of 3 updates, slewed: no step to hand over.
+        for second in 3..6 {
+            poll(&mut db, second, tracking(second, 2.0 + second as f64));
+        }
+        assert_eq!(poll(&mut db, 6, tracking(6, 9.0)), None);
     }
 
     #[test]

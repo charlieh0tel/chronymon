@@ -464,9 +464,19 @@ directly.  In this order, each its own change:
    satellites used and seen, PDOP and TDOP, and shades `fix_lost` to
    `fix_regained` and `gpsd_down` to `gpsd_up`.
 4. **Steps seen on the clock**, beside `makestep`'s rule: the
-   realtime clock moved against the monotonic one between polls past
-   any slew.  Catches `chronyc makestep` and `-R`, which the rule
-   cannot see; where the two disagree, journaled.
+   realtime clock moved against boot time between polls by more than
+   10% of the time between them, the most Linux's tick adjustment
+   lets chronyd slew (above chronyd's default `maxslewrate`, 1/12;
+   4.8 `conf.c`), plus 50 ms.  Boot time, not the monotonic clock,
+   which stops through a suspend, so a resume would be a step; read
+   through `rustix`, so with no `unsafe`.  Catches `chronyc
+   makestep`, `-R` and anything else setting the clock, which the rule
+   cannot see.  A step on the clock and one by the rule within three
+   polls are one, as chronyd may step between the daemon reading the
+   clocks and its report; unmatched, `clock_step` or `step_unseen`.
+   A second back at midnight UTC is said to be a leap second.  Steps
+   under about 0.15 s at a 1 s poll cannot be told from a slew, so
+   a ruled step that small is not looked for.
 
 A device or gpsd named but absent is recorded as down, as chronyd is,
 and the daemon runs on.  On the web view, fix mode and pulse presence
@@ -490,9 +500,9 @@ the test host.
 - The log tables' unique keys cover every column, about doubling their
   indexes, `refclock_sample` at 1 Hz most.  Key on a hash of the line?
 - `log_file` rows for files long gone are never pruned.
-- chronyd's `-R` disables makestep's limit, unseen here; read it from
-  `/proc/<pid>/cmdline`?  Steps seen on the clock (Later) would
-  answer it.
+- chronyd's `-R` disables makestep's limit, unseen by the rule, so its
+  steps are `clock_step`s.  Read `-R` from `/proc/<pid>/cmdline` to
+  make the rule right, or leave the clock to say so?
 - The copies of smartclock's web assets and HTTP crate: share them
   before they drift.
 - The kiosk's `chronyd@host` head line can't be seen on the user's TV
