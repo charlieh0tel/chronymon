@@ -450,13 +450,15 @@ function drawSources() {
 // The events last read, newest first.
 let events = [];
 
-// As many of the events as fit, newest first.
+// As many of the events as fit, newest first, each with its source and
+// its detail.
 function drawEvents() {
   const drawn = (n) => events.length
     ? `<table><tbody>${events.slice(0, n).map((e) =>
         `<tr><td>${esc(shortTime(e.at))}</td>` +
         `<td><span style="color:${eventColor(e.kind)}">${esc(eventWords(e.kind))}</span>` +
-        `${e.source ? ` <span class="muted">${esc(e.source)}</span>` : ""}</td></tr>`).join("")}</tbody></table>`
+        `${e.source ? ` ${esc(e.source)}` : ""}` +
+        `${eventDetail(e) ? ` <span class="muted">${esc(eventDetail(e))}</span>` : ""}</td></tr>`).join("")}</tbody></table>`
     : `<span class="muted">nothing recorded</span>`;
   showHtml($("kiosk-event-rows"), drawn(fitting($("kiosk-events"), drawn(events.length))));
 }

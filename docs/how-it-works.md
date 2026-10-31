@@ -272,6 +272,12 @@ changes, sources added and removed):
 | `gpsd_down`, `gpsd_up` | gpsd could not be reached or went away; answered again |
 | `fix_lost`, `fix_regained` | a receiver gpsd reports had no fix, two reports in a row or none for 10 s; had one again |
 
+A reference change says from what to what: an NTP source by address,
+shown by its name where the sources have one, a refclock by its
+reference ID (`GPS`), `local`, or `none` while unsynchronized; before
+1.2.0 a refclock and none were both `-`.  The kiosk's list shows each
+event's source and detail after it, as the Journal does.
+
 Between a leap change to unsynchronized and one from it, the clock's
 charts on Live and the kiosk break their lines and shade the span:
 not under 2 s, as chronyd reports a leap second as unsynchronized.
