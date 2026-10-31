@@ -1,8 +1,15 @@
 name: release
 
+# The packages built on every push to main and every pull request to
+# it, so a change that breaks packaging shows before a tag, and a tag
+# reuses main's build cache; published only for a tag (rust-build-deb's
+# release job, and trigger-apt-repo's if).
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
 
 jobs:
   # The whole workspace built once per architecture, and chronymond's

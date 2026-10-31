@@ -353,7 +353,9 @@ Journal, Distribution, Kiosk.
   configuration into pairs nothing.
 - Timestamps are integer nanoseconds since the epoch, as smartclock's.
 - One Debian package, both services enabled; CI and release through
-  deb-workflows; a release triggers the APT repository's rebuild.  A
+  deb-workflows; the packages built on every push to main and pull
+  request, published only for a tag; a release triggers the APT
+  repository's rebuild.  A
   beta, a numbered pre-release tag (`v1.2.0-beta.1`), is a GitHub
   pre-release only: never in the APT repository, which takes each
   repository's latest release.
