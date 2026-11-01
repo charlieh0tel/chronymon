@@ -379,6 +379,10 @@ Journal, Distribution, Kiosk.
 - smartclock-sensord's ambient readings.
 - A Prometheus exporter.
 - Every packet from `measurements.log` on the Sources page.
+- An OLD pill beside the range control while the charts' last read is
+  older than a minute or so, its age in its title, a click reading
+  again: on a long range Auto rereads only every half hour.  For
+  smartclock's displays too.
 
 ### The receiver, decided 2026-10-30
 
