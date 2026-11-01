@@ -1,3 +1,13 @@
+chronymon (1.2.3-1) unstable; urgency=medium
+
+  * The Temperature page fits tempcomp to the clock's own frequency:
+    chronyd reports what is left once tempcomp has corrected, so the
+    scatter and the fit add the logged compensation back.  Before, a
+    range under a working tempcomp line fitted to a flat line, one that
+    would turn the compensation off.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sun, 01 Nov 2026 09:58:21 -0800
+
 chronymon (1.2.2-1) unstable; urgency=medium
 
   * The Temperature page fits tempcomp's coefficients: Fit tempcomp
