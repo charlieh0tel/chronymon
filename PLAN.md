@@ -266,7 +266,11 @@ Journal, Distribution, Kiosk.
   interval read from chronyd's configuration (`meta` `tempcomp`).
   Any range is fitted: chronyd reports the frequency with tempcomp's
   compensation undone (`LCL_ReadAbsoluteFrequency`), so it is the
-  clock's own whatever the coefficients.
+  clock's own whatever the coefficients.  Readings from before the
+  sensor last changed are not (`meta` `tempcomp_since`, journaled
+  `tempcomp_changed`).  No settling time after a restart: chronyd's
+  first estimates are rough for a few minutes, a little noise in a
+  fit of days.
 - A page whose table is empty says why: chronyd logs refclocks and
   tempcomp only when told to.
 - **Kiosk**: smartclock's, one summary page, with `?inset=` and

@@ -49,6 +49,9 @@ pub enum EventKind {
     ChronyConfigError,
     /// chronyd's configuration read again after a failure.
     ChronyConfigRead,
+    /// chronyd's `tempcomp` line changed, as read from its configuration
+    /// when it started: the old line and the new.
+    TempcompChanged,
     /// A PPS device's pulse stopped landing: an edge missed.
     PpsLost,
     /// Its pulses landing again, after so many edges missed.
@@ -82,7 +85,7 @@ pub enum EventKind {
 
 impl EventKind {
     /// Every kind, for tests and for a reader decoding the stored name.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::DaemonStart,
         Self::DaemonStop,
         Self::DaemonCrash,
@@ -102,6 +105,7 @@ impl EventKind {
         Self::Unsupported,
         Self::ChronyConfigError,
         Self::ChronyConfigRead,
+        Self::TempcompChanged,
         Self::PpsLost,
         Self::PpsBack,
         Self::PpsFlapping,
@@ -138,6 +142,7 @@ impl EventKind {
             Self::Unsupported => "unsupported",
             Self::ChronyConfigError => "chrony_config_error",
             Self::ChronyConfigRead => "chrony_config_read",
+            Self::TempcompChanged => "tempcomp_changed",
             Self::PpsLost => "pps_lost",
             Self::PpsBack => "pps_back",
             Self::PpsFlapping => "pps_flapping",

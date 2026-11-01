@@ -100,28 +100,45 @@ pub(crate) const CHRONY_CONFIG_ERROR: &str = "chrony_config_error";
 /// text.  Empty, or none, when there is no `tempcomp`.
 pub(crate) const TEMPCOMP: &str = "tempcomp";
 
+/// The `meta` key of when chronyd's `tempcomp` sensor last changed, a
+/// stored timestamp: readings before it are another sensor's.  None
+/// before a change was seen.
+pub(crate) const TEMPCOMP_SINCE: &str = "tempcomp_since";
+
 /// A `tempcomp` directive's sensor, the file chronyd reads the
 /// temperature from, and how often, in seconds, as written: what a
-/// line with new coefficients keeps (`chrony.conf`, 4.3 to 4.9).
+/// line with new coefficients keeps; and the rest of it, the
+/// coefficients or a points file (`chrony.conf`, 4.3 to 4.9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tempcomp {
     pub sensor: String,
     pub interval: String,
+    pub rest: String,
 }
 
 impl Tempcomp {
-    /// As `meta` stores it: the sensor and the interval, a tab between.
+    /// As `meta` stores it: the sensor, the interval and the rest, a
+    /// tab between each.
     pub(crate) fn stored(&self) -> String {
-        format!("{}\t{}", self.sensor, self.interval)
+        format!("{}\t{}\t{}", self.sensor, self.interval, self.rest)
     }
 
-    /// One from its [`stored`](Self::stored) text.
+    /// One from its [`stored`](Self::stored) text, the rest empty from a
+    /// database that stored none.
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        let (sensor, interval) = text.split_once('\t')?;
+        let mut parts = text.splitn(3, '\t');
         Some(Self {
-            sensor: sensor.to_owned(),
-            interval: interval.to_owned(),
+            sensor: parts.next().filter(|s| !s.is_empty())?.to_owned(),
+            interval: parts.next()?.to_owned(),
+            rest: parts.next().unwrap_or_default().to_owned(),
         })
+    }
+}
+
+/// The directive's words after its name, as chrony.conf has them.
+impl fmt::Display for Tempcomp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.sensor, self.interval, self.rest)
     }
 }
 

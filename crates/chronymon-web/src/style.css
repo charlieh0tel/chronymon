@@ -264,6 +264,8 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u)); font-variant-numeric: tab
 dialog#fit-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line);
                     border-radius: 8px; padding: 16px; width: min(1000px, 95vw); }
 dialog#fit-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
-/* A tempcomp line to paste, selected whole by one click. */
-pre.tempcomp { user-select: all; overflow-x: auto; padding: 6px 10px; background: var(--bg);
+/* A fit, its Copy beside it. */
+#fits .fit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
+/* A tempcomp block to select and paste. */
+pre.tempcomp { user-select: text; overflow-x: auto; padding: 6px 10px; background: var(--bg);
                border: 1px solid var(--line); border-radius: 6px; }
