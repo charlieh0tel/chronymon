@@ -86,10 +86,14 @@ const stack = {
 
 let scatterChart = null;
 
+// The scatter's frequency axis.
+const OWN_FREQUENCY = "Clock's own frequency, ppm";
+
 // The pairs the last scatter set against each other, for the fit.
-// chronyd reports the frequency with tempcomp's compensation undone
-// (`LCL_ReadAbsoluteFrequency`, `local.c`, 4.3 to 4.9), so it is the
-// clock's own however tempcomp is set.
+// chronyd reports its own correction of the frequency, tempcomp's
+// compensation left out (`LCL_ReadAbsoluteFrequency`, `local.c`, 4.3
+// to 4.9): what remains once tempcomp has corrected.  The clock's own
+// frequency is that less the compensation, whatever tempcomp is set to.
 let fitFrom = null;
 
 // The most compensation chronyd takes, in ppm; past it a reading is
@@ -194,11 +198,14 @@ function drawScatter(temperature, frequency, points) {
   scatterChart?.destroy();
   scatterChart = null;
   $("scatter").innerHTML = "";
+  // The clock's own frequency: chronyd reports what is left after
+  // tempcomp's compensation, so it is added back.
+  const compensation = temperature.plots.find((p) => p.column === "compensation").mean;
   const pairs = pairsOn(
     { read: temperature, values: temperature.plots[0].mean },
     { read: frequency, values: frequencyValues(frequency) },
     points,
-  );
+  ).flatMap((p) => (compensation[p.index] == null ? [] : [{ ...p, y: p.y - compensation[p.index] }]));
   fitFrom = null;
   $("fit").hidden = true;
   if (pairs.length < MIN_PAIRS) {
@@ -216,7 +223,7 @@ function drawScatter(temperature, frequency, points) {
     $("scatter"),
     pairs,
     { name: columnName(key(TEMPCOMP, "temperature")) },
-    { name: columnName(key("tracking", "frequency")) },
+    { name: OWN_FREQUENCY },
     $("scatter").clientWidth || 800,
     fitFrom?.fits ?? [],
   );
