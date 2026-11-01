@@ -1175,8 +1175,12 @@ test.describe("Kiosk: the clock", () => {
     const stopped = await time.textContent();
     await page.waitForTimeout(1500);
     await expect(time).toHaveText(stopped);
-    // The answers still held back are the test's, not the page's.
+    // The answers still held back are the test's, not the page's: let
+    // go, and closing the page aborts them, which is no error of its.
     await page.unrouteAll({ behavior: "ignoreErrors" });
+    await page.close();
+    const errors = pageErrors.get(test.info().testId);
+    errors.splice(0, errors.length, ...errors.filter((e) => !/\/api\/status net::ERR_ABORTED$/.test(e)));
   });
 });
 
