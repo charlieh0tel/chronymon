@@ -1,3 +1,14 @@
+chronymon (1.2.2~beta.5-1) unstable; urgency=medium
+
+  * The fit dialog shows what was fitted as text, then each fit in its
+    own block with a Copy that copies it with that header.
+  * Changes read "from A to B": "reference changed from 10.0.0.239 to
+    GPS".
+  * A page reads its range again as soon as a new event happens, so its
+    events never fall behind the strip.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 18:04:56 -0700
+
 chronymon (1.2.2~beta.4-1) unstable; urgency=medium
 
   * A change of chronyd's tempcomp line is journaled, and the fit takes
