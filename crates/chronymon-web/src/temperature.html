@@ -43,12 +43,12 @@
 <!-- The fit, of the range shown when it was asked for, over the page
      until closed. -->
 <dialog id="fit-dialog" aria-labelledby="fit-heading">
-  <h2 id="fit-heading">tempcomp, fitted</h2>
-  <div id="fits"></div>
   <div class="controls">
+    <h2 id="fit-heading">tempcomp, fitted</h2>
     <span class="grow"></span>
     <button id="fit-close" type="button">Close</button>
   </div>
+  <div id="fits"></div>
 </dialog>
 
 <footer id="colophon"></footer>
@@ -169,10 +169,12 @@ function drawFits() {
       `${utcMinute(Math.min(...times))} to ${utcMinute(Math.max(...times))} UTC,`,
     `# of ${sensor.sensor}.`,
   ].join("\n");
-  // What was fitted, then each fit with its Copy, which copies it with
-  // what it was fitted from.
+  // What was fitted, as text, its comment marks the copy's alone; then
+  // each fit, the block to paste, its Copy in its corner, which copies
+  // it with the comment.
   fitCopies = groups.map((group) => `${common}\n\n${group}`);
-  showHtml($("fits"), `<pre class="tempcomp">${esc(common)}</pre>` +
+  const said = common.split("\n").map((line) => line.replace(/^# /, "")).join("\n");
+  showHtml($("fits"), `<pre class="fitted">${esc(said)}</pre>` +
     groups.map((group, n) => `<div class="fit"><pre class="tempcomp">${esc(group)}</pre>` +
       `<button type="button" data-copy="${n}">Copy</button></div>`).join(""));
 }

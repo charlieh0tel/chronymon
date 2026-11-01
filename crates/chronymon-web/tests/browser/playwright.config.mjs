@@ -15,10 +15,17 @@ export const NTP_HOST = process.env.CHRONYMON_WEB_NTP ?? "http://127.0.0.1:9985"
 export const GPSD_STOPPED_HOST = process.env.CHRONYMON_WEB_GPSD_STOPPED ?? "http://127.0.0.1:9986";
 export const BACKUPS_HOST = process.env.CHRONYMON_WEB_BACKUPS ?? "http://127.0.0.1:9987";
 
+const WORKERS = 6;
+
 export default defineConfig({
   testDir: ".",
   testMatch: "*.spec.mjs",
   fullyParallel: true,
+  // Tests at once: each page has several requests in flight, and the
+  // server answers past 32 at a time "busy" (chronymon-http
+  // MAX_INFLIGHT), which a test takes for an error; half the cores of a
+  // large machine got there.
+  workers: WORKERS,
   timeout: 60000,
   use: { baseURL: FULL },
 });

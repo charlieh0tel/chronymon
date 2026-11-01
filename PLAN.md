@@ -203,7 +203,10 @@ after measuring: about 7 MB a day there.
 smartclock-web's `style.css`, `common.js`, `charts.js` and HTTP crate,
 copied; uPlot 1.6.32 from jsdelivr with SRI; assets in the binary.
 The strip polls `status` every second; charts reread their range on
-Grafana's Auto timer (never oftener than 5 s) and redraw in place.
+Grafana's Auto timer (never oftener than 5 s) and redraw in place,
+and at once when `status` says a newer event than it last did: on a
+long range Auto waits half an hour, and the events listed fell behind
+the strip.
 One bucketed query, live or zoomed, is one path to get right; nothing
 arrives faster than chronyd updates, so no push channel.
 

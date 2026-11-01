@@ -264,8 +264,11 @@ body.kiosk { --u: 1px; font-size: calc(13 * var(--u)); font-variant-numeric: tab
 dialog#fit-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line);
                     border-radius: 8px; padding: 16px; width: min(1000px, 95vw); }
 dialog#fit-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
-/* A fit, its Copy beside it. */
-#fits .fit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
-/* A tempcomp block to select and paste. */
-pre.tempcomp { user-select: text; overflow-x: auto; padding: 6px 10px; background: var(--bg);
-               border: 1px solid var(--line); border-radius: 6px; }
+#fit-dialog .controls { margin-bottom: 14px; }
+/* What was fitted: the comment pasted with a fit, as plain text. */
+#fits pre.fitted { margin: 0 0 16px; color: var(--text); white-space: pre-wrap; }
+/* Each fit, the block to paste, its Copy in the block's corner. */
+#fits .fit { position: relative; margin-bottom: 12px; }
+#fits .fit button { position: absolute; top: 6px; right: 6px; padding: 2px 10px; font-size: 12px; }
+pre.tempcomp { margin: 0; overflow-x: auto; padding: 10px 84px 10px 12px; background: var(--bg);
+               border: 1px solid var(--line); border-radius: 6px; line-height: 1.5; }

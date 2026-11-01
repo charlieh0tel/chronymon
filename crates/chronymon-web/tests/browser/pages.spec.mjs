@@ -230,6 +230,26 @@ test("Live: a long reference name keeps to its cell, the stratum clear of it", a
   expect(reference.x + reference.width).toBeLessThanOrEqual(stratum.x);
 });
 
+test("Live: a new event reads the page again, however long its range", async ({ page }) => {
+  // The newest event's time, as the status says it, moved on when asked.
+  let newest = null;
+  await page.route("**/api/status", async (route) => {
+    const response = await route.fetch();
+    const status = await response.json();
+    newest ??= status.last_event;
+    return route.fulfill({ response, json: { ...status, last_event: newest } });
+  });
+  let reads = 0;
+  page.on("request", (r) => { if (r.url().includes("/api/events?")) reads += 1; });
+  // Thirty days, which Auto rereads only every half hour or so.
+  await page.goto("/?last=2592000");
+  await expect(charts(page).first()).toBeVisible();
+  await page.waitForFunction(() => !running);
+  const before = reads;
+  newest += 1;
+  await expect.poll(() => reads, { timeout: 5000 }).toBeGreaterThan(before);
+});
+
 test("Live: nothing wrong, no line of pills", async ({ page }) => {
   await fakeStatus(page, { troubles: [], chrony_config_error: null, on_backups: false });
   await page.goto("/");
@@ -693,6 +713,11 @@ test("Temperature: the series and the scatter", async ({ page }) => {
 // nothing much to go by.
 const MIN_FITTED = 100;
 
+// The fit's header as Copy gives it: shown as text, copied as the
+// comment chrony.conf takes.
+const copiedHeader = async (page) =>
+  (await page.locator("#fits pre.fitted").textContent()).split("\n").map((line) => `# ${line}`).join("\n");
+
 // The tempcomp lines the Temperature page's fit gives, each as words.
 const fittedLines = async (page) =>
   (await page.locator("#fits pre.tempcomp").allTextContents()).join("\n").split("\n")
@@ -702,7 +727,7 @@ test("Temperature: the fit gives tempcomp lines that cancel the synthetic clock'
   await page.goto("/temperature?last=172800");
   await expect(page.locator("#scatter .uplot")).toBeVisible();
   await page.locator("#fit").click();
-  await expect(page.locator("#fits pre.tempcomp")).toHaveCount(3);
+  await expect(page.locator("#fits pre.tempcomp")).toHaveCount(2);
   const [linear, quadratic] = await fittedLines(page);
   // As the synthetic chronyd's tempcomp line has them.
   for (const line of [linear, quadratic]) {
@@ -737,7 +762,7 @@ test("Temperature: the fit is a dialog over the page, closed by Close, Escape or
   ]) {
     await page.locator("#fit").click();
     await expect(dialog).toBeVisible();
-    await expect(dialog.locator("pre.tempcomp")).toHaveCount(3);
+    await expect(dialog.locator("pre.tempcomp")).toHaveCount(2);
     await close();
     await expect(dialog).toBeHidden();
   }
@@ -753,7 +778,8 @@ test("Temperature: fitted only since the sensor last changed", async ({ page }) 
   });
   await page.goto("/temperature?last=172800");
   await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await page.waitForFunction(() => !running);
+  // The fit, made: no read running is so too before the first starts.
+  await page.waitForFunction(() => fitFrom != null);
   const fitted = await page.evaluate(() => fitFrom.pairs.map((p) => p.at));
   expect(fitted.length).toBeGreaterThan(MIN_FITTED);
   expect(Math.min(...fitted)).toBeGreaterThanOrEqual(since);
@@ -767,13 +793,14 @@ test("Temperature: a fit's Copy copies it with what it was fitted from; text sel
   const blocks = page.locator("#fits pre.tempcomp");
   await page.locator("#fits button[data-copy]").last().click();
   const copied = await page.evaluate(() => navigator.clipboard.readText());
-  const [common, , quadratic] = await blocks.allTextContents();
-  expect(copied).toBe(`${common}\n\n${quadratic}`);
+  const [, quadratic] = await blocks.allTextContents();
+  expect(copied).toBe(`${await copiedHeader(page)}\n\n${quadratic}`);
   // Part of a line, dragged across, is selected: that part alone.
+  // Inside the padding, on the first line's text.
   const line = await blocks.nth(1).boundingBox();
-  await page.mouse.move(line.x + 12, line.y + 10);
+  await page.mouse.move(line.x + 16, line.y + 18);
   await page.mouse.down();
-  await page.mouse.move(line.x + line.width / 3, line.y + 10, { steps: 5 });
+  await page.mouse.move(line.x + line.width / 3, line.y + 18, { steps: 5 });
   await page.mouse.up();
   const selected = await page.evaluate(() => getSelection().toString());
   expect(selected.length).toBeGreaterThan(5);
@@ -800,8 +827,9 @@ test("Temperature: Copy copies over plain HTTP, the clipboard API refused", asyn
   const button = page.locator("#fits button[data-copy]").first();
   await button.click();
   await expect(button).toHaveText("Copied");
-  const [common, linear] = await page.locator("#fits pre.tempcomp").allTextContents();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${common}\n\n${linear}`);
+  const [linear] = await page.locator("#fits pre.tempcomp").allTextContents();
+  expect(await page.evaluate(() => navigator.clipboard.readText()))
+    .toBe(`${await copiedHeader(page)}\n\n${linear}`);
 });
 
 test("Temperature: no fit without a tempcomp line chronymond read", async ({ page }) => {
@@ -877,6 +905,8 @@ test("Kiosk: the clock's state, its sources, events and charts, on one screen", 
   await expect(page.locator("#kiosk-source-rows")).toContainText("NMEA");
   await expect(page.locator("#kiosk-source-rows")).not.toContainText("ntp3.example.com");
   await expect(page.locator("#kiosk-event-rows")).toContainText("clock stepped");
+  // A change says from what, not as if to it.
+  await expect(page.locator("#kiosk-event-rows")).toContainText("reference changed from local to PPS");
   await expect(page.locator("#kiosk-time")).toHaveText(/^\d\d:\d\d:\d\d$/);
   await expect(charts(page)).toHaveCount(4);
   await expect(charts(page).last().locator(".u-title")).toContainText("NMEA left out, PPS locked to it");
@@ -920,7 +950,7 @@ test("Kiosk: synchronized to other than its own refclock is on backups", async (
   await expect(page.locator("#kiosk-sync")).toHaveClass(/\bwarn\b/);
 });
 
-test("Kiosk and strip: no clock update for four update intervals is coasting", async ({ page }) => {
+test("Kiosk and strip: the selected source answering none of its polls is coasting", async ({ page }) => {
   await page.setViewportSize(KIOSK_VIEWPORT);
   await fakeStatus(page, { troubles: [{ kind: "gpsd_down", owner: "gpsd" }], selected_unreachable: true }, 600);
   await page.goto("/kiosk?last=86400");
