@@ -39,8 +39,9 @@ test.beforeEach(async ({ page }, info) => {
 
 test.afterEach(async ({ page }, info) => {
   // A route handler still answering a page's poll as the test ends would
-  // fail it, its response gone: they are let go first.
-  await page.unrouteAll({ behavior: "ignoreErrors" });
+  // fail it, its response gone: they are let go first, unless the test
+  // closed its page itself.
+  if (!page.isClosed()) await page.unrouteAll({ behavior: "ignoreErrors" });
   expect(pageErrors.get(info.testId), "errors on the page").toEqual([]);
 });
 
