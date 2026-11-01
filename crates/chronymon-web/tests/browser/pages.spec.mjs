@@ -689,16 +689,20 @@ test("Temperature: the series and the scatter", async ({ page }) => {
   expect(Number(squared)).toBeCloseTo(Number(r) ** 2, 2);
 });
 
+// Fewer points than this after a sensor change would leave the fit
+// nothing much to go by.
+const MIN_FITTED = 100;
+
 // The tempcomp lines the Temperature page's fit gives, each as words.
 const fittedLines = async (page) =>
-  (await page.locator("#fits pre.tempcomp").textContent()).split("\n")
+  (await page.locator("#fits pre.tempcomp").allTextContents()).join("\n").split("\n")
     .filter((line) => line.startsWith("tempcomp ")).map((line) => line.trim().split(/\s+/));
 
 test("Temperature: the fit gives tempcomp lines that cancel the synthetic clock's curve", async ({ page }) => {
   await page.goto("/temperature?last=172800");
   await expect(page.locator("#scatter .uplot")).toBeVisible();
   await page.locator("#fit").click();
-  await expect(page.locator("#fits pre.tempcomp")).toHaveCount(1);
+  await expect(page.locator("#fits pre.tempcomp")).toHaveCount(3);
   const [linear, quadratic] = await fittedLines(page);
   // As the synthetic chronyd's tempcomp line has them.
   for (const line of [linear, quadratic]) {
@@ -714,7 +718,7 @@ test("Temperature: the fit gives tempcomp lines that cancel the synthetic clock'
   expect(Number(quadratic[6]) / 2e-9).toBeGreaterThan(0.8);
   expect(Number(quadratic[6]) / 2e-9).toBeLessThan(1.2);
   // In ASCII, as chrony.conf is.
-  const text = await page.locator("#fits pre.tempcomp").textContent();
+  const text = (await page.locator("#fits pre.tempcomp").allTextContents()).join("\n");
   expect(/^[\x20-\x7e\n]*$/.test(text)).toBe(true);
 });
 
@@ -733,10 +737,71 @@ test("Temperature: the fit is a dialog over the page, closed by Close, Escape or
   ]) {
     await page.locator("#fit").click();
     await expect(dialog).toBeVisible();
-    await expect(dialog.locator("pre.tempcomp")).toHaveCount(1);
+    await expect(dialog.locator("pre.tempcomp")).toHaveCount(3);
     await close();
     await expect(dialog).toBeHidden();
   }
+});
+
+test("Temperature: fitted only since the sensor last changed", async ({ page }) => {
+  // A sensor changed a day before the run's end.
+  const since = Math.floor(Date.now() / 1000) - 86400;
+  await page.route("**/api/status", async (route) => {
+    const response = await route.fetch();
+    const status = await response.json();
+    return route.fulfill({ response, json: { ...status, tempcomp: { ...status.tempcomp, since } } });
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await page.waitForFunction(() => !running);
+  const fitted = await page.evaluate(() => fitFrom.pairs.map((p) => p.at));
+  expect(fitted.length).toBeGreaterThan(MIN_FITTED);
+  expect(Math.min(...fitted)).toBeGreaterThanOrEqual(since);
+});
+
+test("Temperature: a fit's Copy copies it with what it was fitted from; text selects, and a drag out stays open", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await page.locator("#fit").click();
+  const blocks = page.locator("#fits pre.tempcomp");
+  await page.locator("#fits button[data-copy]").last().click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  const [common, , quadratic] = await blocks.allTextContents();
+  expect(copied).toBe(`${common}\n\n${quadratic}`);
+  // Part of a line, dragged across, is selected: that part alone.
+  const line = await blocks.nth(1).boundingBox();
+  await page.mouse.move(line.x + 12, line.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(line.x + line.width / 3, line.y + 10, { steps: 5 });
+  await page.mouse.up();
+  const selected = await page.evaluate(() => getSelection().toString());
+  expect(selected.length).toBeGreaterThan(5);
+  expect((await blocks.nth(1).textContent()).includes(selected)).toBe(true);
+  expect(selected.length).toBeLessThan((await blocks.nth(1).textContent()).length);
+  // A selection dragged from inside the box to outside it.
+  const box = await blocks.nth(1).boundingBox();
+  await page.mouse.move(box.x + 10, box.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(5, 5);
+  await page.mouse.up();
+  await expect(page.locator("#fit-dialog")).toBeVisible();
+});
+
+test("Temperature: Copy copies over plain HTTP, the clipboard API refused", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  // As a browser does a page not on HTTPS or localhost.
+  await page.addInitScript(() => {
+    navigator.clipboard.writeText = () => Promise.reject(new DOMException("insecure", "NotAllowedError"));
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await page.locator("#fit").click();
+  const button = page.locator("#fits button[data-copy]").first();
+  await button.click();
+  await expect(button).toHaveText("Copied");
+  const [common, linear] = await page.locator("#fits pre.tempcomp").allTextContents();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${common}\n\n${linear}`);
 });
 
 test("Temperature: no fit without a tempcomp line chronymond read", async ({ page }) => {

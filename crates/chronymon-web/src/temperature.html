@@ -46,7 +46,6 @@
   <h2 id="fit-heading">tempcomp, fitted</h2>
   <div id="fits"></div>
   <div class="controls">
-    <button id="fit-copy" type="button">Copy</button>
     <span class="grow"></span>
     <button id="fit-close" type="button">Close</button>
   </div>
@@ -170,9 +169,16 @@ function drawFits() {
       `${utcMinute(Math.min(...times))} to ${utcMinute(Math.max(...times))} UTC,`,
     `# of ${sensor.sensor}.`,
   ].join("\n");
-  showHtml($("fits"), `<pre class="tempcomp">${esc([common, ...groups].join("\n\n"))}</pre>` +
-    `<p class="muted">Pick your preferred fit.</p>`);
+  // What was fitted, then each fit with its Copy, which copies it with
+  // what it was fitted from.
+  fitCopies = groups.map((group) => `${common}\n\n${group}`);
+  showHtml($("fits"), `<pre class="tempcomp">${esc(common)}</pre>` +
+    groups.map((group, n) => `<div class="fit"><pre class="tempcomp">${esc(group)}</pre>` +
+      `<button type="button" data-copy="${n}">Copy</button></div>`).join(""));
 }
+
+// What each fit's Copy copies.
+let fitCopies = [];
 
 // The frequency as one series: the protocol's, or the log's where the
 // daemon was not recording.
@@ -199,21 +205,30 @@ function drawScatter(temperature, frequency, points) {
   }
   const fit = leastSquares(pairs);
   const r = pearson(pairs);
-  fitFrom = fitsOf(pairs);
+  // Fitted only since the sensor last changed: readings before are
+  // another sensor's.
+  const since = lastStatus?.tempcomp?.since ?? null;
+  const fitted = since == null ? pairs : pairs.filter((p) => p.at >= since);
+  fitFrom = fitted.length >= MIN_PAIRS ? fitsOf(fitted) : null;
   scatterChart = scatter(
     $("scatter"),
     pairs,
     { name: columnName(key(TEMPCOMP, "temperature")) },
     { name: columnName(key("tracking", "frequency")) },
     $("scatter").clientWidth || 800,
-    fitFrom.fits,
+    fitFrom?.fits ?? [],
   );
   // Only for a tempcomp line chronymond read, which the fit replaces.
-  $("fit").hidden = !lastStatus?.tempcomp;
-  // The fits' names in their colors, the scatter's legend.
-  const named = fitFrom.fits.map((f) => `<span style="color:${f.color}">${f.name.toLowerCase()}</span>`);
+  $("fit").hidden = !lastStatus?.tempcomp || !fitFrom;
+  // The fits' names in their colors, the scatter's legend, and since
+  // when, if not the whole range.
+  const named = (fitFrom?.fits ?? []).map((f) => `<span style="color:${f.color}">${f.name.toLowerCase()}</span>`);
+  const sinceChange = since != null && fitted.length < pairs.length
+    ? ` since the sensor changed, ${local(since)}`
+    : "";
   showHtml($("figures"),
-    `${pairs.length.toLocaleString()} buckets, ${named.join(" and ")} least squares` +
+    `${pairs.length.toLocaleString()} buckets` +
+    (named.length ? `, ${named.join(" and ")} least squares${sinceChange}` : "") +
     (fit ? `; the line ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
     (r == null ? "" : `, r = ${r.toFixed(3)}, r² = ${(r * r).toFixed(3)}`) +
     ". A clock whose frequency follows its temperature is what tempcomp corrects for.");
@@ -260,24 +275,46 @@ $("fit").addEventListener("click", () => {
   $("fit-dialog").showModal();
 });
 $("fit-close").addEventListener("click", () => $("fit-dialog").close());
-// A click on the backdrop, outside the dialog's box, closes it.
-$("fit-dialog").addEventListener("click", (e) => {
+// A click on the backdrop, outside the dialog's box, closes it: one
+// begun outside too, so a selection dragged out of the box does not.
+const outsideFit = (e) => {
   const box = $("fit-dialog").getBoundingClientRect();
-  if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) {
-    $("fit-dialog").close();
-  }
+  return e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom;
+};
+let pressedOutside = false;
+$("fit-dialog").addEventListener("pointerdown", (e) => { pressedOutside = outsideFit(e); });
+$("fit-dialog").addEventListener("click", (e) => {
+  if (pressedOutside && outsideFit(e)) $("fit-dialog").close();
 });
-// The clipboard is there only to a page served over HTTPS or from
-// localhost; elsewhere the block is selected, to copy by hand.
-$("fit-copy").addEventListener("click", async () => {
-  const pre = $("fits").querySelector("pre");
+// Copied by the clipboard, there only to a page served over HTTPS or
+// from localhost; else by the browser's copy command, from the text put
+// in a hidden box and selected, which works over plain HTTP from a
+// click; else the fit's block is left selected, to copy by hand.  The
+// button says which.
+async function copyText(text) {
   try {
-    await navigator.clipboard.writeText(pre.textContent);
-    $("fit-copy").textContent = "Copied";
-    setTimeout(() => { $("fit-copy").textContent = "Copy"; }, COPIED_FOR);
+    await navigator.clipboard.writeText(text);
+    return true;
   } catch {
-    getSelection().selectAllChildren(pre);
+    const box = document.createElement("textarea");
+    box.value = text;
+    box.setAttribute("readonly", "");
+    box.style.cssText = "position: fixed; top: 0; left: 0; opacity: 0";
+    $("fit-dialog").append(box);
+    box.select();
+    const copied = document.execCommand("copy");
+    box.remove();
+    return copied;
   }
+}
+
+$("fits").addEventListener("click", async (e) => {
+  const button = e.target.closest("button[data-copy]");
+  if (!button) return;
+  const copied = await copyText(fitCopies[Number(button.dataset.copy)]);
+  if (!copied) getSelection().selectAllChildren(button.previousElementSibling);
+  button.textContent = copied ? "Copied" : "Select and copy";
+  setTimeout(() => { button.textContent = "Copy"; }, COPIED_FOR);
 });
 rangeControl($("ranges"), soon);
 addEventListener("resize", soon);

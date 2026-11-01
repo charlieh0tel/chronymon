@@ -238,7 +238,7 @@ impl Collector {
                 }
                 self.config = config;
                 batch.refclock_locks(&self.config.locks())?;
-                batch.tempcomp(self.config.tempcomp.as_ref())?;
+                batch.tempcomp(at, self.config.tempcomp.as_ref())?;
                 if batch.chrony_config_failed()? {
                     eprintln!("chronymond: chronyd's configuration read again");
                     batch.event(at, EventKind::ChronyConfigRead, None, None)?;

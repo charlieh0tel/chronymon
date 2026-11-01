@@ -272,7 +272,10 @@ In each, T0 is the mean temperature, k0 0, and k1 and k2 fitted, in
 the sensor's own units (millidegrees, for a Linux sensor).  The sensor
 and interval are the ones chronymond read from chronyd's
 configuration; without a `tempcomp` line read there, as with
-`--chrony-config none`, there is no fit.  On Ubuntu, AppArmor lets chronyd read a sensor only
+`--chrony-config none`, there is no fit.  A change of the `tempcomp`
+line, read when chronyd starts, is journaled (`tempcomp_changed`, the
+old line and the new), and a change of its sensor starts the fit's
+readings again: those before are another sensor's.  On Ubuntu, AppArmor lets chronyd read a sensor only
 by a `hwmon*/temp*_input` path.
 
 ## Events
@@ -294,6 +297,7 @@ changes, sources added and removed):
 | `host_crash` | the last boot ended without a shutdown: power loss, hard reset, or a kernel crash (said so when pstore holds a record) |
 | `daemon_start`, `daemon_stop`, `daemon_crash` | chronymond's own |
 | `unsupported` | a reply or log layout this version cannot read |
+| `tempcomp_changed` | chronyd's `tempcomp` line changed, as read when it started: the old line and the new |
 | `chrony_config_error`, `chrony_config_read` | chronyd's configuration could not be read as chronyd reads it, what was read last kept; read again after that |
 | `pps_lost`, `pps_back` | a PPS device missed an edge; its pulses landing again, and how many edges were missed |
 | `pps_flapping`, `pps_steady` | a loss within 60 s of the last; pulses unbroken for 60 s after, the edges missed and the losses |

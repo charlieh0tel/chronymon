@@ -258,11 +258,12 @@ impl Config {
     }
 
     /// A `tempcomp SENSOR INTERVAL T0 K0 K1 K2` or `tempcomp SENSOR
-    /// INTERVAL POINTS` directive's sensor and interval; the last wins
+    /// INTERVAL POINTS` directive's sensor, interval and the rest; the
+    /// last wins
     /// (`parse_tempcomp`, `conf.c`).  chronyd refuses to start on any
     /// other number of words.
     fn tempcomp(&mut self, words: &[&str]) {
-        if let [sensor, interval, ..] = words
+        if let [sensor, interval, rest @ ..] = words
             && matches!(
                 words.len(),
                 TEMPCOMP_POINTS_WORDS | TEMPCOMP_COEFFICIENTS_WORDS
@@ -271,6 +272,7 @@ impl Config {
             self.tempcomp = Some(Tempcomp {
                 sensor: (*sensor).to_owned(),
                 interval: (*interval).to_owned(),
+                rest: rest.join(" "),
             });
         }
     }
@@ -545,18 +547,25 @@ mod tests {
             ),
         )
         .expect("written");
-        let sensor = |sensor: &str, interval: &str| {
+        let sensor = |sensor: &str, interval: &str, rest: &str| {
             Some(Tempcomp {
                 sensor: sensor.to_owned(),
                 interval: interval.to_owned(),
+                rest: rest.to_owned(),
             })
         };
-        assert_eq!(read(&main).tempcomp, sensor(points, "15"));
+        assert_eq!(
+            read(&main).tempcomp,
+            sensor(points, "15", "/etc/chrony/tempcomp.points")
+        );
         // chronyd would refuse a line of any other length.
         fs::write(&main, format!("tempcomp {hwmon} 30 0 0\n")).expect("written");
         assert_eq!(read(&main).tempcomp, None);
         fs::write(&main, format!("tempcomp {hwmon} 30 26000 0 0.000183 0\n")).expect("written");
-        assert_eq!(read(&main).tempcomp, sensor(hwmon, "30"));
+        assert_eq!(
+            read(&main).tempcomp,
+            sensor(hwmon, "30", "26000 0 0.000183 0")
+        );
         fs::remove_dir_all(&directory).expect("removed");
     }
 

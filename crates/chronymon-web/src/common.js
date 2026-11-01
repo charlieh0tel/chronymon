@@ -428,6 +428,7 @@ const EVENTS = {
   unsupported: ["#f87171", "unsupported reply"],
   chrony_config_error: ["#fbbf24", "chrony.conf not read"],
   chrony_config_read: ["#4ade80", "chrony.conf read again"],
+  tempcomp_changed: ["#a78bfa", "tempcomp changed"],
   pps_lost: ["#f87171", "PPS edge missed"],
   pps_back: ["#4ade80", "PPS back"],
   pps_flapping: ["#f87171", "PPS flapping"],

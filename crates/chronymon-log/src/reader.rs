@@ -48,6 +48,7 @@ use crate::schema::CHRONY_CONFIG_ERROR;
 use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
 use crate::schema::TEMPCOMP;
+use crate::schema::TEMPCOMP_SINCE;
 use crate::schema::TROUBLES;
 use crate::schema::Tempcomp;
 use crate::schema::Trouble;
@@ -699,6 +700,20 @@ impl Reader {
             )
             .optional()?;
         Ok(stored.as_deref().and_then(Tempcomp::parse))
+    }
+
+    /// When chronyd's `tempcomp` sensor last changed, if one was seen to:
+    /// readings before it are another sensor's.
+    pub fn tempcomp_since(&self) -> Result<Option<i64>> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![TEMPCOMP_SINCE],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.and_then(|s| s.parse().ok()))
     }
 
     /// What the daemon's watchers last found wrong.
@@ -1849,6 +1864,8 @@ mod tests {
     use std::time::Duration;
 
     use chronymon::event::EventKind;
+
+    use crate::timestamp::to_stored;
     use chronymon::units::Ppm;
     use chronymon::units::Seconds;
     use chronymon_control::report::Address;
@@ -2546,18 +2563,55 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_tempcomp_sensor_last_recorded() {
+    fn records_the_tempcomp_line_and_journals_a_change() {
         let mut db = Database::new("tempcomp");
         assert_eq!(db.reader().tempcomp().expect("read"), None);
-        let tempcomp = Tempcomp {
-            sensor: "/sys/class/hwmon/hwmon2/temp1_input".to_owned(),
+        let line = |sensor: &str, rest: &str| Tempcomp {
+            sensor: sensor.to_owned(),
             interval: "30".to_owned(),
+            rest: rest.to_owned(),
         };
-        db.log
-            .write(|batch| batch.tempcomp(Some(&tempcomp)))
-            .expect("written");
-        assert_eq!(db.reader().tempcomp().expect("read"), Some(tempcomp));
-        db.log.write(|batch| batch.tempcomp(None)).expect("written");
+        let hwmon2 = "/sys/class/hwmon/hwmon2/temp1_input";
+        let null = line(hwmon2, "0 0 0 0");
+        let fitted = line(hwmon2, "41000 0 -8.7e-5 0");
+        let other = line("/sys/class/hwmon/hwmon1/temp1_input", "0 0 0 0");
+        let changes = |db: &mut Database| {
+            db.reader()
+                .events(0.0, f64::MAX, 100)
+                .expect("events")
+                .into_iter()
+                .filter(|e| e.kind == "tempcomp_changed")
+                .filter_map(|e| e.detail)
+                .collect::<Vec<_>>()
+        };
+        let write = |db: &mut Database, second: i64, t: Option<&Tempcomp>| {
+            db.log
+                .write(|batch| batch.tempcomp(at(second), t))
+                .expect("written");
+        };
+        // The first seen is no change, and read again, nothing either.
+        write(&mut db, 0, Some(&null));
+        write(&mut db, 1, Some(&null));
+        assert_eq!(db.reader().tempcomp().expect("read"), Some(null.clone()));
+        assert!(changes(&mut db).is_empty());
+        assert_eq!(db.reader().tempcomp_since().expect("read"), None);
+        // New coefficients: a change, the sensor the same.
+        write(&mut db, 2, Some(&fitted));
+        assert_eq!(
+            changes(&mut db),
+            [format!(
+                "{hwmon2} 30 0 0 0 0 to {hwmon2} 30 41000 0 -8.7e-5 0"
+            )]
+        );
+        assert_eq!(db.reader().tempcomp_since().expect("read"), None);
+        // Another sensor: the readings start again.
+        write(&mut db, 3, Some(&other));
+        assert_eq!(
+            db.reader().tempcomp_since().expect("read"),
+            Some(to_stored(at(3)).expect("in range"))
+        );
+        write(&mut db, 4, None);
+        assert_eq!(changes(&mut db).len(), 3);
         assert_eq!(db.reader().tempcomp().expect("read"), None);
     }
 

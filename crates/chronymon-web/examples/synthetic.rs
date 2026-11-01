@@ -147,6 +147,7 @@ const FREQUENCY_NOISE: f64 = 0.002;
 /// coefficient 0, measuring.
 const TEMPCOMP_SENSOR: &str = "/sys/devices/platform/coretemp.0/hwmon/hwmon2/temp1_input";
 const TEMPCOMP_INTERVAL: &str = "30";
+const TEMPCOMP_NULL: &str = "0 0 0 0";
 /// A gpsd receiver: a row this often, in seconds, while recording, on
 /// the loop's grid, and its fix lost this far through the range for so
 /// long.
@@ -408,10 +409,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             })
             .collect::<Result<_, _>>()?;
         // The PPS's pulses numbered by the NMEA's time of day.
-        batch.tempcomp(Some(&Tempcomp {
-            sensor: TEMPCOMP_SENSOR.to_owned(),
-            interval: TEMPCOMP_INTERVAL.to_owned(),
-        }))?;
+        batch.tempcomp(
+            at(start).expect("in range"),
+            Some(&Tempcomp {
+                sensor: TEMPCOMP_SENSOR.to_owned(),
+                interval: TEMPCOMP_INTERVAL.to_owned(),
+                rest: TEMPCOMP_NULL.to_owned(),
+            }),
+        )?;
         batch.refclock_locks(&[RefclockLock {
             refclock: ReferenceId(feeds[0].reference_id),
             locked_to: ReferenceId(feeds[1].reference_id),

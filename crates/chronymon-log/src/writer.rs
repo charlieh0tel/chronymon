@@ -37,6 +37,7 @@ use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
 use crate::schema::TABLES;
 use crate::schema::TEMPCOMP;
+use crate::schema::TEMPCOMP_SINCE;
 use crate::schema::TRACKING_ASIDE;
 use crate::schema::TRACKING_BACK;
 use crate::schema::TRACKING_REPORT;
@@ -326,9 +327,23 @@ impl Batch<'_> {
         self.set_meta(CHRONY_CONFIG_ERROR, error.unwrap_or_default())
     }
 
-    /// Record chronyd's `tempcomp` sensor, or that it has none, as its
-    /// configuration now says.
-    pub fn tempcomp(&self, tempcomp: Option<&Tempcomp>) -> Result<()> {
+    /// Record chronyd's `tempcomp` line, or that it has none, as its
+    /// configuration says at `at`: a change from the one recorded
+    /// before journaled, and a change of sensor recorded as when the
+    /// readings start being this one's.  The first one recorded is no
+    /// change.
+    pub fn tempcomp(&self, at: Timestamp, tempcomp: Option<&Tempcomp>) -> Result<()> {
+        let recorded = self.meta(TEMPCOMP)?;
+        let before = recorded.as_deref().and_then(Tempcomp::parse);
+        if recorded.is_some() && before.as_ref() != tempcomp {
+            let line =
+                |t: Option<&Tempcomp>| t.map_or_else(|| "none".to_owned(), ToString::to_string);
+            let detail = format!("{} to {}", line(before.as_ref()), line(tempcomp));
+            self.event(at, EventKind::TempcompChanged, None, Some(&detail))?;
+            if before.as_ref().map(|t| &t.sensor) != tempcomp.map(|t| &t.sensor) {
+                self.set_meta(TEMPCOMP_SINCE, &to_stored(at)?.to_string())?;
+            }
+        }
         self.set_meta(
             TEMPCOMP,
             &tempcomp.map(Tempcomp::stored).unwrap_or_default(),
