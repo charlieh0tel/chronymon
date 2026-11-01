@@ -7,7 +7,9 @@
 //! reference, along the way, a seventh server removed, and a
 //! `noselect` NMEA refclock whose samples stop,
 //! the PPS locked to it (`refclock ... lock NMEA`), as the daemon
-//! records chronyd's configuration; and chronyd's logs as
+//! records chronyd's configuration; a gpsd receiver losing its fix, and
+//! a PPS on a PTP clock's pin flapping and lost for a while; and
+//! chronyd's logs as
 //! the daemon reads them: refclock and tempcomp samples throughout,
 //! and tracking for some hours before the daemon started, for the
 //! charts to fill from.  Later, chronyd restarted with tracking.log on and a 64 s
@@ -154,7 +156,16 @@ const TEMPCOMP_NULL: &str = "0 0 0 0";
 const GNSS_EVERY: i64 = 4 * UPDATE_EVERY;
 const GNSS_DEVICE: &str = "/dev/ttyACM0";
 const FIX_LOST_AT: f64 = 0.3;
-const FIX_LOST_FOR: i64 = 10 * GNSS_EVERY;
+const FIX_LOST_FOR: i64 = 30 * GNSS_EVERY;
+/// A PPS watched on a PTP clock's pin, as `--pps /dev/ptp2` names it:
+/// flapping for a while, this far through the range, then its pulses
+/// lost with the fix, for so long, a pulse a second.
+const PPS_DEVICE: &str = "ptp2:0";
+const PPS_FLAPPING_AT: f64 = 0.27;
+const PPS_FLAPPING_FOR: i64 = 1800;
+const PPS_FLAPPING_LOSSES: i64 = 5;
+const PPS_FLAPPING_MISSED: i64 = 14;
+const PPS_LOST_FOR: i64 = 1200;
 /// Its satellites in view, and how many of them are used at most.
 const SATELLITES_SEEN: i64 = 14;
 const SATELLITES_USED: f64 = 9.0;
@@ -428,6 +439,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
             Some("synthetic"),
         )?;
+        let flapping = start + (span as f64 * PPS_FLAPPING_AT) as i64;
+        let pps_lost = start + (span as f64 * FIX_LOST_AT) as i64;
+        for (second, kind, detail) in [
+            (flapping, EventKind::PpsFlapping, PPS_DEVICE.to_owned()),
+            (
+                flapping + PPS_FLAPPING_FOR,
+                EventKind::PpsSteady,
+                format!(
+                    "{PPS_DEVICE}: {PPS_FLAPPING_MISSED} edges missed in {PPS_FLAPPING_LOSSES} losses"
+                ),
+            ),
+            (pps_lost, EventKind::PpsLost, PPS_DEVICE.to_owned()),
+            (
+                pps_lost + PPS_LOST_FOR,
+                EventKind::PpsBack,
+                format!("{PPS_DEVICE}: {PPS_LOST_FOR} edges missed"),
+            ),
+        ] {
+            batch.event(at(second).expect("in range"), kind, None, Some(&detail))?;
+        }
         // A placeholder for a name not resolved yet, as the daemon once
         // stored one (`IPADDR_ID` 1, in hex) and its removal: never shown.
         let placeholder = batch.source(

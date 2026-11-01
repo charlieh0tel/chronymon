@@ -7,11 +7,15 @@ them in a browser.
 
 | Sources | Refclocks |
 | - | - |
-| ![Sources: each source, and their offsets, delays and frequencies](docs/images/web-sources.png) | ![Refclocks: each refclock's offsets, from refclocks.log](docs/images/web-refclocks.png) |
-| **Temperature** | **Distribution** |
-| ![Temperature: tempcomp's temperature and compensation, and the frequency](docs/images/web-temperature.png) | ![Distribution: a histogram and percentiles of the offset](docs/images/web-distribution.png) |
+| ![Sources: each source, and their offsets, delays and frequencies](docs/images/web-sources.png) | ![Refclocks: a PPS on a PTP pin flapping, then its pulses and the GPS receiver's fix lost, shaded across its charts](docs/images/web-refclocks.png) |
+| **Temperature** | **Fitting tempcomp** |
+| ![Temperature: the clock's frequency against the temperature, with linear and quadratic fits](docs/images/web-temperature.png) | ![Fit tempcomp: linear and quadratic tempcomp lines for chrony.conf](docs/images/web-temperature-fit.png) |
+| **Distribution** | |
+| ![Distribution: a histogram and percentiles of the offset](docs/images/web-distribution.png) | |
 
 ![Kiosk: the clock's state and the time in large type, sources, events and a day of charts](docs/images/web-kiosk.png)
+
+![Kiosk with gpsd stopped: COASTING, gpsd down, the panel edged red](docs/images/web-kiosk-gpsd-stopped.png)
 
 Synthetic data; `make screenshots` retakes them.
 
