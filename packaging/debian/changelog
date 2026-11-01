@@ -1,3 +1,20 @@
+chronymon (1.2.2-1) unstable; urgency=medium
+
+  * The Temperature page fits tempcomp's coefficients: Fit tempcomp
+    gives a linear and a quadratic tempcomp line for chrony.conf, from
+    the readings since the sensor last changed, each with its quality,
+    and Copy, which works over plain HTTP.  The scatter draws both fits.
+    chronyd reports the frequency with tempcomp's compensation undone,
+    so any range is fitted, compensated or not.
+  * chronymond reads chronyd's tempcomp line and journals a change of it
+    (tempcomp_changed).
+  * Changes read "from A to B": "reference changed from 10.0.0.239 to
+    GPS".
+  * A page reads its range again as soon as a new event happens, so its
+    events never fall behind the strip.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 31 Oct 2026 18:32:55 -0700
+
 chronymon (1.2.2~beta.5-1) unstable; urgency=medium
 
   * The fit dialog shows what was fitted as text, then each fit in its
