@@ -254,11 +254,12 @@ and the polling, go on.
 
 ## Temperature compensation
 
-The Temperature page sets the clock's frequency against the
+The Temperature page sets the clock's own frequency against the
 temperature chronyd's `tempcomp` reads, from `tempcomp.log`, which
 chronyd writes with a `tempcomp` line and `log tempcomp`.  chronyd
-reports the frequency with the compensation undone, so it is the
-clock's own whatever the coefficients, 0 or a points file.  The
+reports the frequency left once tempcomp has corrected, so the page
+adds the logged compensation back: the clock's own, whatever the
+coefficients, 0 or a points file.  The
 scatter of one against the other draws the linear and the quadratic
 least squares fits over it.
 

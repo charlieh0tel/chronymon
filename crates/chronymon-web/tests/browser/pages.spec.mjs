@@ -846,14 +846,14 @@ test("Temperature: no fit without a tempcomp line chronymond read", async ({ pag
   await expect(page.locator("#fit")).toBeHidden();
 });
 
-test("Temperature: compensated readings are fitted as any", async ({ page }) => {
-  // chronyd's frequency has the compensation undone, so a fit goes by
-  // the frequency alone, whatever tempcomp compensated.
+test("Temperature: the fit adds tempcomp's compensation back", async ({ page }) => {
+  // The synthetic chronyd compensates half the clock's slope, so its
+  // frequency without the compensation added back gives half.
   await page.route("**/api/history?*", async (route) => {
     const response = await route.fetch();
     const got = await response.json();
     for (const plot of got.plots ?? []) {
-      if (plot.column === "compensation") plot.mean = plot.mean.map((v) => (v == null ? v : 0.1));
+      if (plot.column === "compensation") plot.mean = plot.mean.map((v) => (v == null ? v : 0));
     }
     return route.fulfill({ response, json: got });
   });
@@ -861,7 +861,7 @@ test("Temperature: compensated readings are fitted as any", async ({ page }) => 
   await expect(page.locator("#scatter .uplot")).toBeVisible();
   await page.locator("#fit").click();
   const [linear] = await fittedLines(page);
-  expect(Number(linear[5])).toBeCloseTo(-8.75e-5, 6);
+  expect(Number(linear[5])).toBeCloseTo(-8.75e-5 / 2, 6);
 });
 
 test("Journal: the synthetic run's events", async ({ page }) => {

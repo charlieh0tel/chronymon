@@ -267,9 +267,11 @@ Journal, Distribution, Kiosk.
   tempcomp gives the `tempcomp` line to paste, linear and quadratic,
   chrony's formula going no further, in that unit, the sensor and
   interval read from chronyd's configuration (`meta` `tempcomp`).
-  Any range is fitted: chronyd reports the frequency with tempcomp's
-  compensation undone (`LCL_ReadAbsoluteFrequency`), so it is the
-  clock's own whatever the coefficients.  Readings from before the
+  Any range is fitted, against the clock's own frequency: chronyd
+  reports what is left once tempcomp has corrected
+  (`LCL_ReadAbsoluteFrequency`), so the scatter and the fit add the
+  compensation back, frequency less compensation, whatever the
+  coefficients.  Readings from before the
   sensor last changed are not (`meta` `tempcomp_since`, journaled
   `tempcomp_changed`).  No settling time after a restart: chronyd's
   first estimates are rough for a few minutes, a little noise in a

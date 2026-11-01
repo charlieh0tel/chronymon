@@ -1440,12 +1440,13 @@ function polynomial(pairs, degree) {
 // tables, so two reads pair up only by bucket.
 const bucketOf = (got, points) => (t) => Math.floor(((t - got.from) * points) / (got.to - got.from + 1e-9));
 
-// Pairs `{ at, x, y }` of the buckets two reads on one grid both have.
+// Pairs `{ at, x, y, index }` of the buckets two reads on one grid both
+// have, `index` the bucket's in `xs`'s read, for its other columns.
 function pairsOn(xs, ys, points) {
   const xBucket = bucketOf(xs.read, points), yBucket = bucketOf(ys.read, points);
   const byBucket = new Map();
   xs.read.at.forEach((t, i) => {
-    if (xs.values[i] != null) byBucket.set(xBucket(t), { at: t, x: xs.values[i] });
+    if (xs.values[i] != null) byBucket.set(xBucket(t), { at: t, x: xs.values[i], index: i });
   });
   const pairs = [];
   ys.read.at.forEach((t, i) => {

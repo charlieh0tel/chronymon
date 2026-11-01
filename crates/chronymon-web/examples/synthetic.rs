@@ -145,11 +145,13 @@ const FREQUENCY_MEAN: f64 = -12.4;
 const FREQUENCY_SLOPE: f64 = 8.75e-5;
 const FREQUENCY_BEND: f64 = -2e-9;
 const FREQUENCY_NOISE: f64 = 0.002;
-/// The tempcomp line the synthetic chronyd has: the null one, every
-/// coefficient 0, measuring.
+/// The tempcomp line the synthetic chronyd has: half the clock's slope
+/// compensated, from the mean temperature, so its reported frequency
+/// follows the temperature by half as much and a fit of the clock's own
+/// must add the compensation back.
+const TEMPCOMP_SLOPE: f64 = -FREQUENCY_SLOPE / 2.0;
 const TEMPCOMP_SENSOR: &str = "/sys/devices/platform/coretemp.0/hwmon/hwmon2/temp1_input";
 const TEMPCOMP_INTERVAL: &str = "30";
-const TEMPCOMP_NULL: &str = "0 0 0 0";
 /// A gpsd receiver: a row this often, in seconds, while recording, on
 /// the loop's grid, and its fix lost this far through the range for so
 /// long.
@@ -425,7 +427,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some(&Tempcomp {
                 sensor: TEMPCOMP_SENSOR.to_owned(),
                 interval: TEMPCOMP_INTERVAL.to_owned(),
-                rest: TEMPCOMP_NULL.to_owned(),
+                rest: format!("{TEMPERATURE_MEAN} 0 {TEMPCOMP_SLOPE} 0"),
             }),
         )?;
         batch.refclock_locks(&[RefclockLock {
@@ -519,14 +521,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             let updated =
                 !(slow..fast).contains(&second) || (second - slow) % SLOW_UPDATE_EVERY == 0;
             let phase = (second as f64 % DAY) / DAY * TAU;
-            let frequency = frequency_at(temperature_at(phase), &mut noise);
+            let temperature = temperature_at(phase) + noise.normal(TEMPERATURE_NOISE);
+            let compensation = TEMPCOMP_SLOPE * (temperature - TEMPERATURE_MEAN);
+            // What chronyd reports: the clock's own, less what tempcomp
+            // already corrects.
+            let frequency = frequency_at(temperature_at(phase), &mut noise) + compensation;
             if updated && second >= slow {
                 batch.log_line(&logged(second, frequency, &mut noise))?;
             }
             batch.log_line(&Line::Tempcomp(TempcompLine {
                 at: when,
-                temperature: temperature_at(phase) + noise.normal(TEMPERATURE_NOISE),
-                compensation: 0.0,
+                temperature,
+                compensation,
             }))?;
             for (reference, bias, jitter) in [("PPS", 0.0, 2e-8), ("NMEA", 0.043, 2e-3)] {
                 let feed = feeds.iter().find(|f| f.name == reference);
