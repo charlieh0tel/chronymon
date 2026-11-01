@@ -702,6 +702,14 @@ impl Reader {
         Ok(stored.as_deref().and_then(Tempcomp::parse))
     }
 
+    /// When the newest event happened, stored, if there is one: a page
+    /// seeing it change reads its range again.
+    pub fn latest_event_at(&self) -> Result<Option<i64>> {
+        Ok(self
+            .connection
+            .query_row("SELECT MAX(at) FROM event", [], |row| row.get(0))?)
+    }
+
     /// When chronyd's `tempcomp` sensor last changed, if one was seen to:
     /// readings before it are another sensor's.
     pub fn tempcomp_since(&self) -> Result<Option<i64>> {

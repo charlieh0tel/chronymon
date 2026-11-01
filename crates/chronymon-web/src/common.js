@@ -257,6 +257,7 @@ async function tick() {
     }
     paint(s);
     linkIs(feedState(s)[0] === "live");
+    eventsAre(s.last_event ?? null);
   } finally {
     ticking = false;
   }
@@ -453,13 +454,19 @@ let addressNames = new Map();
 // What separates a reference change's references in its detail.
 const REFERENCE_CHANGE_TO = " to ";
 
-// An event's detail as a reader takes it: a reference change's
-// references by their sources' names where known, "ntp1.example.net to
-// GPS"; none where it only repeats the source.
+// The events whose detail is what changed and to what, "A to B": said
+// "from A to B", as "reference changed A to B" reads as a change to A.
+const FROM_TO = new Set(["reference_change", "leap_change", "chronyd_restart", "tempcomp_changed"]);
+
+// An event's detail as a reader takes it: a change from what to what,
+// a reference change's references by their sources' names where known,
+// "from ntp1.example.net to GPS"; none where it only repeats the source.
 function eventDetail(e) {
   if (!e.detail || e.detail === e.source) return "";
-  if (e.kind !== "reference_change") return e.detail;
-  return e.detail.split(REFERENCE_CHANGE_TO).map((r) => addressNames.get(r) ?? r).join(REFERENCE_CHANGE_TO);
+  const detail = e.kind === "reference_change"
+    ? e.detail.split(REFERENCE_CHANGE_TO).map((r) => addressNames.get(r) ?? r).join(REFERENCE_CHANGE_TO)
+    : e.detail;
+  return FROM_TO.has(e.kind) ? `from ${detail}` : detail;
 }
 
 // An event as one line of text, for a chart's tip.
@@ -569,6 +576,20 @@ let settling = null;
 function soon() {
   clearTimeout(settling);
   settling = setTimeout(() => renew(), COALESCE);
+}
+
+// When the newest event happened, as the last status said; undefined
+// before the first.  A new one reads the page again at once, whatever its
+// refresh interval, so its events, its charts' marks and the strip,
+// which says what is now, agree.
+let lastEvent;
+function eventsAre(at) {
+  if (at === lastEvent) return;
+  const was = lastEvent;
+  lastEvent = at;
+  // The first answer is not a change.
+  if (was === undefined) return;
+  refresh();
 }
 
 function linkIs(up) {

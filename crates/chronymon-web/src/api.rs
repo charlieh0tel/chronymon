@@ -389,6 +389,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "reference_name": reference_name,
             "on_backups": on_backups(&sources, &paired),
             "selected_unreachable": selected_unreachable(&sources),
+            "last_event": reader.latest_event_at()?.map(seconds),
             "tempcomp": match reader.tempcomp()? {
                 Some(t) => json!({
                     "sensor": t.sensor,
