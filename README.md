@@ -40,6 +40,31 @@ To build the package yourself, with
     cargo build --release --workspace
     cargo deb --no-build -p chronymond   # target/debian/chronymon_*.deb
 
+## Setting up
+
+1. Have chronyd write the logs chronymon reads: refclock and
+   temperature compensation samples, every measurement, and the
+   history from before chronymond ran
+   ([chronyd's logs](docs/how-it-works.md#chronyds-logs)).  In
+   `/etc/chrony/conf.d/chronymon.conf` (Debian's `chrony.conf`
+   already sets `logdir /var/log/chrony`):
+
+       log tracking measurements statistics refclocks tempcomp
+
+   then `sudo systemctl restart chrony`.
+
+2. With a GPS receiver and PPS, in `/etc/default/chronymond`:
+   - uncomment `CHRONYMOND_GPSD=localhost`, usually as it is, to
+     record the receiver's fix and satellites
+     ([gpsd](docs/how-it-works.md#gpsd));
+   - set `CHRONYMOND_PPS` to the PPS device, `/dev/ppsN` or
+     `/dev/ptpN`, to journal missed pulses
+     ([PPS edges](docs/how-it-works.md#pps-edges)).
+
+   then `sudo systemctl restart chronymond`.
+
+The charts are at `http://localhost:8323/`.
+
 ## How it works
 
 More in [docs/how-it-works.md](docs/how-it-works.md): settings, the
