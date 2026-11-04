@@ -283,7 +283,23 @@ Journal, Distribution, Kiosk.
   way, and fitting it with the lag on its own would hand out a line
   that adds the sensor's swings to the compensation.  The lag is the
   time constant of a first-order filter, picked from a fixed set by
-  the least robust spread, all judged on the same readings.
+  blocked cross-validation (six contiguous stretches held out in turn,
+  an hour's margin), all judged on the same readings.  Judged on the
+  readings it was fitted to, a lag wins where it should not: a step
+  of a sensor the frequency follows at once, smeared into a trail,
+  barely moves a robust spread, which picked 20 min on apu-0, whose
+  sensor is at the crystal.  Generalized least squares for the
+  frequency's correlated noise was tried and fails: the noise is
+  nearly a random walk (AR(1) rho 0.99), and prewhitening it leaves
+  only the fast changes, losing the slope.  Full system
+  identification (output-error models, orders and dead time
+  cross-validated) does better only where a single lag cannot follow
+  the response: held-out RMSE, ppm, none / lag / output-error, over
+  1.6 to 10 days: chronos 0.066 / 0.045 (30 min) / 0.036, apu-0
+  0.034 / 0.032 (5 min) / 0.030, draws 0.029 / 0.020 (10 min) /
+  0.019, tare (NTP, CPU sensor) 0.69 / 0.37 (90 min) / 0.26.  Not
+  worth a solver in the browser.  The study is
+  `tools/tempcomp-study`.
 - A page whose table is empty says why: chronyd logs refclocks and
   tempcomp only when told to.
 - **Kiosk**: smartclock's, one summary page, with `?inset=` and

@@ -40,7 +40,7 @@
   <div class="controls fit">
     <button id="fit" type="button" hidden>Fit tempcomp</button>
     <label title="The clock's crystal warms more slowly than a sensor swinging with load: the temperature is
-filtered by the lag that fits best, from none to a few hours."><input type="checkbox" id="lag"> Fit the sensor's lag</label>
+filtered by the lag that best predicts readings left out of the fit, from none to a few hours."><input type="checkbox" id="lag"> Fit the sensor's lag</label>
   </div>
 </div>
 
@@ -157,8 +157,16 @@ function robustPolynomial(pairs, degree) {
 }
 
 // Lags tried, as a first-order filter's time constant in seconds:
-// none, then a minute to four hours.
-const LAGS = [0, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400];
+// none, then five minutes to four hours.
+const LAGS = [0, 300, 600, 1200, 1800, 3600, 5400, 7200, 10800, 14400];
+// The lag is chosen by how well each predicts readings left out of its
+// fit: the range in this many contiguous stretches, each left out in
+// turn, and the seconds either side of it left out too, as the
+// frequency's noise is slow.  Judged by its own fit, a lag takes in
+// what it should not: a step of the sensor the frequency followed at
+// once, smeared into a trail, fits the bulk no worse.
+const LAG_FOLDS = 6;
+const LAG_MARGIN = 3600;
 // A lag is tried only in a range this many times as long; and the
 // filter's first this many time constants, while it settles from the
 // first reading, are not fitted.
@@ -180,11 +188,32 @@ function lagged(at, values, lag) {
   });
 }
 
-// The lag the frequency follows the temperature by best: of those the
-// range is long enough for, the one whose robust line leaves the least
-// scale, each judged on the same pairs, those past the longest's
-// settling.  `pairsWith(values)` pairs a temperature with the
-// frequency.  The lag, and its pairs past its own settling.
+// The RMS by which robust lines miss the frequency of `pairs`, in
+// time order, left out of their fit, LAG_FOLDS stretches in turn; or
+// null for too few to fit.
+function heldOut(pairs) {
+  const missed = [];
+  for (let fold = 0; fold < LAG_FOLDS; fold++) {
+    const left = pairs.slice(Math.floor(fold * pairs.length / LAG_FOLDS),
+      Math.floor((fold + 1) * pairs.length / LAG_FOLDS));
+    if (left.length === 0) continue;
+    const from = left[0].at - LAG_MARGIN, to = left[left.length - 1].at + LAG_MARGIN;
+    const train = pairs.filter((p) => p.at < from || p.at > to);
+    if (train.length < MIN_PAIRS) return null;
+    const mean = train.reduce((s, p) => s + p.x, 0) / train.length;
+    const fit = robustPolynomial(train.map((p) => ({ x: p.x - mean, y: p.y })), 1);
+    if (!fit) return null;
+    for (const p of left) missed.push(p.y - evaluate(fit.c, p.x - mean));
+  }
+  return rms(missed);
+}
+
+// The lag the frequency follows the temperature by: of those the range
+// is long enough for, the one whose line best predicts readings left
+// out of its fit, each judged on the same pairs, those past the
+// longest's settling.  `pairsWith(values)` pairs a temperature with the
+// frequency.  The lag, its pairs past its own settling, and what it and
+// none miss by.
 function bestLag(at, values, pairsWith) {
   const span = at[at.length - 1] - at[0];
   const tried = LAGS.filter((lag) => lag * LAG_SPAN <= span);
@@ -193,18 +222,20 @@ function bestLag(at, values, pairsWith) {
   const longest = tried[tried.length - 1];
   const scored = tried.map((lag) => {
     const pairs = pairsWith(lagged(at, values, lag));
-    const judged = pairs.filter(settledBy(longest));
-    if (judged.length < MIN_PAIRS) return null;
-    const mean = judged.reduce((s, p) => s + p.x, 0) / judged.length;
-    const fit = robustPolynomial(judged.map((p) => ({ x: p.x - mean, y: p.y })), 1);
-    return fit && { lag, pairs: pairs.filter(settledBy(lag)), scale: fit.scale };
+    const missed = heldOut(pairs.filter(settledBy(longest)));
+    return missed == null ? null : { lag, pairs: pairs.filter(settledBy(lag)), missed };
   }).filter(Boolean);
-  return scored.reduce((best, s) => (s.scale < best.scale ? s : best), scored[0] ?? { lag: 0, pairs: [] });
+  const none = scored.find((s) => s.lag === 0);
+  if (!none) return null;
+  const best = scored.reduce((b, s) => (s.missed < b.missed ? s : b), none);
+  return { ...best, unlagged: none.missed };
 }
 
-// The lag the last scatter was fitted with, in seconds; and its
-// readings, drawn again when the lag is turned on or off.
+// The lag the last scatter was fitted with, in seconds, and what it
+// and none missed readings left out by; and its readings, drawn again
+// when the lag is turned on or off.
 let lagFitted = 0;
+let lagChosen = null;
 let scatterFrom = null;
 
 // A lag as the page says it.
@@ -272,7 +303,9 @@ function drawFits() {
     `# of ${sensor.sensor}, robust (Huber) least squares` +
       (lagFitted > 0 ? `, the temperature lagged ${lagText(lagFitted)}.` : "."),
     ...(lagFitted > 0
-      ? [`# chronyd compensates each reading as it is: these lines suit a sensor file filtered by the same lag.`]
+      ? [`# The lag predicts readings left out of the fit to ${ppm(lagChosen.missed)} RMS, ` +
+          `against ${ppm(lagChosen.unlagged)} with none.`,
+        `# chronyd compensates each reading as it is: these lines suit a sensor file filtered by the same lag.`]
       : []),
   ].join("\n");
   // What was fitted, as text, its comment marks the copy's alone; then
@@ -320,6 +353,7 @@ function drawScatter(temperature, frequency, points) {
       (values) => pairsWith([...new Array(sinceAt).fill(null), ...values]))
     : null;
   lagFitted = best?.lag ?? 0;
+  lagChosen = best;
   const pairs = best ? best.pairs : pairsWith(read);
   fitFrom = null;
   $("fit").hidden = true;
@@ -356,8 +390,13 @@ function drawScatter(temperature, frequency, points) {
     : "";
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} buckets` +
-    (best ? (lagFitted > 0 ? `, the temperature lagged ${lagText(lagFitted)}, the best fitting` : ", no lag fitting better") : "") +
-    (named.length ? `, robust least squares${sinceChange}:<br>${named.join("<br>")}` : ""));
+    (named.length ? `, robust least squares${sinceChange}:<br>${named.join("<br>")}` : "") +
+    (best
+      ? "<br>" + (lagFitted > 0
+        ? `The temperature lagged ${lagText(lagFitted)}: readings left out of the fit missed by ` +
+          `${ppm(best.missed)} RMS, against ${ppm(best.unlagged)} with none.`
+        : `No lag: none predicts readings left out of the fit best, missing them by ${ppm(best.unlagged)} RMS.`)
+      : ""));
 }
 
 async function load(signal) {
