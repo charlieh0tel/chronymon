@@ -1,3 +1,13 @@
+chronymon (1.2.7-1) unstable; urgency=medium
+
+  * Fit the sensor's lag chooses the lag by how well it predicts
+    readings left out of the fit, against none, and says both: judged
+    on the readings it was fitted to, a lag was taken where there is
+    none, a sensor's step the clock followed at once smeared into a
+    trail.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Wed, 04 Nov 2026 11:50:16 -0800
+
 chronymon (1.2.6-1) unstable; urgency=medium
 
   * The Temperature page's fits are robust (Huber) least squares, an
