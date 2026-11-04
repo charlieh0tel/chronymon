@@ -261,8 +261,18 @@ reports the frequency left once tempcomp has corrected, so the page
 adds the logged compensation back: the clock's own, whatever the
 coefficients, 0 or a points file.  The
 scatter of one against the other draws the linear and the quadratic
-least squares fits over it, and gives each one's R and R^2, and the line's
-slope.
+fits over it, and gives each one's R and R^2, and the line's slope.
+The fits are robust (Huber) least squares: a reading far off the
+line, an NTP source's wander or step, pulls it less than it would
+plain least squares.
+
+A sensor that swings with load, a CPU's, leads the crystal, which
+warms slowly, and chronyd's frequency estimate lags too.  Fit the
+sensor's lag filters the temperature by a first-order lag, its time
+constant the one, from none to four hours, whose line leaves the least
+spread, tried only in a range ten times as long, and fits that.  chronyd
+compensates each reading as it is, so a line fitted with a lag suits
+only a sensor file filtered by that lag, which the dialog says.
 
 Once a range holds a good spread of temperatures, the page's Fit
 tempcomp opens a dialog of that range's fit, with Copy, and a block

@@ -849,6 +849,97 @@ test("Temperature: no fit without a tempcomp line chronymond read", async ({ pag
   await expect(page.locator("#fit")).toBeHidden();
 });
 
+// The synthetic clock's slope, ppm a millidegree, and its temperature's
+// mean.
+const SYNTHETIC_SLOPE = 8.75e-5;
+const SYNTHETIC_MEAN = 41000;
+
+// The Temperature page's readings with the compensation zeroed and the
+// frequency made over by `frequency(values, at)` from the temperature,
+// on the same grid.
+async function frequencyFromTemperature(page, frequency) {
+  let temperature = null;
+  await page.route("**/api/history?*", async (route) => {
+    const response = await route.fetch();
+    const got = await response.json();
+    const table = new URL(route.request().url()).searchParams.get("table");
+    if (table === "tempcomp_sample" && got.plots) {
+      for (const plot of got.plots) {
+        if (plot.column === "compensation") plot.mean = plot.mean.map((v) => (v == null ? v : 0));
+      }
+      temperature = { at: got.at, values: got.plots.find((p) => p.column === "temperature").mean };
+    } else if (table === "tracking" && got.plots && temperature) {
+      const made = frequency(temperature.values, temperature.at);
+      // The temperature's nearest bucket to each of the frequency's.
+      const nearest = (t) => temperature.at.reduce((best, u, i) =>
+        (Math.abs(u - t) < Math.abs(temperature.at[best] - t) ? i : best), 0);
+      for (const plot of got.plots) {
+        plot.mean = plot.mean.map((v, i) => (v == null ? v : made[nearest(got.at[i])]));
+      }
+    }
+    return route.fulfill({ response, json: got });
+  });
+}
+
+test("Temperature: the fitted lag is found, and the slope through it", async ({ page }) => {
+  // The clock following its temperature through a 20-minute lag.
+  const LAG = 1200;
+  await frequencyFromTemperature(page, (values, at) => {
+    let filtered = null, last = null;
+    return values.map((v, i) => {
+      if (v == null) return null;
+      filtered = filtered == null ? v : filtered + (1 - Math.exp(-(at[i] - last) / LAG)) * (v - filtered);
+      last = at[i];
+      return -12 + SYNTHETIC_SLOPE * (filtered - SYNTHETIC_MEAN);
+    });
+  });
+  await page.goto("/temperature?last=172800&lag");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await expect(page.locator("#figures")).toContainText("lagged 20 min");
+  await page.locator("#fit").click();
+  const [linear] = await fittedLines(page);
+  expect(Number(linear[5])).toBeCloseTo(-SYNTHETIC_SLOPE, 6);
+  // The comment says the line needs the temperature lagged the same.
+  await expect(page.locator("#fits pre.fitted")).toContainText("lagged 20 min");
+});
+
+test("Temperature: without the lag, a clock that lags fits worse", async ({ page }) => {
+  const LAG = 1200;
+  const r2 = async () => Number((await page.locator("#figures").textContent()).match(/R² (-?\d\.\d{3})/)[1]);
+  await frequencyFromTemperature(page, (values, at) => {
+    let filtered = null, last = null;
+    return values.map((v, i) => {
+      if (v == null) return null;
+      filtered = filtered == null ? v : filtered + (1 - Math.exp(-(at[i] - last) / LAG)) * (v - filtered);
+      last = at[i];
+      return SYNTHETIC_SLOPE * filtered;
+    });
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  const without = await r2();
+  await page.locator("#lag").check();
+  await expect(page.locator("#figures")).toContainText("lagged");
+  expect(await r2()).toBeGreaterThan(without);
+  expect(new URL(page.url()).searchParams.has("lag")).toBe(true);
+});
+
+test("Temperature: the fit is robust, a few wild readings pulling it little", async ({ page }) => {
+  // One bucket in twenty of the warmest 1 ppm off, as an NTP source's
+  // step might put it: least squares would steepen the line by about a
+  // fifth.
+  const EVERY = 20;
+  const OFF = 1;
+  const WARM = SYNTHETIC_MEAN + 2000;
+  await frequencyFromTemperature(page, (values) => values.map((v, i) =>
+    (v == null ? null : SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN) + (v > WARM && i % EVERY === 0 ? OFF : 0))));
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await page.locator("#fit").click();
+  const [linear] = await fittedLines(page);
+  expect(Math.abs(Number(linear[5]) / -SYNTHETIC_SLOPE - 1)).toBeLessThan(0.02);
+});
+
 test("Temperature: the fit adds tempcomp's compensation back", async ({ page }) => {
   // The synthetic chronyd compensates half the clock's slope, so its
   // frequency without the compensation added back gives half.
