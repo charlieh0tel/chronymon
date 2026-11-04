@@ -275,7 +275,15 @@ Journal, Distribution, Kiosk.
   sensor last changed are not (`meta` `tempcomp_since`, journaled
   `tempcomp_changed`).  No settling time after a restart: chronyd's
   first estimates are rough for a few minutes, a little noise in a
-  fit of days.
+  fit of days.  The fits are robust (Huber, reweighted least squares):
+  an NTP-only host's frequency wanders and steps.  The lag is a
+  checkbox, off by default, not the fit's own: chronyd's
+  `read_timeout` (`tempcomp.c`, 4.6) compensates each raw reading, so
+  a lagged line is right only for a sensor file filtered the same
+  way, and fitting it with the lag on its own would hand out a line
+  that adds the sensor's swings to the compensation.  The lag is the
+  time constant of a first-order filter, picked from a fixed set by
+  the least robust spread, all judged on the same readings.
 - A page whose table is empty says why: chronyd logs refclocks and
   tempcomp only when told to.
 - **Kiosk**: smartclock's, one summary page, with `?inset=` and

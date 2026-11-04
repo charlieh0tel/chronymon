@@ -37,7 +37,11 @@
   <h2>The clock's frequency against temperature</h2>
   <div id="scatter"></div>
   <div id="figures" class="muted"></div>
-  <div class="controls fit"><button id="fit" type="button" hidden>Fit tempcomp</button></div>
+  <div class="controls fit">
+    <button id="fit" type="button" hidden>Fit tempcomp</button>
+    <label title="The clock's crystal warms more slowly than a sensor swinging with load: the temperature is
+filtered by the lag that fits best, from none to a few hours."><input type="checkbox" id="lag"> Fit the sensor's lag</label>
+  </div>
 </div>
 
 <!-- The fit, of the range shown when it was asked for, over the page
@@ -112,7 +116,101 @@ const utcMinute = (at) => new Date(at * 1000).toISOString().slice(0, 16).replace
 // A coefficient as chrony.conf takes it.
 const coefficient = (v) => String(Number(v.toPrecision(COEFFICIENT_FIGURES)));
 
-// The fits, linear and quadratic, of the frequency against the
+// Huber's constant, in robust standard deviations of the residuals:
+// a residual past it counts for less, an NTP source's wander or a step
+// pulling the fit less than it would least squares; on normal noise
+// the fit is 95% as efficient as least squares.
+const HUBER = 1.345;
+// The median absolute deviation to the standard deviation, for normal
+// noise.
+const MAD_SIGMA = 1.4826;
+// Most rounds of reweighting, and the change in the residuals' scale,
+// relative, below which the weights have settled.
+const ROBUST_ROUNDS = 50;
+const ROBUST_SETTLED = 1e-6;
+
+const median = (values) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+const evaluate = (c, x) => c.reduce((s, v, n) => s + v * x ** n, 0);
+
+// The robust (Huber) polynomial of `degree` through `pairs`, x from T0,
+// by least squares reweighted until the weights settle: its
+// coefficients, constant first, and the residuals' robust scale; or
+// null.
+function robustPolynomial(pairs, degree) {
+  let c = polynomial(pairs, degree);
+  let scale = null;
+  for (let round = 0; c && round < ROBUST_ROUNDS; round++) {
+    const residuals = pairs.map(({ x, y }) => y - evaluate(c, x));
+    const next = MAD_SIGMA * median(residuals.map(Math.abs));
+    if (!(next > 0)) return { c, scale: next };
+    const settled = scale != null && Math.abs(next - scale) <= ROBUST_SETTLED * scale;
+    scale = next;
+    if (settled) break;
+    c = polynomial(pairs.map((p, n) =>
+      ({ ...p, w: Math.min(1, HUBER * scale / Math.abs(residuals[n])) })), degree);
+  }
+  return c && { c, scale };
+}
+
+// Lags tried, as a first-order filter's time constant in seconds:
+// none, then a minute to four hours.
+const LAGS = [0, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400];
+// A lag is tried only in a range this many times as long; and the
+// filter's first this many time constants, while it settles from the
+// first reading, are not fitted.
+const LAG_SPAN = 10;
+const LAG_SETTLE = 3;
+
+// `values` at the times `at` through a first-order filter of time
+// constant `lag` seconds, as a crystal follows the air around it:
+// null where the reading is.  A gap of many time constants starts it
+// again from the next reading.
+function lagged(at, values, lag) {
+  if (lag === 0) return values;
+  let filtered = null, last = null;
+  return values.map((v, i) => {
+    if (v == null) return null;
+    filtered = filtered == null ? v : filtered + (1 - Math.exp(-(at[i] - last) / lag)) * (v - filtered);
+    last = at[i];
+    return filtered;
+  });
+}
+
+// The lag the frequency follows the temperature by best: of those the
+// range is long enough for, the one whose robust line leaves the least
+// scale, each judged on the same pairs, those past the longest's
+// settling.  `pairsWith(values)` pairs a temperature with the
+// frequency.  The lag, and its pairs past its own settling.
+function bestLag(at, values, pairsWith) {
+  const span = at[at.length - 1] - at[0];
+  const tried = LAGS.filter((lag) => lag * LAG_SPAN <= span);
+  const start = at[0];
+  const settledBy = (lag) => (p) => p.at >= start + LAG_SETTLE * lag;
+  const longest = tried[tried.length - 1];
+  const scored = tried.map((lag) => {
+    const pairs = pairsWith(lagged(at, values, lag));
+    const judged = pairs.filter(settledBy(longest));
+    if (judged.length < MIN_PAIRS) return null;
+    const mean = judged.reduce((s, p) => s + p.x, 0) / judged.length;
+    const fit = robustPolynomial(judged.map((p) => ({ x: p.x - mean, y: p.y })), 1);
+    return fit && { lag, pairs: pairs.filter(settledBy(lag)), scale: fit.scale };
+  }).filter(Boolean);
+  return scored.reduce((best, s) => (s.scale < best.scale ? s : best), scored[0] ?? { lag: 0, pairs: [] });
+}
+
+// The lag the last scatter was fitted with, in seconds; and its
+// readings, drawn again when the lag is turned on or off.
+let lagFitted = 0;
+let scatterFrom = null;
+
+// A lag as the page says it.
+const lagText = (lag) => (lag < 3600 ? `${lag / 60} min` : `${lag / 3600} h`);
+
+// The robust fits, linear and quadratic, of the frequency against the
 // temperature over `pairs`, from T0, their mean temperature: each its
 // name, color, coefficients (constant first, x from T0), and the RMS it
 // leaves; and the frequency's own spread about its mean.  What the
@@ -127,9 +225,9 @@ function fitsOf(pairs) {
   const mean = from.reduce((s, p) => s + p.y, 0) / from.length;
   const spread = rms(from.map((p) => p.y - mean));
   const fits = FITS.flatMap((f) => {
-    const c = polynomial(from, f.degree);
+    const c = robustPolynomial(from, f.degree)?.c;
     if (!c) return [];
-    const value = (x) => c.reduce((s, v, n) => s + v * (x - t0) ** n, 0);
+    const value = (x) => evaluate(c, x - t0);
     const left = rms(pairs.map(({ x, y }) => y - value(x)));
     // R^2, the share of the frequency's variance the fit accounts for.
     const determined = spread > 0 ? 1 - (left / spread) ** 2 : null;
@@ -171,7 +269,11 @@ function drawFits() {
   const common = [
     `# Fitted by chronymon from ${pairs.length} points, ` +
       `${utcMinute(Math.min(...times))} to ${utcMinute(Math.max(...times))} UTC,`,
-    `# of ${sensor.sensor}.`,
+    `# of ${sensor.sensor}, robust (Huber) least squares` +
+      (lagFitted > 0 ? `, the temperature lagged ${lagText(lagFitted)}.` : "."),
+    ...(lagFitted > 0
+      ? [`# chronyd compensates each reading as it is: these lines suit a sensor file filtered by the same lag.`]
+      : []),
   ].join("\n");
   // What was fitted, as text, its comment marks the copy's alone; then
   // each fit, the block to paste, its Copy in its corner, which copies
@@ -195,32 +297,42 @@ function frequencyValues(got) {
 }
 
 function drawScatter(temperature, frequency, points) {
+  scatterFrom = { temperature, frequency, points };
   scatterChart?.destroy();
   scatterChart = null;
   $("scatter").innerHTML = "";
   // The clock's own frequency: chronyd reports what is left after
   // tempcomp's compensation, so it is added back.
   const compensation = temperature.plots.find((p) => p.column === "compensation").mean;
-  const pairs = pairsOn(
-    { read: temperature, values: temperature.plots[0].mean },
-    { read: frequency, values: frequencyValues(frequency) },
+  const frequencies = frequencyValues(frequency);
+  const pairsWith = (values) => pairsOn(
+    { read: temperature, values },
+    { read: frequency, values: frequencies },
     points,
   ).flatMap((p) => (compensation[p.index] == null ? [] : [{ ...p, y: p.y - compensation[p.index] }]));
+  // Fitted only since the sensor last changed: readings before are
+  // another sensor's.
+  const since = lastStatus?.tempcomp?.since ?? null;
+  const read = temperature.plots[0].mean;
+  const sinceAt = since == null ? 0 : temperature.at.findIndex((t) => t >= since);
+  const best = $("lag").checked && sinceAt >= 0
+    ? bestLag(temperature.at.slice(sinceAt), read.slice(sinceAt),
+      (values) => pairsWith([...new Array(sinceAt).fill(null), ...values]))
+    : null;
+  lagFitted = best?.lag ?? 0;
+  const pairs = best ? best.pairs : pairsWith(read);
   fitFrom = null;
   $("fit").hidden = true;
   if (pairs.length < MIN_PAIRS) {
     showHtml($("figures"), "too few readings of both in this range to set against each other");
     return;
   }
-  // Fitted only since the sensor last changed: readings before are
-  // another sensor's.
-  const since = lastStatus?.tempcomp?.since ?? null;
   const fitted = since == null ? pairs : pairs.filter((p) => p.at >= since);
   fitFrom = fitted.length >= MIN_PAIRS ? fitsOf(fitted) : null;
   scatterChart = scatter(
     $("scatter"),
     pairs,
-    { name: columnName(key(TEMPCOMP, "temperature")) },
+    { name: columnName(key(TEMPCOMP, "temperature")) + (lagFitted > 0 ? `, lagged ${lagText(lagFitted)}` : "") },
     { name: OWN_FREQUENCY },
     $("scatter").clientWidth || 800,
     fitFrom?.fits ?? [],
@@ -244,7 +356,8 @@ function drawScatter(temperature, frequency, points) {
     : "";
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} buckets` +
-    (named.length ? `, least squares${sinceChange}:<br>${named.join("<br>")}` : ""));
+    (best ? (lagFitted > 0 ? `, the temperature lagged ${lagText(lagFitted)}, the best fitting` : ", no lag fitting better") : "") +
+    (named.length ? `, robust least squares${sinceChange}:<br>${named.join("<br>")}` : ""));
 }
 
 async function load(signal) {
@@ -282,6 +395,14 @@ async function load(signal) {
 
 // How long Copy says it copied, in ms.
 const COPIED_FOR = 1500;
+
+// The lag kept in the address, and the scatter drawn again when it is
+// turned on or off.
+$("lag").checked = new URLSearchParams(location.search).has("lag");
+$("lag").addEventListener("change", () => {
+  remember({ lag: $("lag").checked ? "" : null });
+  if (scatterFrom) drawScatter(scatterFrom.temperature, scatterFrom.frequency, scatterFrom.points);
+});
 
 $("fit").addEventListener("click", () => {
   drawFits();
