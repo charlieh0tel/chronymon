@@ -1,3 +1,12 @@
+chronymon (1.2.4-1) unstable; urgency=medium
+
+  * The Temperature page's scatter gives the linear and the quadratic
+    fits' R^2 each, as the Fit dialog does, in place of one straight
+    line's r and r^2.
+  * The README says how to set up chronyd's logs, gpsd and PPS.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Tue, 03 Nov 2026 21:00:55 -0800
+
 chronymon (1.2.3-1) unstable; urgency=medium
 
   * The Temperature page fits tempcomp to the clock's own frequency:
