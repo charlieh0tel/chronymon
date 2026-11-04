@@ -261,7 +261,8 @@ reports the frequency left once tempcomp has corrected, so the page
 adds the logged compensation back: the clock's own, whatever the
 coefficients, 0 or a points file.  The
 scatter of one against the other draws the linear and the quadratic
-least squares fits over it.
+least squares fits over it, and gives each one's R^2 and the line's
+slope.
 
 Once a range holds a good spread of temperatures, the page's Fit
 tempcomp opens a dialog of that range's fit, with Copy, and a block
