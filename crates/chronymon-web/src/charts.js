@@ -1371,17 +1371,18 @@ const NO_UPLOT =
 const MIN_PAIRS = 3;
 
 // The least squares polynomial of `degree`, 1 or 2, through `pairs`, x
-// already from T0: its coefficients, constant first.  x is scaled to
-// about 1 for the normal equations, then the coefficients back.
+// already from T0, each pair weighted by its `w`, 1 if none: its
+// coefficients, constant first.  x is scaled to about 1 for the normal
+// equations, then the coefficients back.
 function polynomial(pairs, degree) {
   const scale = Math.max(...pairs.map((p) => Math.abs(p.x))) || 1;
   const size = degree + 1;
   const a = Array.from({ length: size }, () => new Array(size + 1).fill(0));
-  for (const { x, y } of pairs) {
+  for (const { x, y, w = 1 } of pairs) {
     const powers = Array.from({ length: size }, (_, n) => (x / scale) ** n);
     for (let i = 0; i < size; i++) {
-      for (let j = 0; j < size; j++) a[i][j] += powers[i] * powers[j];
-      a[i][size] += powers[i] * y;
+      for (let j = 0; j < size; j++) a[i][j] += w * powers[i] * powers[j];
+      a[i][size] += w * powers[i] * y;
     }
   }
   // Gaussian elimination, with partial pivoting.
