@@ -1,3 +1,15 @@
+chronymon (1.2.6-1) unstable; urgency=medium
+
+  * The Temperature page's fits are robust (Huber) least squares, an
+    NTP source's wander or step pulling them less.
+  * Fit the sensor's lag, a checkbox: the temperature filtered by the
+    first-order lag that fits best, for a sensor that swings with load
+    against a crystal that warms slowly.  chronyd compensates each raw
+    reading, so the dialog says a lagged line suits only a sensor file
+    filtered the same way.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Tue, 03 Nov 2026 23:25:51 -0800
+
 chronymon (1.2.5-1) unstable; urgency=medium
 
   * The Temperature page's scatter gives each fit's R as well as its
