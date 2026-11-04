@@ -6,3 +6,5 @@
 /.claude
 /tmp
 /apu-0
+__pycache__/
+*.npz
