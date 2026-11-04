@@ -1371,19 +1371,30 @@ const NO_UPLOT =
 const MIN_PAIRS = 3;
 
 // The least squares polynomial of `degree`, 1 or 2, through `pairs`, x
-// already from T0, each pair weighted by its `w`, 1 if none: its
+// already from T0, each pair weighted by `weights`' own, 1 if none: its
 // coefficients, constant first.  x is scaled to about 1 for the normal
 // equations, then the coefficients back.
-function polynomial(pairs, degree) {
-  const scale = Math.max(...pairs.map((p) => Math.abs(p.x))) || 1;
+function polynomial(pairs, degree, weights = null) {
+  const scale = pairs.reduce((m, p) => Math.max(m, Math.abs(p.x)), 0) || 1;
   const size = degree + 1;
   const a = Array.from({ length: size }, () => new Array(size + 1).fill(0));
-  for (const { x, y, w = 1 } of pairs) {
-    const powers = Array.from({ length: size }, (_, n) => (x / scale) ** n);
-    for (let i = 0; i < size; i++) {
-      for (let j = 0; j < size; j++) a[i][j] += w * powers[i] * powers[j];
-      a[i][size] += w * powers[i] * y;
+  // The sums of x's powers, to twice the degree, and of y by each; run
+  // per pair in a fit of thousands, many times over.
+  const sums = new Float64Array(2 * size - 1);
+  const ySums = new Float64Array(size);
+  for (let n = 0; n < pairs.length; n++) {
+    const w = weights ? weights[n] : 1;
+    const x = pairs[n].x / scale;
+    let power = w;
+    for (let k = 0; k < sums.length; k++) {
+      sums[k] += power;
+      if (k < size) ySums[k] += power * pairs[n].y;
+      power *= x;
     }
+  }
+  for (let i = 0; i < size; i++) {
+    for (let j = 0; j < size; j++) a[i][j] = sums[i + j];
+    a[i][size] = ySums[i];
   }
   // Gaussian elimination, with partial pivoting.
   for (let col = 0; col < size; col++) {
