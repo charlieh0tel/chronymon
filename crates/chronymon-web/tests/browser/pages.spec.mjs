@@ -854,10 +854,10 @@ test("Temperature: no fit without a tempcomp line chronymond read", async ({ pag
 const SYNTHETIC_SLOPE = 8.75e-5;
 const SYNTHETIC_MEAN = 41000;
 
-// The Temperature page's readings with the compensation zeroed and the
-// frequency made over by `frequency(values, at)` from the temperature,
-// on the same grid.
-async function frequencyFromTemperature(page, frequency) {
+// The Temperature page's readings with the compensation zeroed, the
+// temperature made over by `reshape(values)`, and the frequency by
+// `frequency(values, at)` from it, on the same grid.
+async function frequencyFromTemperature(page, frequency, reshape = (values) => values) {
   let temperature = null;
   await page.route("**/api/history?*", async (route) => {
     const response = await route.fetch();
@@ -867,7 +867,9 @@ async function frequencyFromTemperature(page, frequency) {
       for (const plot of got.plots) {
         if (plot.column === "compensation") plot.mean = plot.mean.map((v) => (v == null ? v : 0));
       }
-      temperature = { at: got.at, values: got.plots.find((p) => p.column === "temperature").mean };
+      const read = got.plots.find((p) => p.column === "temperature");
+      read.mean = reshape(read.mean);
+      temperature = { at: got.at, values: read.mean };
     } else if (table === "tracking" && got.plots && temperature) {
       const made = frequency(temperature.values, temperature.at);
       // The temperature's nearest bucket to each of the frequency's.
@@ -922,6 +924,26 @@ test("Temperature: without the lag, a clock that lags fits worse", async ({ page
   await expect(page.locator("#figures")).toContainText("lagged");
   expect(await r2()).toBeGreaterThan(without);
   expect(new URL(page.url()).searchParams.has("lag")).toBe(true);
+});
+
+test("Temperature: a step of the sensor the clock follows at once fits no lag", async ({ page }) => {
+  // The sensor 3 degrees warmer from halfway, the clock following it at
+  // once, with noise of its own.
+  const STEP_UP = 3000;
+  const NOISE = 0.01;
+  let seed = 1;
+  const noise = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed / 2147483647 - 0.5) * 2 * NOISE;
+  };
+  await frequencyFromTemperature(page,
+    (values) => values.map((v) => (v == null ? null : SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN) + noise())),
+    (values) => values.map((v, i) => (v == null || i < values.length / 2 ? v : v + STEP_UP)));
+  await page.goto("/temperature?last=172800&lag");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await expect(page.locator("#figures")).toContainText("No lag");
+  await page.locator("#fit").click();
+  await expect(page.locator("#fits pre.fitted")).not.toContainText("lagged");
 });
 
 test("Temperature: the fit is robust, a few wild readings pulling it little", async ({ page }) => {

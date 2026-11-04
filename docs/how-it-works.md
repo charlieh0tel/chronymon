@@ -268,9 +268,13 @@ plain least squares.
 
 A sensor that swings with load, a CPU's, leads the crystal, which
 warms slowly, and chronyd's frequency estimate lags too.  Fit the
-sensor's lag filters the temperature by a first-order lag, its time
-constant the one, from none to four hours, whose line leaves the least
-spread, tried only in a range ten times as long, and fits that.  chronyd
+sensor's lag filters the temperature by a first-order lag and fits
+that.  Its time constant, from none to four hours, tried only in a
+range ten times as long, is the one whose line best predicts readings
+left out of its fit: the range in six stretches, each left out in
+turn, an hour either side left out with it.  The caption says how far
+those readings were missed with the lag and with none; where none is
+best, it says so and fits none.  chronyd
 compensates each reading as it is, so a line fitted with a lag suits
 only a sensor file filtered by that lag, which the dialog says.
 
