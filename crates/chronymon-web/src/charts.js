@@ -1364,42 +1364,11 @@ const NO_UPLOT =
 
 // ------------------------------------------------------------- scatter
 //
-// One measure against another, a dot per bucket both have, with the
-// least-squares line: smartclock's correlation page's, cut down.
+// One measure against another, a dot per bucket both have, with its
+// least squares fits: smartclock's correlation page's, cut down.
 
 // Fewest pairs a statistic is given for.
 const MIN_PAIRS = 3;
-
-// Pearson's r, or null for too few pairs or a series that never moves.
-function pearson(pairs) {
-  if (pairs.length < MIN_PAIRS) return null;
-  const n = pairs.length;
-  const mx = pairs.reduce((s, p) => s + p.x, 0) / n;
-  const my = pairs.reduce((s, p) => s + p.y, 0) / n;
-  let sxy = 0, sxx = 0, syy = 0;
-  for (const { x, y } of pairs) {
-    sxy += (x - mx) * (y - my);
-    sxx += (x - mx) ** 2;
-    syy += (y - my) ** 2;
-  }
-  return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : null;
-}
-
-// The least-squares line y = slope * x + intercept, or null.
-function leastSquares(pairs) {
-  if (pairs.length < MIN_PAIRS) return null;
-  const n = pairs.length;
-  const mx = pairs.reduce((s, p) => s + p.x, 0) / n;
-  const my = pairs.reduce((s, p) => s + p.y, 0) / n;
-  let sxy = 0, sxx = 0;
-  for (const { x, y } of pairs) {
-    sxy += (x - mx) * (y - my);
-    sxx += (x - mx) ** 2;
-  }
-  if (!(sxx > 0)) return null;
-  const slope = sxy / sxx;
-  return { slope, intercept: my - slope * mx };
-}
 
 // The least squares polynomial of `degree`, 1 or 2, through `pairs`, x
 // already from T0: its coefficients, constant first.  x is scaled to

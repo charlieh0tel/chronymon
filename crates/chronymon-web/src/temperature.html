@@ -131,7 +131,9 @@ function fitsOf(pairs) {
     if (!c) return [];
     const value = (x) => c.reduce((s, v, n) => s + v * (x - t0) ** n, 0);
     const left = rms(pairs.map(({ x, y }) => y - value(x)));
-    return [{ ...f, c, value, left }];
+    // R^2, the share of the frequency's variance the fit accounts for.
+    const determined = spread > 0 ? 1 - (left / spread) ** 2 : null;
+    return [{ ...f, c, value, left, determined }];
   });
   return { pairs, t0, spread, fits };
 }
@@ -151,11 +153,9 @@ function drawFits() {
   // One block to paste: what both were fitted from, the sensor too, so
   // the file says it later, then each fit, its quality in a comment
   // above it, in ASCII, as chrony.conf is.
-  const groups = fits.map(({ name, degree, c, left }) => {
+  const groups = fits.map(({ name, degree, c, left, determined }) => {
     const [k1, k2] = [-c[1], degree === 2 ? -c[2] : 0];
-    // R^2, the share of the frequency's variance the fit accounts for,
-    // and R, its root: for the line, |r|.
-    const determined = spread > 0 ? 1 - (left / spread) ** 2 : null;
+    // R, R^2's root: for the line, |r|.
     const most = Math.max(...pairs.map(({ x }) => Math.abs(k1 * (x - t0) + k2 * (x - t0) ** 2)));
     return [
       `# ${name} fit: leaves ${ppm(left)} RMS of the frequency's ${ppm(spread)}` +
@@ -212,8 +212,6 @@ function drawScatter(temperature, frequency, points) {
     showHtml($("figures"), "too few readings of both in this range to set against each other");
     return;
   }
-  const fit = leastSquares(pairs);
-  const r = pearson(pairs);
   // Fitted only since the sensor last changed: readings before are
   // another sensor's.
   const since = lastStatus?.tempcomp?.since ?? null;
@@ -229,17 +227,18 @@ function drawScatter(temperature, frequency, points) {
   );
   // Only for a tempcomp line chronymond read, which the fit replaces.
   $("fit").hidden = !lastStatus?.tempcomp || !fitFrom;
-  // The fits' names in their colors, the scatter's legend, and since
-  // when, if not the whole range.
-  const named = (fitFrom?.fits ?? []).map((f) => `<span style="color:${f.color}">${f.name.toLowerCase()}</span>`);
+  // Each fit, its name in its color, the scatter's legend, with its
+  // R^2, the line's slope too, and since when, if not the whole range.
+  const named = (fitFrom?.fits ?? []).map((f) =>
+    `<span style="color:${f.color}">${f.name.toLowerCase()}</span>` +
+    (f.degree === 1 ? ` ${f.c[1].toPrecision(3)} ppm per unit of temperature` : "") +
+    (f.determined == null ? "" : `, R² ${f.determined.toFixed(3)}`));
   const sinceChange = since != null && fitted.length < pairs.length
     ? ` since the sensor changed, ${local(since)}`
     : "";
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} buckets` +
-    (named.length ? `, ${named.join(" and ")} least squares${sinceChange}` : "") +
-    (fit ? `; the line ${fit.slope.toPrecision(3)} ppm per unit of temperature` : "") +
-    (r == null ? "" : `, r = ${r.toFixed(3)}, r² = ${(r * r).toFixed(3)}`) +
+    (named.length ? `; least squares${sinceChange}: ${named.join("; ")}` : "") +
     ". A clock whose frequency follows its temperature is what tempcomp corrects for.");
 }
 

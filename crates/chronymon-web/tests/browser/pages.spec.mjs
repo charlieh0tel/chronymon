@@ -707,10 +707,13 @@ test("Temperature: the series and the scatter", async ({ page }) => {
   await expect(charts(page).first()).toBeVisible();
   await expect(page.locator("#scatter .uplot")).toBeVisible();
   const figures = page.locator("#figures");
-  await expect(figures).toContainText(/, r = -?\d\.\d{3}, r² = \d\.\d{3}/);
-  // r² is r squared, to the figures shown.
-  const [, r, squared] = (await figures.textContent()).match(/r = (-?\d\.\d{3}), r² = (\d\.\d{3})/);
-  expect(Number(squared)).toBeCloseTo(Number(r) ** 2, 2);
+  // Each fit's R², the same as its comment in the Fit dialog says.
+  await expect(figures).toContainText(/R² \d\.\d{3}.*R² \d\.\d{3}/);
+  const shown = (await figures.textContent()).match(/R² (\d\.\d{3})/g).map((m) => Number(m.slice(3)));
+  await page.locator("#fit").click();
+  const said = (await page.locator("#fits").textContent()).match(/R\^2 (-?\d\.\d{4})/g).map((m) => Number(m.slice(4)));
+  expect(shown.length).toBe(2);
+  shown.forEach((v, n) => expect(v).toBeCloseTo(said[n], 2));
 });
 
 // Fewer points than this after a sensor change would leave the fit
