@@ -130,7 +130,7 @@ const ROBUST_ROUNDS = 50;
 const ROBUST_SETTLED = 1e-6;
 
 const median = (values) => {
-  const sorted = [...values].sort((a, b) => a - b);
+  const sorted = Float64Array.from(values).sort();
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
@@ -150,8 +150,7 @@ function robustPolynomial(pairs, degree) {
     const settled = scale != null && Math.abs(next - scale) <= ROBUST_SETTLED * scale;
     scale = next;
     if (settled) break;
-    c = polynomial(pairs.map((p, n) =>
-      ({ ...p, w: Math.min(1, HUBER * scale / Math.abs(residuals[n])) })), degree);
+    c = polynomial(pairs, degree, residuals.map((r) => Math.min(1, HUBER * scale / Math.abs(r))));
   }
   return c && { c, scale };
 }
