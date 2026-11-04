@@ -227,19 +227,24 @@ function drawScatter(temperature, frequency, points) {
   );
   // Only for a tempcomp line chronymond read, which the fit replaces.
   $("fit").hidden = !lastStatus?.tempcomp || !fitFrom;
-  // Each fit, its name in its color, the scatter's legend, with its
-  // R^2, the line's slope too, and since when, if not the whole range.
-  const named = (fitFrom?.fits ?? []).map((f) =>
-    `<span style="color:${f.color}">${f.name.toLowerCase()}</span>` +
-    (f.degree === 1 ? ` ${f.c[1].toPrecision(3)} ppm per unit of temperature` : "") +
-    (f.determined == null ? "" : `, R² ${f.determined.toFixed(3)}`));
+  // Each fit on its own line, its name in its color, the scatter's
+  // legend, with its R and R^2, the line's slope too, and since when,
+  // if not the whole range.
+  const named = (fitFrom?.fits ?? []).map((f) => {
+    const figures = [
+      ...(f.degree === 1 ? [`${f.c[1].toPrecision(3)} ppm per unit of temperature`] : []),
+      ...(f.determined == null
+        ? []
+        : [`R ${Math.sqrt(Math.max(f.determined, 0)).toFixed(3)}`, `R² ${f.determined.toFixed(3)}`]),
+    ];
+    return `<span style="color:${f.color}">${f.name}</span>: ${figures.join(", ")}`;
+  });
   const sinceChange = since != null && fitted.length < pairs.length
     ? ` since the sensor changed, ${local(since)}`
     : "";
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} buckets` +
-    (named.length ? `; least squares${sinceChange}: ${named.join("; ")}` : "") +
-    ". A clock whose frequency follows its temperature is what tempcomp corrects for.");
+    (named.length ? `, least squares${sinceChange}:<br>${named.join("<br>")}` : ""));
 }
 
 async function load(signal) {
