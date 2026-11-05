@@ -409,6 +409,8 @@ Journal, Distribution, Kiosk.
   older than a minute or so, its age in its title, a click reading
   again: on a long range Auto rereads only every half hour.  For
   smartclock's displays too.
+- A tempcomp filter for chronyd, a separate program, not chronymon,
+  which only observes: [docs/tempcomp-filter.md](docs/tempcomp-filter.md).
 
 ### The receiver, decided 2026-10-30
 
