@@ -144,12 +144,12 @@ measured with chronymon's Temperature page and
 [`tools/tempcomp-study`](../tools/tempcomp-study) show that the frequency follows the
 sensor through a lag, and that sensors are noisy:
 
-| Host | Sensor | Lag | Held-out RMSE, no lag / lag, ppm |
-|---|---|---|---|
-| tare | CPU coretemp, NTP only | 30–90 min | 0.77 / 0.26 |
-| chronos | thermal zone, PPS | 30 min | 0.11 / 0.023 |
-| draws | board sensor, PPS | 10 min | 0.029 / 0.020 |
-| apu-0 | SoC, at the crystal | ~0 | 0.034 / 0.032 |
+| Host | Sensor | Step | Reference | Lag | Held-out RMSE, no lag / lag, ppm |
+|---|---|---|---|---|---|
+| tare | CPU coretemp | 1 °C | NTP | 30–90 min | 0.77 / 0.26 |
+| chronos | thermal zone | 0.454 °C | PPS | 30 min | 0.11 / 0.023 |
+| draws | board sensor | 0.538 °C | PPS | 10 min | 0.029 / 0.020 |
+| apu-0 | SoC, at the crystal | 0.1 °C | PPS | about 0 | 0.034 / 0.032 |
 
 A line fitted with the lag but given raw readings makes things worse:
 on chronos about 0.09 ppm RMS of fast error (about 3 us of offset per
