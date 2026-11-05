@@ -262,12 +262,90 @@ should come out near zero, a check that `tau` is right.  The raw
 sensor drops out of the record unless chronymond reads it directly, a
 separate, observe-only feature.
 
-## Upstream
+## Proposal for chrony
 
-The cleaner home for the filter is chronyd itself: an optional time
-constant on `tempcomp` (`[lag <seconds>]`) smoothing readings in
-`read_timeout`, with both raw and filtered readings logged.  Worth
-proposing on chrony-dev once phase 1 shows the gain, with the numbers.
+The cleaner home for the filter is chronyd itself: one number, a lag,
+on `tempcomp`.  It removes the separate program, and with it the
+stale-file fault, for anyone who only needs the filter.
+
+### Syntax
+
+An optional keyword at the end of either form, in chrony's usual
+style for options:
+
+    tempcomp <file> <interval> <T0> <k0> <k1> <k2> lag <seconds>
+    tempcomp <file> <interval> <points-file> lag <seconds>
+
+No `lag`, or `lag 0`, is today's behavior.
+
+### Behavior
+
+In `read_timeout`, before the reading reaches the formula or the
+points:
+
+    f += (1 - exp(-dt / lag)) * (T - f)
+
+with `dt` the time since the last good reading.
+
+- The filter starts from the first good reading.
+- A failed read skips the update and keeps the state; a gap of many
+  lags starts it again from the next good reading.
+- The filtered value goes through the existing formula or points and
+  the existing 10 ppm limit, unchanged.
+
+### Log
+
+`tempcomp.log` gains the filtered temperature as a new last column,
+after the raw reading and the compensation, so a tool can fit either
+and see what was applied.  The existing columns keep their places.
+
+### Documentation
+
+A paragraph in `chrony.conf.adoc`: when to use it (a sensor away from
+the crystal, so the crystal warms more slowly than the sensor; or a
+noisy or coarsely discretized sensor), and how to choose the value
+(fit the frequency against the temperature through a first-order lag
+for a range of lags, and keep the one that best predicts readings
+left out of the fit).  It does not promise that the value is the
+crystal's thermal time constant: a lag fitted from chronyd's
+frequency also includes chronyd's own smoothing of its estimate,
+larger with NTP than with a PPS.
+
+### Why one number
+
+A second number was tried on the same data: an immediate share (part
+of the temperature reaching the crystal at once, the rest through the
+lag), and a dead time.  Held-out RMSE, ppm, lag alone / with the
+share / with the dead time: apu-0 0.032 / 0.029 / 0.032, draws
+0.020 / 0.019 / 0.020, chronos 0.046 / 0.041 / 0.046, tare 0.37 /
+0.37 / 0.31.  The share gains at most 0.005 ppm (under 0.1 ns over a
+16 s PPS update), within the uncertainty of a few days' data, and
+passes its share of the sensor's noise and steps straight through;
+the dead time helps only tare, an NTP host.  The lag alone gets nearly
+all of the gain.
+
+### Case to make
+
+- Evidence: the held-out RMSE per host, no lag against lag ("Why",
+  above), and, from phase 1, offset and holdover before and after.
+  Lean on the PPS hosts, whose frequency chronyd estimates with
+  little smoothing of its own.
+- The likely answer, "write the file with an external program": a
+  helper's file going stale keeps chronyd compensating with its last
+  value, silently (`read_timeout` keeps the last compensation when it
+  cannot read); a helper is one more package and service; and the
+  smoothing is part of the compensation's model.
+- The discretization: on chronos every flip of the reading between
+  two steps jumps the compensation by about 0.09 ppm, which the lag
+  averages away.
+
+### Process
+
+Ask on chrony-dev first, with the problem, the evidence and the
+syntax, before writing the patch; the maintainer's answer shapes it.
+Then a patch against chrony's current release, tested on a host built
+from source.  chrony takes patches on the mailing list, not as merge
+requests.
 
 ## Open
 
@@ -275,3 +353,4 @@ proposing on chrony-dev once phase 1 shows the gain, with the numbers.
 - Host for the phase 1 experiment.
 - Frequency source for learning: chronyd or chronymon's database.
 - Learning by daily refit or by Kalman filter.
+- Proposal for chrony: ask before or after the phase 1 experiment.
