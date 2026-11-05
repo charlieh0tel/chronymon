@@ -43,6 +43,12 @@ peaks of 3 ppm.  The line needs the filtered temperature.
 - systemd unit: `Restart=always`, ordered before `chrony.service`,
   `WatchdogSec` with `sd_notify` pings.
 
+A Kalman filter with this model (the crystal's temperature as the
+state, a first-order lag as its process, the sensor's jitter as the
+measurement noise) settles to a fixed gain: the same exponential
+filter.  It earns its place in phase 2, not here, beyond setting the
+gain from the noise and handling irregular readings and gaps.
+
 Phase 1 can start as a shell script and a unit on one host, to measure
 the gain (offset RMS, and holdover with the reference cut) against
 tempcomp off, before any of this is written properly.
@@ -79,6 +85,19 @@ Freeze learning while chronyd is not synchronized (holdover is when
 tempcomp matters most and the frequency is not measured), and drop
 readings near restarts and steps.  The learned fit is kept in
 `/var/lib/tempcomp-filter` and each adoption logged, old and new.
+
+A Kalman filter is the online alternative to the daily refit: state
+the crystal's temperature and the line's coefficients, measurements
+the sensor reading and the clock's own frequency, so it estimates the
+crystal's temperature and learns the line together, with their
+uncertainty.  Holdover handles itself: with no frequency measured,
+the update is skipped, learning stops and prediction carries on.
+Costs: the noise variances must be chosen, tuned or estimated (EM,
+innovation statistics); the coefficients as states make it nonlinear
+(extended or unscented); and a mistuned filter fails quietly, so the
+guards above still apply.  Start with the daily refit, whose results
+chronymon's page can reproduce; consider the Kalman filter once that
+is understood.
 
 Since the program would write the compensation itself, it could write
 the predicted correction directly (tempcomp `0 0 1 0`) and use models
@@ -125,3 +144,4 @@ proposing on chrony-dev once phase 1 shows the gain, with the numbers.
 - Name and repository.
 - Host for the phase 1 experiment.
 - Frequency source for learning: chronyd or chronymon's database.
+- Learning by daily refit or by Kalman filter.
