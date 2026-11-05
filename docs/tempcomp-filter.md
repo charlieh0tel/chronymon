@@ -238,6 +238,44 @@ Source of the frequency: chronyd's tracking report (read-only control
 protocol) or chronymon's database.  Undecided; the first keeps the two
 programs independent.
 
+## Several sensors
+
+Most hosts have more than one temperature sensor: a CPU's package and
+cores, an NVMe drive, a Wi-Fi radio, a board.  The crystal's
+temperature depends on several heat sources, and each sensor sees a
+different mix of them through its own path: on tare, the CPU follows
+load within a minute, while the drive and the radio follow the case
+and the room more slowly.  A single sensor mixes these together; one
+lag cannot follow both.
+
+Multiple-input, single-output (MISO) system identification fits the
+crystal's temperature as a combination of the sensors, each through
+its own lag:
+
+    Tc = c + sum over sensors i of  w_i * lag(T_i, tau_i)
+
+and the frequency against Tc as before, the weights and lags chosen
+by the same robust fits and blocked cross-validation, and judged
+against the best single sensor.
+
+- **One output.**  chronyd's `tempcomp` reads one file, so the
+  program writes the combined estimate there (or the correction
+  itself, tempcomp `0 0 1 0`).  This needs the separate program; the
+  proposal for chrony stays the single-sensor case.
+- **The sensors move together.**  All of them follow load and the
+  room, so a fit can trade one off against another with large,
+  opposing weights that fit well and predict badly.  It needs few
+  inputs, regularization (ridge), and held-out stretches to judge it
+  by.
+- **More data.**  More parameters need more days, over more
+  conditions, than a single lag does.
+- **Each sensor's own step and noise** (see "Discretization"): the
+  coarse ones need longer lags or smaller weights.
+- **Recording first.**  chronyd logs only its `tempcomp` sensor, so
+  there is no history of the others.  The first step is a logger
+  recording every sensor on a host or two for a week or more, then
+  the model offline (numpy), before anything is built.
+
 ## CLI
 
 Over a Unix socket in `/run`; `status` unprivileged, the rest root or
@@ -354,3 +392,4 @@ requests.
 - Frequency source for learning: chronyd or chronymon's database.
 - Learning by daily refit or by Kalman filter.
 - Proposal for chrony: ask before or after the phase 1 experiment.
+- Several sensors: which hosts to record, and for how long.
