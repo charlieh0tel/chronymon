@@ -31,7 +31,9 @@ sensor through a low-pass, time constant tau:
 
     tau dTc/dt = T - Tc
 
-The sensor also has its own noise: jitter and whole-degree steps.
+The sensor also has its own noise: jitter, and its discretization,
+often to a degree or so, which steps the reading back and forth
+between levels.
 
 Given the raw reading, tempcomp compensates for T, while the clock
 drifts with Tc.  The error it puts into the frequency is
