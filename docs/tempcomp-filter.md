@@ -31,12 +31,7 @@ sensor through a low-pass, time constant tau:
 
     tau dTc/dt = T - Tc
 
-The sensor also has its own noise, and is discretized: Linux reports
-millidegrees Celsius, but each sensor resolves only its own step,
-which differs from sensor to sensor.  Measured: tare's coretemp steps
-by 1 °C, chronos's thermal zone by about 0.454 °C.  A temperature near
-a step's edge flips the reading between two levels, and every flip is
-a jump in the compensation.
+The sensor also has its own noise, and is discretized (below).
 
 Given the raw reading, tempcomp compensates for T, while the clock
 drifts with Tc.  The error it puts into the frequency is
@@ -64,6 +59,46 @@ that the crystal never feels dilute the slope toward zero.  On chronos
 the raw fit's slope is -0.127 ppm/°C against -0.19 ppm/°C through the lag; a
 line fitted on raw readings both under-corrects the slow drift and
 injects the fast noise.
+
+### Discretization
+
+Linux reports a sensor in millidegrees Celsius, but each sensor
+resolves only its own step, which differs from sensor to sensor.
+Measured from an hour of each host's readings (the gaps between
+distinct values), with the jump each step makes in the compensation
+at the host's fitted slope:
+
+| Host | Sensor | Step | Slope | Jump per step |
+|---|---|---|---|---|
+| tare | coretemp | 1 °C | about -0.09 ppm/°C | about 0.09 ppm |
+| draws | board sensor | 0.538 °C | -0.177 ppm/°C | 0.095 ppm |
+| chronos | thermal zone | 0.454 °C | -0.19 ppm/°C | 0.086 ppm |
+| apu-0 | SoC | 0.1 °C | -0.131 ppm/°C | 0.013 ppm |
+
+The step matters at every stage:
+
+- **Analysis.**  A reading is the temperature to within a step: an
+  error of at least step^2 / 12 in variance (0.29 °C RMS for a 1 °C
+  step), but not white noise: while the temperature drifts slowly
+  near a step's edge, the reading flips between two levels, a
+  square wave the crystal never feels.  It is part of the error in
+  the temperature that dilutes a raw fit's slope.  The steps are
+  found from the data, the gaps between distinct readings, not
+  assumed.
+- **Post-processing.**  The lag filter averages the flips, and
+  resolves the temperature finer than a step only because the
+  temperature wanders across steps (dither); with too short a tau
+  the flips pass through.  A Kalman filter's measurement noise is at
+  least step^2 / 12.  The filtered value is written with finer
+  resolution than the sensor's: chronyd reads the file as a double
+  (`fscanf("%lf")`), so fractional millidegrees are kept.
+- **Control loop.**  Read raw, every flip is a jump of the
+  compensation by the table's last column, applied at once: on
+  chronos about 0.09 ppm every time the reading flips, the same size
+  as the 0.09 ppm RMS error the raw sensor injects there.  Filtered,
+  the compensation moves smoothly.  The program measures the step at
+  start and reports it (`status`), and checks that its tau is long
+  against how often the reading flips.
 
 ### How the lag and the fit are found
 
@@ -111,8 +146,8 @@ sensor through a lag, and that sensors are noisy:
 
 | Host | Sensor | Lag | Held-out RMSE, no lag / lag, ppm |
 |---|---|---|---|
-| tare | CPU coretemp, 1 °C steps, NTP only | 30–90 min | 0.77 / 0.26 |
-| chronos | thermal zone, 0.454 °C steps, PPS | 30 min | 0.11 / 0.023 |
+| tare | CPU coretemp, NTP only | 30–90 min | 0.77 / 0.26 |
+| chronos | thermal zone, PPS | 30 min | 0.11 / 0.023 |
 | draws | board sensor, PPS | 10 min | 0.029 / 0.020 |
 | apu-0 | SoC, at the crystal | ~0 | 0.034 / 0.032 |
 
