@@ -6,6 +6,96 @@ temperature filtered to match how the crystal actually follows the
 sensor.  chronymon stays an observer; this program steers the clock,
 so it lives and ships apart from it.
 
+## Background
+
+### What chronyd's tempcomp does
+
+Every `interval` seconds chronyd reads one number from the sensor
+file, T, computes
+
+    comp = k0 + (T - T0) k1 + (T - T0)^2 k2      (ppm)
+
+and applies it to the clock's frequency at once (`read_timeout`,
+`LCL_SetTempComp`, `tempcomp.c`, chrony 4.6).  There is no smoothing:
+each reading's compensation replaces the last.  chronyd's own loop
+then estimates whatever frequency error remains, from its reference,
+at its update interval.
+
+### Why reading the sensor directly fails
+
+The crystal's frequency depends on the crystal's temperature, Tc, not
+the sensor's.  The sensor is somewhere else (a CPU's die, an SoC, a
+board), and heat reaches the crystal through the board's thermal
+resistance and capacitance.  To first order the crystal follows the
+sensor through a low-pass, time constant tau:
+
+    tau dTc/dt = T - Tc
+
+The sensor also has its own noise: jitter and whole-degree steps.
+
+Given the raw reading, tempcomp compensates for T, while the clock
+drifts with Tc.  The error it puts into the frequency is
+
+    e(t) = k1 (T(t) - Tc(t))
+
+For changes slower than tau, Tc keeps up and e is small.  For faster
+ones, e is nearly the whole change times k1: a load spike that heats a
+CPU 30 C in a minute is compensated in full at the next reading,
+while the crystal has barely warmed, then compensated back when the
+load ends.  In the frequency domain the error is the high-pass part of
+T: |e| / |k1 T| = w tau / sqrt(1 + (w tau)^2).  The sensor's jitter
+passes straight through the same way.
+
+A frequency error integrates into offset: e for one update interval
+is e x interval of time error before chronyd's loop measures and
+corrects it.  On chronos (PPS, 16 s updates, 32 s readings) the raw
+sensor's jitter alone is about 0.09 ppm RMS, about 3 us per reading,
+twice its present RMS offset.  On tare (NTP, 257 s updates), load
+spikes give errors of up to 3 ppm.
+
+The fit suffers too.  Regressing the frequency on the raw temperature
+is an errors-in-variables problem: the fast swings and jitter in T
+that the crystal never feels dilute the slope toward zero.  On chronos
+the raw fit's slope is -0.127 ppm/C against -0.19 through the lag; a
+line fitted on raw readings both under-corrects the slow drift and
+injects the fast noise.
+
+### How the lag and the fit are found
+
+The model is the frequency the clock would run at with no
+compensation, y = chronyd's frequency less the compensation applied,
+against the temperature through some response h:
+
+    y(t) = c + k1 (h * T)(t) + k2 (h * T)(t)^2 + noise
+
+**Middle ground (what chronymon's page does).**  h is a first-order
+lag, `f += (1 - exp(-dt / tau)) (T - f)`.  For each tau on a grid
+(none, 5 min to 4 h), filter T, fit c, k1 (and k2) by robust (Huber)
+least squares, so steps and NTP outliers pull little, and score the
+fit by blocked cross-validation: split the record into six contiguous
+stretches, fit on the others (leaving out an hour either side), and
+predict the held-out stretch from the temperature alone.  The tau with
+the smallest held-out RMSE wins, and is reported against tau = 0.
+
+Cross-validation, not the in-sample fit, because the frequency's
+noise is slow and strongly correlated (an AR(1) fit gives rho about
+0.99): consecutive samples are not independent, so in-sample
+criteria reward any extra freedom.  A lag judged in-sample won where
+there is none: on apu-0 a sensor step the frequency followed at once
+was smeared into a trail, and 20 min "fitted" better.  Correcting for
+the correlated noise instead (generalized least squares) fails the
+other way: with rho near 1 it effectively differences the data and
+loses the slope.  Held-out stretches sidestep both.
+
+**Full system identification (the study's check).**  h is an
+output-error model, y = c + B(q)/F(q) T, with B and F of order 1 or 2
+and a dead time of 0 to 60 min, fitted by robust nonlinear least
+squares on the simulated output, orders and dead time chosen by the
+same blocked cross-validation.  Its step response shows the shape a
+single lag cannot: on apu-0 and draws most of a step arrives at once,
+the rest within 30 min; on tare almost nothing for 15 min, then most
+within two hours.  It beats the middle ground clearly only on tare.
+
 ## Why
 
 chronyd applies `tempcomp` to each raw sensor reading as it arrives
