@@ -298,8 +298,9 @@ Journal, Distribution, Kiosk.
   1.6 to 10 days: chronos 0.066 / 0.045 (30 min) / 0.036, apu-0
   0.034 / 0.032 (5 min) / 0.030, draws 0.029 / 0.020 (10 min) /
   0.019, tare (NTP, CPU sensor) 0.69 / 0.37 (90 min) / 0.26.  Not
-  worth a solver in the browser.  The study is
-  `tools/tempcomp-study`.
+  worth a solver in the browser.  The study, its data and the design
+  it led to are in
+  [chrony-tempcomp](https://github.com/charlieh0tel/chrony-tempcomp).
 - A page whose table is empty says why: chronyd logs refclocks and
   tempcomp only when told to.
 - **Kiosk**: smartclock's, one summary page, with `?inset=` and
@@ -409,8 +410,9 @@ Journal, Distribution, Kiosk.
   older than a minute or so, its age in its title, a click reading
   again: on a long range Auto rereads only every half hour.  For
   smartclock's displays too.
-- A tempcomp filter for chronyd, a separate program, not chronymon,
-  which only observes: [docs/tempcomp-filter.md](docs/tempcomp-filter.md).
+- A tempcomp filter for chronyd is
+  [chrony-tempcomp](https://github.com/charlieh0tel/chrony-tempcomp)'s,
+  a separate program: chronymon only observes.
 
 ### The receiver, decided 2026-10-30
 
