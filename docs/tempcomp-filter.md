@@ -31,7 +31,12 @@ sensor through a low-pass, time constant tau:
 
     tau dTc/dt = T - Tc
 
-The sensor also has its own noise.
+The sensor also has its own noise, and is discretized: Linux reports
+millidegrees Celsius, but each sensor resolves only its own step,
+which differs from sensor to sensor.  Measured: tare's coretemp steps
+by 1 °C, chronos's thermal zone by about 0.454 °C.  A temperature near
+a step's edge flips the reading between two levels, and every flip is
+a jump in the compensation.
 
 Given the raw reading, tempcomp compensates for T, while the clock
 drifts with Tc.  The error it puts into the frequency is
@@ -40,7 +45,7 @@ drifts with Tc.  The error it puts into the frequency is
 
 For changes slower than tau, Tc keeps up and e is small.  For faster
 ones, e is nearly the whole change times k1: a load spike that heats a
-CPU 30 C in a minute is compensated in full at the next reading,
+CPU 30 °C in a minute is compensated in full at the next reading,
 while the crystal has barely warmed, then compensated back when the
 load ends.  In the frequency domain the error is the high-pass part of
 T: |e| / |k1 T| = w tau / sqrt(1 + (w tau)^2).  The sensor's jitter
@@ -56,7 +61,7 @@ spikes give errors of up to 3 ppm.
 The fit suffers too.  Regressing the frequency on the raw temperature
 is an errors-in-variables problem: the fast swings and jitter in T
 that the crystal never feels dilute the slope toward zero.  On chronos
-the raw fit's slope is -0.127 ppm/C against -0.19 through the lag; a
+the raw fit's slope is -0.127 ppm/°C against -0.19 ppm/°C through the lag; a
 line fitted on raw readings both under-corrects the slow drift and
 injects the fast noise.
 
@@ -106,8 +111,8 @@ sensor through a lag, and that sensors are noisy:
 
 | Host | Sensor | Lag | Held-out RMSE, no lag / lag, ppm |
 |---|---|---|---|
-| tare | CPU coretemp, NTP only | 30–90 min | 0.77 / 0.26 |
-| chronos | thermal zone, PPS, ±1 C jitter | 30 min | 0.11 / 0.023 |
+| tare | CPU coretemp, 1 °C steps, NTP only | 30–90 min | 0.77 / 0.26 |
+| chronos | thermal zone, 0.454 °C steps, PPS | 30 min | 0.11 / 0.023 |
 | draws | board sensor, PPS | 10 min | 0.029 / 0.020 |
 | apu-0 | SoC, at the crystal | ~0 | 0.034 / 0.032 |
 
