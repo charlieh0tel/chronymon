@@ -222,14 +222,16 @@ impl Collector {
     /// Read chronyd's configuration again, as chronyd does on starting,
     /// and record its refclocks' locks.  One that cannot be read leaves
     /// what was read last, and the locks recorded, as they were: a
-    /// configuration taken for empty would unpair all history.
+    /// configuration taken for empty would unpair all history.  Read
+    /// from nowhere, its `tempcomp` line is forgotten: one recorded by
+    /// an earlier run, from a file, may no longer be chronyd's.
     fn reread_config(
         &mut self,
         batch: &Batch<'_>,
         at: Timestamp,
     ) -> chronymon_log::error::Result<()> {
         let ConfigSource::File(path) = &self.chrony_config else {
-            return Ok(());
+            return batch.forget_tempcomp();
         };
         match Config::read(path) {
             Ok(config) => {

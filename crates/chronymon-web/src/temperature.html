@@ -214,6 +214,19 @@ function drawScatter(got) {
     `, robust least squares${sinceChange}:<br>${named.join("<br>")}`);
 }
 
+// The scatter, its caption and its fit gone, the dialog too: none of
+// another range's readings left to fit from.
+function clearScatter() {
+  scatterChart?.destroy();
+  scatterChart = null;
+  $("scatter").innerHTML = "";
+  showHtml($("figures"), "");
+  scatterFrom = null;
+  fitFrom = null;
+  $("fit").hidden = true;
+  $("fit-dialog").close();
+}
+
 async function load(signal) {
   // The status says which tempcomp line the fit replaces; read here if
   // the strip has not yet.
@@ -222,10 +235,7 @@ async function load(signal) {
   const probe = await ask(`/api/history?table=${TEMPCOMP}&columns=temperature&points=16`, signal);
   if (probe.first == null) {
     clearStack(stack, NOTHING);
-    scatterChart?.destroy();
-    scatterChart = null;
-    $("scatter").innerHTML = "";
-    showHtml($("figures"), "");
+    clearScatter();
     return;
   }
   if (!haveUplot) {
@@ -302,10 +312,7 @@ content({
   floor: 30,
   clear(why) {
     clearStack(stack, why);
-    scatterChart?.destroy();
-    scatterChart = null;
-    $("scatter").innerHTML = "";
-    showHtml($("figures"), "");
+    clearScatter();
   },
   load,
 });

@@ -271,8 +271,9 @@ Journal, Distribution, Kiosk.
   reports the frequency with tempcomp's compensation undone
   (`LCL_ReadAbsoluteFrequency`), so the scatter and the fit take it
   back out as chronyd put it in, whatever the coefficients.  Readings from before the
-  sensor last changed are not (`meta` `tempcomp_since`, journaled
-  `tempcomp_changed`).  No settling time after a restart: chronyd's
+  sensor last changed, or before the first line recorded, are not
+  (`meta` `tempcomp_since`, journaled `tempcomp_changed`): older
+  readings' sensor is not known.  No settling time after a restart: chronyd's
   first estimates are rough for a few minutes, a little noise in a
   fit of days.  The fits are robust (Huber, reweighted least squares):
   an NTP-only host's frequency wanders and steps.  Fitted from the

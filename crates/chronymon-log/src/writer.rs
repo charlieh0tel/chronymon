@@ -331,9 +331,13 @@ impl Batch<'_> {
     /// configuration says at `at`: a change from the one recorded
     /// before journaled, and a change of sensor recorded as when the
     /// readings start being this one's.  The first one recorded is no
-    /// change.
+    /// change, but the readings start then too: those before, read from
+    /// tempcomp.log, may be another sensor's.
     pub fn tempcomp(&self, at: Timestamp, tempcomp: Option<&Tempcomp>) -> Result<()> {
         let recorded = self.meta(TEMPCOMP)?;
+        if recorded.is_none() && tempcomp.is_some() {
+            self.set_meta(TEMPCOMP_SINCE, &to_stored(at)?.to_string())?;
+        }
         let before = recorded.as_deref().and_then(Tempcomp::parse);
         if recorded.is_some() && before.as_ref() != tempcomp {
             let line =
@@ -356,6 +360,15 @@ impl Batch<'_> {
             "INSERT INTO poll_interval (at, seconds) VALUES (?1, ?2)",
             params![to_stored(at)?, seconds],
         )?;
+        Ok(())
+    }
+
+    /// Forget chronyd's `tempcomp` line, its configuration not read: not
+    /// that it has none, which would journal a change, but not known.
+    /// The next one recorded is the first.
+    pub fn forget_tempcomp(&self) -> Result<()> {
+        self.transaction
+            .execute("DELETE FROM meta WHERE key = ?1", params![TEMPCOMP])?;
         Ok(())
     }
 

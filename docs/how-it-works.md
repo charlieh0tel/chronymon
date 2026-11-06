@@ -307,10 +307,14 @@ In each, T0 is the mean temperature, k0 0, and k1 and k2 fitted, in
 the sensor's own units (millidegrees, for a Linux sensor).  The sensor
 and interval are the ones chronymond read from chronyd's
 configuration; without a `tempcomp` line read there, as with
-`--chrony-config none`, there is no fit.  A change of the `tempcomp`
+`--chrony-config none`, there is no fit, and a line an earlier run
+read is forgotten.  A change of the `tempcomp`
 line, read when chronyd starts, is journaled (`tempcomp_changed`, the
 old line and the new), and a change of its sensor starts the fit's
-readings again: those before are another sensor's.  On Ubuntu, AppArmor lets chronyd read a sensor only
+readings again: those before are another sensor's.  So does the first
+line recorded: readings before it, from tempcomp.log, may be another
+sensor's.  A failed or empty read of a range leaves no fit of the one
+before.  On Ubuntu, AppArmor lets chronyd read a sensor only
 by a `hwmon*/temp*_input` path.
 
 ## Events

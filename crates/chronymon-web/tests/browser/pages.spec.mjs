@@ -839,6 +839,18 @@ test("Temperature: Copy copies over plain HTTP, the clipboard API refused", asyn
     .toBe(`${await copiedHeader(page)}\n\n${linear}`);
 });
 
+test("Temperature: a range that fails to read leaves no fit of the one before", async ({ page }) => {
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#fit")).toBeVisible();
+  await page.route("**/api/history?*", (route) => route.abort());
+  await page.locator('#ranges button[data-last="3600"]').click();
+  await expect(page.locator("#fit")).toBeHidden();
+  await expect(page.locator("#scatter .uplot")).toHaveCount(0);
+  // The reads failed are the test's, not the page's.
+  const errors = pageErrors.get(test.info().testId);
+  errors.splice(0, errors.length, ...errors.filter((e) => !/api\/history.*ERR_FAILED|Failed to load resource/.test(e)));
+});
+
 test("Temperature: no fit without a tempcomp line chronymond read", async ({ page }) => {
   await page.route("**/api/status", async (route) => {
     const response = await route.fetch();
