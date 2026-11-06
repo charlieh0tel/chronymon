@@ -1416,27 +1416,6 @@ function polynomial(pairs, degree, weights = null) {
   return c.map((v, n) => v / scale ** n);
 }
 
-// Each value's bucket on the grid of `got`, a read of `points` buckets:
-// the server reports a bucket's mean time, which differs between
-// tables, so two reads pair up only by bucket.
-const bucketOf = (got, points) => (t) => Math.floor(((t - got.from) * points) / (got.to - got.from + 1e-9));
-
-// Pairs `{ at, x, y, index }` of the buckets two reads on one grid both
-// have, `index` the bucket's in `xs`'s read, for its other columns.
-function pairsOn(xs, ys, points) {
-  const xBucket = bucketOf(xs.read, points), yBucket = bucketOf(ys.read, points);
-  const byBucket = new Map();
-  xs.read.at.forEach((t, i) => {
-    if (xs.values[i] != null) byBucket.set(xBucket(t), { at: t, x: xs.values[i], index: i });
-  });
-  const pairs = [];
-  ys.read.at.forEach((t, i) => {
-    const x = byBucket.get(yBucket(t));
-    if (x && ys.values[i] != null) pairs.push({ ...x, y: ys.values[i] });
-  });
-  return pairs;
-}
-
 // A scatter series drawn as a dot per point, for uPlot's `paths`: its
 // mode 2 joins a series' points with a line unless given its own.
 const DOT_RADIUS = 2;
@@ -1469,7 +1448,9 @@ const CURVE_OUTLINE = "#1d2026";
 // fitted y at an x; answers the chart.
 function scatter(host, pairs, x, y, width, fits) {
   const dx = pairs.map((p) => p.x), dy = pairs.map((p) => p.y);
-  const lo = Math.min(...dx), hi = Math.max(...dx);
+  // Not spread into Math.min: a range's updates can be more than a
+  // call takes arguments.
+  const lo = dx.reduce((m, v) => Math.min(m, v), Infinity), hi = dx.reduce((m, v) => Math.max(m, v), -Infinity);
   // Each fit drawn through samples across the temperatures seen.
   const xs = Array.from({ length: CURVE_SAMPLES }, (_, n) => lo + (hi - lo) * n / (CURVE_SAMPLES - 1));
   return new uPlot({

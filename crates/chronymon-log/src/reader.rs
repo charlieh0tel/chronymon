@@ -428,6 +428,56 @@ impl Window {
 /// A row's numeric columns, by name.
 pub type Values = Vec<(&'static str, f64)>;
 
+/// What a tempcomp fit reads, row by row, each of a range's rows or
+/// every so many of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TempcompReadings {
+    /// tempcomp.log's, oldest first.
+    pub temperature: Every<TempcompReading>,
+    /// chronyd's clock updates, oldest first.
+    pub frequency: Every<ClockUpdate>,
+}
+
+/// Rows, every `stride`th of a range's: 1 for all of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Every<T> {
+    pub rows: Vec<T>,
+    pub stride: usize,
+}
+
+/// A line of tempcomp.log.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TempcompReading {
+    /// Unix seconds.
+    pub at: f64,
+    /// As the sensor reads, in its own units.
+    pub temperature: f64,
+    /// The compensation chronyd applied from it, ppm.
+    pub compensation: f64,
+}
+
+/// A clock update of chronyd's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockUpdate {
+    /// Its reference time, unix seconds.
+    pub at: f64,
+    /// chronyd's frequency, ppm, as it reports it: tempcomp's
+    /// compensation not taken out.
+    pub frequency: f64,
+    /// Whether its reference was a PPS: a refclock whose raw samples in
+    /// the range are pulses.
+    pub pps: bool,
+}
+
+/// `rows` kept to about `limit`, every so many.
+fn every<T>(rows: Vec<T>, limit: usize) -> Every<T> {
+    let stride = rows.len().div_ceil(limit.max(1)).max(1);
+    Every {
+        rows: rows.into_iter().step_by(stride).collect(),
+        stride,
+    }
+}
+
 /// The `status` row: the daemon's last poll.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
@@ -674,18 +724,109 @@ impl Reader {
             .collect())
     }
 
-    /// Whether a refclock's latest raw sample in `refclocks.log`, by its
-    /// reference ID as text, was a pulse, a PPS's; `None` without one.
-    pub fn refclock_pulsed(&self, reference: &str) -> Result<Option<bool>> {
-        Ok(self
-            .connection
-            .query_row(
-                "SELECT pulse FROM refclock_sample WHERE reference = ?1 AND pulse IS NOT NULL \
-                 ORDER BY at DESC LIMIT 1",
-                params![reference],
-                |row| row.get(0),
-            )
-            .optional()?)
+    /// What a tempcomp fit needs from `from` to `to`, unix seconds, row by
+    /// row, not bucketed: a bucket's mean temperature is not a reading,
+    /// and a temperature and a frequency in one bucket can be most of it
+    /// apart.  The temperatures kept to about `temperatures` rows and the
+    /// updates to about `updates`, by taking every so many.
+    pub fn tempcomp_readings(
+        &self,
+        from: f64,
+        to: f64,
+        temperatures: usize,
+        updates: usize,
+    ) -> Result<TempcompReadings> {
+        let (from, to, _) = Window {
+            from,
+            to,
+            points: MIN_POINTS,
+        }
+        .stored();
+        let mut temperature = Vec::new();
+        if self.exists(Table::TempcompSample)? {
+            let mut statement = self.connection.prepare(
+                "SELECT at, temperature, compensation FROM tempcomp_sample
+                 WHERE at >= ?1 AND at <= ?2 ORDER BY at",
+            )?;
+            temperature = statement
+                .query_map(params![from, to], |row| {
+                    Ok(TempcompReading {
+                        at: row.get::<_, i64>(0)? as f64 / NANOSECONDS,
+                        temperature: row.get(1)?,
+                        compensation: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+        // The protocol's updates where the daemon was recording, and
+        // tracking.log's where it was not, as `filled` draws them.
+        let recording = self.recording()?;
+        let mut found: Vec<(i64, f64, Option<String>)> = Vec::new();
+        if self.exists(Table::Tracking)? {
+            let mut statement = self.connection.prepare(
+                "SELECT reference_time, frequency, reference_id FROM tracking
+                 WHERE reference_time >= ?1 AND reference_time <= ?2",
+            )?;
+            let rows = statement.query_map(params![from, to], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, u32>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (at, frequency, reference_id) = row?;
+                if recording.contains(at as f64) {
+                    found.push((at, frequency, ReferenceId(reference_id).text()));
+                }
+            }
+        }
+        if self.exists(Table::LogTracking)? {
+            let mut statement = self.connection.prepare(
+                "SELECT at, frequency, reference FROM log_tracking WHERE at >= ?1 AND at <= ?2",
+            )?;
+            let rows = statement.query_map(params![from, to], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (at, frequency, reference) = row?;
+                if !recording.contains(at as f64) {
+                    found.push((at, frequency, Some(reference)));
+                }
+            }
+        }
+        found.sort_by_key(|(at, _, _)| *at);
+        // The references whose raw samples in the range are pulses: a
+        // PPS, steering the clock while it is the reference.
+        let mut pulsed: HashMap<String, bool> = HashMap::new();
+        for reference in found.iter().filter_map(|(_, _, r)| r.as_deref()) {
+            if !pulsed.contains_key(reference) {
+                let pulses = self.exists(Table::RefclockSample)?
+                    && self.connection.query_row(
+                        "SELECT EXISTS (SELECT 1 FROM refclock_sample
+                           WHERE reference = ?1 AND at >= ?2 AND at <= ?3 AND pulse = 1)",
+                        params![reference, from, to],
+                        |row| row.get(0),
+                    )?;
+                pulsed.insert(reference.to_owned(), pulses);
+            }
+        }
+        let frequency = found
+            .into_iter()
+            .map(|(at, frequency, reference)| ClockUpdate {
+                at: at as f64 / NANOSECONDS,
+                frequency,
+                pps: reference.is_some_and(|r| pulsed[&r]),
+            })
+            .collect();
+        Ok(TempcompReadings {
+            temperature: every(temperature, temperatures),
+            frequency: every(frequency, updates),
+        })
     }
 
     /// Why the daemon's last read of chronyd's configuration failed, if
@@ -1902,6 +2043,7 @@ mod tests {
     use super::*;
     use crate::chrony_log::Line;
     use crate::chrony_log::RefclockLine;
+    use crate::chrony_log::TempcompLine;
     use crate::chrony_log::TrackingLine;
     use crate::writer::ChronydState;
     use crate::writer::Log;
@@ -2261,36 +2403,65 @@ mod tests {
     }
 
     #[test]
-    fn a_refclock_pulsed_by_its_latest_raw_sample() {
-        let mut db = Database::new("pulsed");
+    fn tempcomp_readings_row_by_row_each_update_said_pps_or_not() {
+        let mut db = Database::new("tempcomp-readings");
         db.log
             .write(|batch| {
-                // PPS's pulses, then a filtered sample; NMEA's once a
-                // pulse, then not.
-                for (second, reference, pulse) in [
-                    (0, "PPS", Some(true)),
-                    (1, "PPS", None),
-                    (0, "NMEA", Some(true)),
-                    (1, "NMEA", Some(false)),
-                ] {
-                    batch.log_line(&Line::Refclock(RefclockLine {
+                // The daemon recording for the first 50 s, an NTP server
+                // its reference; the log from then on, a PPS's.
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.event(at(49), EventKind::DaemonStop, None, None)?;
+                for second in 0..50 {
+                    batch.tracking(at(second), &tracking(second, 1.0))?;
+                }
+                for second in 40..100 {
+                    batch.log_line(&logged(second, 2.0))?;
+                }
+                for second in (0..100).step_by(10) {
+                    batch.log_line(&Line::Tempcomp(TempcompLine {
                         at: at(second),
-                        reference: reference.to_owned(),
-                        driver_polls: pulse.map(|_| 1),
-                        leap: 'N',
-                        pulse,
-                        raw_offset: pulse.map(|_| 0.0),
-                        cooked_offset: 0.0,
-                        dispersion: 1e-6,
+                        temperature: 40_000.0 + second as f64,
+                        compensation: 0.1,
                     }))?;
+                    for (reference, pulse) in [("PPS", Some(true)), ("NMEA", Some(false))] {
+                        batch.log_line(&Line::Refclock(RefclockLine {
+                            at: at(second),
+                            reference: reference.to_owned(),
+                            driver_polls: Some(1),
+                            leap: 'N',
+                            pulse,
+                            raw_offset: Some(0.0),
+                            cooked_offset: 0.0,
+                            dispersion: 1e-6,
+                        }))?;
+                    }
                 }
                 Ok(())
             })
             .expect("written");
         let reader = db.reader();
-        assert_eq!(reader.refclock_pulsed("PPS").expect("a read"), Some(true));
-        assert_eq!(reader.refclock_pulsed("NMEA").expect("a read"), Some(false));
-        assert_eq!(reader.refclock_pulsed("GPS").expect("a read"), None);
+        let (from, to) = (START as f64, (START + 99) as f64);
+        let read = reader
+            .tempcomp_readings(from, to, 1000, 1000)
+            .expect("a read");
+        assert_eq!(read.temperature.stride, 1);
+        assert_eq!(read.temperature.rows.len(), 10);
+        assert_eq!(read.temperature.rows[3].temperature, 40_030.0);
+        assert_eq!(read.temperature.rows[3].at, (START + 30) as f64);
+        let updates = &read.frequency.rows;
+        assert_eq!(updates.len(), 100);
+        assert!(updates.windows(2).all(|w| w[0].at < w[1].at));
+        // The protocol's while recording, an NTP server's; then the log's,
+        // the PPS's.
+        assert!(updates[..50].iter().all(|u| u.frequency == 1.0 && !u.pps));
+        assert!(updates[50..].iter().all(|u| u.frequency == 2.0 && u.pps));
+        // Kept to about a limit, every so many.
+        let read = reader
+            .tempcomp_readings(from, to, 1000, 30)
+            .expect("a read");
+        assert_eq!(read.frequency.stride, 4);
+        assert_eq!(read.frequency.rows.len(), 25);
+        assert_eq!(read.temperature.stride, 1);
     }
 
     #[test]
