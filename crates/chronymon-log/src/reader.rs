@@ -674,6 +674,20 @@ impl Reader {
             .collect())
     }
 
+    /// Whether a refclock's latest raw sample in `refclocks.log`, by its
+    /// reference ID as text, was a pulse, a PPS's; `None` without one.
+    pub fn refclock_pulsed(&self, reference: &str) -> Result<Option<bool>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT pulse FROM refclock_sample WHERE reference = ?1 AND pulse IS NOT NULL \
+                 ORDER BY at DESC LIMIT 1",
+                params![reference],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// Why the daemon's last read of chronyd's configuration failed, if
     /// it did.
     pub fn chrony_config_error(&self) -> Result<Option<String>> {
@@ -2244,6 +2258,39 @@ mod tests {
                 .spans
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_refclock_pulsed_by_its_latest_raw_sample() {
+        let mut db = Database::new("pulsed");
+        db.log
+            .write(|batch| {
+                // PPS's pulses, then a filtered sample; NMEA's once a
+                // pulse, then not.
+                for (second, reference, pulse) in [
+                    (0, "PPS", Some(true)),
+                    (1, "PPS", None),
+                    (0, "NMEA", Some(true)),
+                    (1, "NMEA", Some(false)),
+                ] {
+                    batch.log_line(&Line::Refclock(RefclockLine {
+                        at: at(second),
+                        reference: reference.to_owned(),
+                        driver_polls: pulse.map(|_| 1),
+                        leap: 'N',
+                        pulse,
+                        raw_offset: pulse.map(|_| 0.0),
+                        cooked_offset: 0.0,
+                        dispersion: 1e-6,
+                    }))?;
+                }
+                Ok(())
+            })
+            .expect("written");
+        let reader = db.reader();
+        assert_eq!(reader.refclock_pulsed("PPS").expect("a read"), Some(true));
+        assert_eq!(reader.refclock_pulsed("NMEA").expect("a read"), Some(false));
+        assert_eq!(reader.refclock_pulsed("GPS").expect("a read"), None);
     }
 
     #[test]

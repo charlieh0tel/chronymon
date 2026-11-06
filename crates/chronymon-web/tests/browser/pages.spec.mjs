@@ -855,7 +855,7 @@ const SYNTHETIC_SLOPE = 8.75e-5;
 const SYNTHETIC_MEAN = 41000;
 
 // The Temperature page's readings with the compensation zeroed, the
-// temperature made over by `reshape(values)`, and the frequency by
+// temperature made over by `reshape(values, at)`, and the frequency by
 // `frequency(values, at)` from it, on the same grid.
 async function frequencyFromTemperature(page, frequency, reshape = (values) => values) {
   let temperature = null;
@@ -868,7 +868,7 @@ async function frequencyFromTemperature(page, frequency, reshape = (values) => v
         if (plot.column === "compensation") plot.mean = plot.mean.map((v) => (v == null ? v : 0));
       }
       const read = got.plots.find((p) => p.column === "temperature");
-      read.mean = reshape(read.mean);
+      read.mean = reshape(read.mean, got.at);
       temperature = { at: got.at, values: read.mean };
     } else if (table === "tracking" && got.plots && temperature) {
       const made = frequency(temperature.values, temperature.at);
@@ -884,8 +884,8 @@ async function frequencyFromTemperature(page, frequency, reshape = (values) => v
 }
 
 test("Temperature: the fitted lag is found, and the slope through it", async ({ page }) => {
-  // The clock following its temperature through a 20-minute lag.
-  const LAG = 1200;
+  // The clock following its temperature through a 10-minute lag.
+  const LAG = 600;
   await frequencyFromTemperature(page, (values, at) => {
     let filtered = null, last = null;
     return values.map((v, i) => {
@@ -897,16 +897,16 @@ test("Temperature: the fitted lag is found, and the slope through it", async ({ 
   });
   await page.goto("/temperature?last=172800&lag");
   await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("lagged 20 min");
+  await expect(page.locator("#figures")).toContainText("lagged 10 min");
   await page.locator("#fit").click();
   const [linear] = await fittedLines(page);
   expect(Number(linear[5])).toBeCloseTo(-SYNTHETIC_SLOPE, 6);
   // The comment says the line needs the temperature lagged the same.
-  await expect(page.locator("#fits pre.fitted")).toContainText("lagged 20 min");
+  await expect(page.locator("#fits pre.fitted")).toContainText("lagged 10 min");
 });
 
 test("Temperature: without the lag, a clock that lags fits worse", async ({ page }) => {
-  const LAG = 1200;
+  const LAG = 600;
   const r2 = async () => Number((await page.locator("#figures").textContent()).match(/R² (-?\d\.\d{3})/)[1]);
   await frequencyFromTemperature(page, (values, at) => {
     let filtered = null, last = null;
@@ -944,6 +944,39 @@ test("Temperature: a step of the sensor the clock follows at once fits no lag", 
   await expect(page.locator("#figures")).toContainText("No lag");
   await page.locator("#fit").click();
   await expect(page.locator("#fits pre.fitted")).not.toContainText("lagged");
+});
+
+test("Temperature: a clock on a curve, following at once, fits no lag", async ({ page }) => {
+  // The day warming fast and cooling slowly, and the clock on a strong
+  // curve of it at once, with noise of its own: judged by a line, a lag
+  // bends the curve toward one.
+  const DAY = 86400;
+  const SWING = 4000;
+  const BEND = 3e-8;
+  const NOISE = 0.005;
+  let seed = 1;
+  const noise = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed / 2147483647 - 0.5) * 2 * NOISE;
+  };
+  await frequencyFromTemperature(page,
+    (values) => values.map((v) => (v == null ? null : BEND * (v - SYNTHETIC_MEAN) ** 2 + noise())),
+    (values, at) => values.map((v, i) => {
+      if (v == null) return null;
+      const phase = (2 * Math.PI * at[i]) / DAY;
+      return SYNTHETIC_MEAN + SWING * (Math.sin(phase) + Math.sin(2 * phase) / 2);
+    }));
+  await page.goto("/temperature?last=172800&lag");
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await expect(page.locator("#figures")).toContainText("No lag");
+});
+
+test("Temperature: no lag fitted without a PPS", async ({ page }) => {
+  await page.goto(`${NTP_HOST}/temperature?last=172800&lag`);
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await expect(page.locator("#lag")).toBeDisabled();
+  await expect(page.locator("#lag")).not.toBeChecked();
+  await expect(page.locator("#figures")).not.toContainText("lag");
 });
 
 test("Temperature: the fit is robust, a few wild readings pulling it little", async ({ page }) => {

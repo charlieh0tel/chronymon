@@ -267,16 +267,23 @@ line, an NTP source's wander or step, pulls it less than it would
 plain least squares.
 
 A sensor that swings with load, a CPU's, leads the crystal, which
-warms slowly, and chronyd's frequency estimate lags too.  Fit the
-sensor's lag filters the temperature by a first-order lag and fits
-that.  Its time constant, from none to four hours, tried only in a
-range ten times as long, is the one whose line best predicts readings
-left out of its fit: the range in six stretches, each left out in
-turn, an hour either side left out with it.  The caption says how far
-those readings were missed with the lag and with none; where none is
-best, it says so and fits none.  chronyd
-compensates each reading as it is, so a line fitted with a lag suits
-only a sensor file filtered by that lag, which the dialog says.
+warms more slowly.  Fit the sensor's lag filters the temperature by a
+first-order lag and fits that.  Its time constant, none, 5 or 10 min,
+tried only in a range ten times as long, is the shortest whose
+quadratic predicts readings left out of its fit no worse than the
+best, within the noise: the range in six stretches, each left out in
+turn, an hour either side left out with it, and the stretches' mean
+square misses compared, the same stretches for each lag.  No longer
+lag is tried: a crystal follows a sensor on its board within minutes,
+and a longer lag fitted is chronyd's estimate trailing the clock, or
+a curve the fit lacks.  For the same reason the checkbox is off
+without a PPS, a refclock whose latest raw sample in `refclocks.log`
+is a pulse (`/api/status`'s `has_pps`): NTP's or a receiver's
+messages' frequency trails the clock by more than the crystal does.  The caption says how
+far those readings were missed with the lag and with none; where none
+is chosen, it says so and fits none.  chronyd compensates each reading
+as it is, so a line fitted with a lag suits only a sensor file
+filtered by that lag, which the dialog says.
 
 Once a range holds a good spread of temperatures, the page's Fit
 tempcomp opens a dialog of that range's fit, with Copy, and a block
