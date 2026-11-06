@@ -285,13 +285,16 @@ Journal, Distribution, Kiosk.
   2 min by blocked cross-validation (six contiguous stretches held out
   in turn, an hour's margin), all judged on the same PPS-steered
   updates by the quadratic, the shortest within a standard error of
-  the best, and only where it beats the same smoothing without delay,
-  which a sensor's coarse steps alone favor.  Capped at 2 min, warned
+  the best, and only where it beats the same filter read its lag later
+  (as much smoothing, no delay), which a sensor's coarse steps alone
+  favor.  PPS-steered: the reference a refclock whose latest raw
+  sample, within 10 min, was a pulse.  Capped at 2 min, warned
   of past 1: a sensor further behind is a poor one, and a longer lag
   is chronyd's estimate or a misfit, not the crystal.  Fitted from the
   readings, not buckets (`/api/tempcomp`): a bucket's mean bends a
   curve, and a bucket's temperature and frequency can be most of it
-  apart.  Judged on the
+  apart.  The server takes out the compensation in force at each
+  update's read-out, dropping updates in the second of a change.  Judged on the
   readings it was fitted to, a lag wins where it should not: a step
   of a sensor the frequency follows at once, smeared into a trail,
   barely moves a robust spread, which picked 20 min on apu-0, whose

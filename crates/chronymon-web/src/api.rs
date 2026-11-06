@@ -345,8 +345,9 @@ const TEMPCOMP_TEMPERATURES: usize = 100_000;
 const TEMPCOMP_UPDATES: usize = 20_000;
 
 /// `/api/tempcomp`: tempcomp.log's rows and chronyd's clock updates
-/// over the range, row by row, each update with whether a PPS was its
-/// reference, for the Temperature page's fit.
+/// over the range, row by row, each update with the clock's own
+/// frequency and whether a PPS steered it, for the Temperature page's
+/// fit.
 pub(crate) fn tempcomp(path: &Path, query: &str) -> Result<Value> {
     let asked = asked(query, MIN_POINTS)?;
     read(path, |reader| {
@@ -357,20 +358,19 @@ pub(crate) fn tempcomp(path: &Path, query: &str) -> Result<Value> {
             TEMPCOMP_TEMPERATURES,
             TEMPCOMP_UPDATES,
         )?;
-        let (temperature, frequency) = (&read.temperature, &read.frequency);
+        let (temperature, updates) = (&read.temperature, &read.updates);
         Ok(with(
             json!({
                 "temperature": {
                     "at": temperature.rows.iter().map(|r| r.at).collect::<Vec<_>>(),
                     "temperature": temperature.rows.iter().map(|r| r.temperature).collect::<Vec<_>>(),
-                    "compensation": temperature.rows.iter().map(|r| r.compensation).collect::<Vec<_>>(),
                     "stride": temperature.stride,
                 },
-                "frequency": {
-                    "at": frequency.rows.iter().map(|r| r.at).collect::<Vec<_>>(),
-                    "frequency": frequency.rows.iter().map(|r| r.frequency).collect::<Vec<_>>(),
-                    "pps": frequency.rows.iter().map(|r| r.pps).collect::<Vec<_>>(),
-                    "stride": frequency.stride,
+                "updates": {
+                    "at": updates.rows.iter().map(|r| r.at).collect::<Vec<_>>(),
+                    "frequency": updates.rows.iter().map(|r| r.frequency).collect::<Vec<_>>(),
+                    "pps": updates.rows.iter().map(|r| r.pps).collect::<Vec<_>>(),
+                    "stride": updates.stride,
                 },
             }),
             bounds,

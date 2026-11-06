@@ -99,6 +99,10 @@ const DEFAULT_HOURS: i64 = 48;
 /// Seconds between clock updates, and between each server's samples.
 const UPDATE_EVERY: i64 = 16;
 const POLL_EVERY: i64 = 64;
+/// Seconds after each tempcomp reading its clock update is logged and
+/// read out: a later second than the reading's, as chronyd's own come,
+/// so the compensation in its frequency is known to be that reading's.
+const READ_AFTER: i64 = 5;
 /// A day, for the temperature's cycle.
 const DAY: f64 = 86_400.0;
 /// When, as a fraction of the span, chronyd is down and for how long,
@@ -527,7 +531,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // already corrects.
             let frequency = frequency_at(temperature_at(phase), &mut noise) + compensation;
             if updated && second >= slow {
-                batch.log_line(&logged(second, frequency, &mut noise))?;
+                batch.log_line(&logged(second + READ_AFTER, frequency, &mut noise))?;
             }
             batch.log_line(&Line::Tempcomp(TempcompLine {
                 at: when,
@@ -651,7 +655,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 batch.reference_change(when, &on_local, &tracking)?;
             }
             if updated && synchronized {
-                batch.tracking(when, &tracking)?;
+                batch.tracking(at(second + READ_AFTER).expect("in range"), &tracking)?;
                 batch.tracking_report(when, &tracking)?;
             }
             for (n, f) in feeds.iter().enumerate() {
