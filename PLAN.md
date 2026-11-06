@@ -282,9 +282,12 @@ Journal, Distribution, Kiosk.
   a lagged line is right only for a sensor file filtered the same
   way, and fitting it with the lag on its own would hand out a line
   that adds the sensor's swings to the compensation.  The lag is the
-  time constant of a first-order filter, picked from a fixed set by
-  blocked cross-validation (six contiguous stretches held out in turn,
-  an hour's margin), all judged on the same readings.  Judged on the
+  time constant of a first-order filter, picked from none, 5 and
+  10 min by blocked cross-validation (six contiguous stretches held
+  out in turn, an hour's margin), all judged on the same readings by
+  the quadratic, the shortest within a standard error of the best.
+  Capped at 10 min, and off without a PPS: a longer lag is chronyd's
+  estimate or a misfit, not the crystal.  Judged on the
   readings it was fitted to, a lag wins where it should not: a step
   of a sensor the frequency follows at once, smeared into a trail,
   barely moves a robust spread, which picked 20 min on apu-0, whose
