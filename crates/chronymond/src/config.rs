@@ -531,6 +531,17 @@ mod tests {
         // Hidden from glob(3), as from chronyd.
         fs::write(conf_d.join(".hidden.conf"), "makestep 9 9\n").expect("written");
         assert_eq!(read(&main).make_step, Some(FIRST_THREE));
+        // An editor's backups, not .conf files, not read, as chronyd
+        // reads none of them.
+        for backup in [
+            "late.conf~",
+            "#late.conf#",
+            "late.conf.bak",
+            "late.conf.dpkg-old",
+        ] {
+            fs::write(conf_d.join(backup), "makestep 9 9\n").expect("written");
+        }
+        assert_eq!(read(&main).make_step, Some(FIRST_THREE));
         fs::remove_dir_all(&directory).expect("removed");
     }
 
