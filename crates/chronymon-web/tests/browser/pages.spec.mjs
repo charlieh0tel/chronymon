@@ -782,21 +782,14 @@ test("Temperature: the fit is a dialog over the page, closed by Close, Escape or
   }
 });
 
-test("Temperature: fitted only since the sensor last changed", async ({ page }) => {
-  // A sensor changed a day before the run's end.
+test("Temperature: fitted only since the sensor last changed, and said", async ({ page }) => {
+  // The cut itself is the server's, tested there.
   const since = Math.floor(Date.now() / 1000) - 86400;
-  await page.route("**/api/status", async (route) => {
-    const response = await route.fetch();
-    const status = await response.json();
-    return route.fulfill({ response, json: { ...status, tempcomp: { ...status.tempcomp, since } } });
+  await tempcompFit(page, (got) => {
+    got.since = since;
   });
   await page.goto("/temperature?last=172800");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  // The fit, made: no read running is so too before the first starts.
-  await page.waitForFunction(() => fitFrom != null);
-  const fitted = await page.evaluate(() => fitFrom.pairs.map((p) => p.at));
-  expect(fitted.length).toBeGreaterThan(MIN_FITTED);
-  expect(Math.min(...fitted)).toBeGreaterThanOrEqual(since);
+  await expect(page.locator("#figures")).toContainText("since the sensor changed");
 });
 
 test("Temperature: a fit's Copy copies it with what it was fitted from; text selects, and a drag out stays open", async ({ page, context }) => {
@@ -856,253 +849,22 @@ test("Temperature: no fit without a tempcomp line chronymond read", async ({ pag
   await expect(page.locator("#fit")).toBeHidden();
 });
 
-const SYNTHETIC_MEAN = 41000;
-
-// The Temperature page's readings, `/api/tempcomp`'s, made over by
-// `change(got)`.
-const tempcompReadings = (page, change) => page.route("**/api/tempcomp?*", async (route) => {
+// The Temperature page's fit, `/api/tempcomp/fit`'s, made over by
+// `change(got)`: the fitting itself is the server's, tested there.
+const tempcompFit = (page, change) => page.route("**/api/tempcomp/fit?*", async (route) => {
   const response = await route.fetch();
   const got = await response.json();
   change(got);
   return route.fulfill({ response, json: got });
 });
 
-// Seconds after each temperature reading its clock update comes.
-const UPDATE_AFTER = 1;
-
-// Clock updates, a PPS's, just after each of `at`'s readings, the
-// clock's own frequency `frequency`.
-const updatesAfter = (at, frequency) => ({
-  at: at.map((t) => t + UPDATE_AFTER),
-  frequency,
-  pps: at.map(() => true),
-  stride: 1,
-});
-
-// The Temperature page's readings with the temperature made over by
-// `reshape(values, at)`, and the frequency by `frequency(values, at)`
-// from it.
-const frequencyFromTemperature = (page, frequency, reshape = (values) => values) =>
-  tempcompReadings(page, (got) => {
-    const t = got.temperature;
-    t.temperature = reshape(t.temperature, t.at);
-    got.updates = updatesAfter(t.at, frequency(t.temperature, t.at));
-  });
-
-// A clock following a sensor through a first-order lag of `lag`
-// seconds, as `values` read at `at`.
-const following = (values, at, lag) => {
-  let filtered = null, last = null;
-  return values.map((v, i) => {
-    filtered = filtered == null ? v : filtered + (1 - Math.exp(-(at[i] - last) / lag)) * (v - filtered);
-    last = at[i];
-    return filtered;
-  });
-};
-
-test("Temperature: the fitted lag is found, and the slope through it", async ({ page }) => {
-  // The clock following its temperature through a 2-minute lag.
-  const LAG = 120;
-  await frequencyFromTemperature(page, (values, at) =>
-    following(values, at, LAG).map((v) => -12 + SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN)));
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("lagged 2 min");
-  // Past a minute, a poor sensor for tempcomp, said in both.
-  await expect(page.locator("#figures")).toContainText("poor sensor");
-  await page.locator("#fit").click();
-  const [linear] = await fittedLines(page);
-  expect(Number(linear[5])).toBeCloseTo(-SYNTHETIC_SLOPE, 6);
-  // The comment says the line needs the temperature lagged the same.
-  await expect(page.locator("#fits pre.fitted")).toContainText("lagged 2 min");
-  await expect(page.locator("#fits pre.fitted")).toContainText("poor sensor");
-});
-
-test("Temperature: without the lag, a clock that lags fits worse", async ({ page }) => {
-  const LAG = 120;
-  const LOAD_EVERY = 600;
-  const LOAD_STEP = 3000;
-  const r2 = async () => Number((await page.locator("#figures").textContent()).match(/R² (-?\d\.\d{3})/)[1]);
-  await frequencyFromTemperature(page, (values, at) =>
-    following(values, at, LAG).map((v) => SYNTHETIC_SLOPE * v),
-  // The sensor stepping with load every few minutes, as a CPU's does,
-  // which a lag of minutes smears.
-  (values, at) => values.map((v, i) => (v == null ? null : v + (Math.floor(at[i] / LOAD_EVERY) % 2) * LOAD_STEP)));
-  await page.goto("/temperature?last=172800");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  const without = await r2();
-  await page.locator("#lag").check();
-  await expect(page.locator("#figures")).toContainText("lagged");
-  expect(await r2()).toBeGreaterThan(without);
-  expect(new URL(page.url()).searchParams.has("lag")).toBe(true);
-});
-
-test("Temperature: a step of the sensor the clock follows at once fits no lag", async ({ page }) => {
-  // The sensor 3 degrees warmer from halfway, the clock following it at
-  // once, with noise of its own.
-  const STEP_UP = 3000;
-  const NOISE = 0.01;
-  let seed = 1;
-  const noise = () => {
-    seed = (seed * 16807) % 2147483647;
-    return (seed / 2147483647 - 0.5) * 2 * NOISE;
-  };
-  await frequencyFromTemperature(page,
-    (values) => values.map((v) => (v == null ? null : SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN) + noise())),
-    (values) => values.map((v, i) => (v == null || i < values.length / 2 ? v : v + STEP_UP)));
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("No lag");
-  await page.locator("#fit").click();
-  await expect(page.locator("#fits pre.fitted")).not.toContainText("lagged");
-});
-
-test("Temperature: a clock on a curve, following at once, fits no lag", async ({ page }) => {
-  // The day warming fast and cooling slowly, and the clock on a strong
-  // curve of it at once, with noise of its own: judged by a line, a lag
-  // bends the curve toward one.
-  const DAY = 86400;
-  const SWING = 4000;
-  const BEND = 3e-8;
-  const NOISE = 0.005;
-  let seed = 1;
-  const noise = () => {
-    seed = (seed * 16807) % 2147483647;
-    return (seed / 2147483647 - 0.5) * 2 * NOISE;
-  };
-  await frequencyFromTemperature(page,
-    (values) => values.map((v) => (v == null ? null : BEND * (v - SYNTHETIC_MEAN) ** 2 + noise())),
-    (values, at) => values.map((v, i) => {
-      if (v == null) return null;
-      const phase = (2 * Math.PI * at[i]) / DAY;
-      return SYNTHETIC_MEAN + SWING * (Math.sin(phase) + Math.sin(2 * phase) / 2);
-    }));
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("No lag");
-});
-
-test("Temperature: a sensor's coarse steps alone fit no lag", async ({ page }) => {
-  // The clock following the air at once, with noise of its own; the
-  // sensor reading it in steps of half a degree, as many do, which
-  // smoothing fits better without any delay.
-  const DAY = 86400;
-  const SWING = 4000;
-  const STEP = 500;
-  const NOISE = 0.001;
-  let seed = 1;
-  const noise = () => {
-    seed = (seed * 16807) % 2147483647;
-    return (seed / 2147483647 - 0.5) * 2 * NOISE;
-  };
-  await tempcompReadings(page, (got) => {
-    const t = got.temperature;
-    const air = t.at.map((at) => SYNTHETIC_MEAN + SWING * Math.sin((2 * Math.PI * at) / DAY));
-    t.temperature = air.map((v) => Math.round(v / STEP) * STEP);
-    got.updates = updatesAfter(t.at, air.map((v) => SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN) + noise()));
-  });
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("No lag resolved");
-});
-
-test("Temperature: a minute's lag is found through a sensor's coarse steps", async ({ page }) => {
-  // The clock following the air a minute behind, with noise of its own;
-  // the sensor reading the air in steps of half a degree, the air
-  // stepping with load every few minutes, as a CPU's does.
-  const LAG = 60;
-  const LOAD_EVERY = 600;
-  const LOAD_STEP = 3000;
-  const STEP = 500;
-  const NOISE = 0.001;
-  let seed = 1;
-  const noise = () => {
-    seed = (seed * 16807) % 2147483647;
-    return (seed / 2147483647 - 0.5) * 2 * NOISE;
-  };
-  await tempcompReadings(page, (got) => {
-    const t = got.temperature;
-    const air = t.at.map((at) => SYNTHETIC_MEAN + (Math.floor(at / LOAD_EVERY) % 2) * LOAD_STEP);
-    t.temperature = air.map((v) => Math.round(v / STEP) * STEP);
-    got.updates = updatesAfter(t.at,
-      following(air, t.at, LAG).map((v) => SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN) + noise()));
-  });
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("lagged 1 min");
-  await expect(page.locator("#figures")).not.toContainText("poor sensor");
-});
-
-test("Temperature: runs too short to settle fit no lag, and say so", async ({ page }) => {
-  // Ten readings at a time, the sensor stopping a while between.
-  const RUN = 10;
-  const EVERY = 40;
-  await tempcompReadings(page, (got) => {
-    const t = got.temperature;
-    const kept = t.at.map((_, i) => i % EVERY < RUN);
-    for (const column of ["at", "temperature"]) t[column] = t[column].filter((_, i) => kept[i]);
-    got.updates = updatesAfter(t.at, t.temperature.map((v) => SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN)));
-  });
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("No lag fitted: too few PPS-steered updates");
-});
-
-test("Temperature: a range too short for a lag says so, not that the readings are", async ({ page }) => {
-  // Readings a minute and a half apart, over less than ten times two
-  // minutes: two minutes is sampled well enough, but not long enough.
-  const EVERY = 6;
-  const READINGS = 13;
-  await tempcompReadings(page, (got) => {
-    const t = got.temperature;
-    for (const column of ["at", "temperature"]) {
-      t[column] = t[column].filter((_, i) => i % EVERY === 0).slice(0, READINGS);
-    }
-    got.updates = updatesAfter(t.at, t.temperature.map((v) => SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN)));
-  });
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText("No lag fitted: the range is too short");
-});
-
-test("Temperature: no lag fitted where the readings are further apart than any lag", async ({ page }) => {
-  // The synthetic sensor's readings, every eighth: minutes apart.
-  const EVERY = 8;
-  await tempcompReadings(page, (got) => {
-    const t = got.temperature;
-    for (const column of ["at", "temperature"]) t[column] = t[column].filter((_, i) => i % EVERY === 0);
-  });
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#figures")).toContainText(/No lag fitted: readings \d+ s apart/);
-  await expect(page.locator("#figures")).not.toContainText("lagged");
-});
-
-test("Temperature: no lag fitted without a PPS", async ({ page }) => {
-  await tempcompReadings(page, (got) => {
-    got.updates.pps = got.updates.pps.map(() => false);
-  });
-  await page.goto("/temperature?last=172800&lag");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await expect(page.locator("#lag")).toBeDisabled();
-  await expect(page.locator("#lag")).not.toBeChecked();
-  await expect(page.locator("#figures")).not.toContainText("lag");
-});
-
-test("Temperature: the fit is robust, a few wild readings pulling it little", async ({ page }) => {
-  // One update in twenty of the warmest 1 ppm off, as an NTP source's
-  // step might put it: least squares would steepen the line by about a
-  // fifth.
-  const EVERY = 20;
-  const OFF = 1;
-  const WARM = SYNTHETIC_MEAN + 2000;
-  await frequencyFromTemperature(page, (values) => values.map((v, i) =>
-    (v == null ? null : SYNTHETIC_SLOPE * (v - SYNTHETIC_MEAN) + (v > WARM && i % EVERY === 0 ? OFF : 0))));
-  await page.goto("/temperature?last=172800");
-  await expect(page.locator("#scatter .uplot")).toBeVisible();
-  await page.locator("#fit").click();
-  const [linear] = await fittedLines(page);
-  expect(Math.abs(Number(linear[5]) / -SYNTHETIC_SLOPE - 1)).toBeLessThan(0.02);
+test("Temperature: the readings themselves served, for a tool of one's own", async ({ request }) => {
+  const got = await (await request.get("/api/tempcomp")).json();
+  expect(got.temperature.at.length).toBeGreaterThan(MIN_FITTED);
+  expect(got.temperature.at.length).toBe(got.temperature.temperature.length);
+  expect(got.updates.at.length).toBeGreaterThan(MIN_FITTED);
+  expect(got.updates.frequency.length).toBe(got.updates.at.length);
+  expect(got.updates.pps.some((p) => p)).toBe(true);
 });
 
 test("Temperature: the fit takes tempcomp's compensation out of chronyd's frequency", async ({ page }) => {

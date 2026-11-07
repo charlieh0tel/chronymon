@@ -16,6 +16,7 @@ use serde_json::Value;
 use serde_json::json;
 
 mod api;
+mod tempcomp;
 
 /// The pages, built in rather than read from disk: one file to install,
 /// and a running server cannot be made to serve something else by
@@ -162,6 +163,7 @@ fn main() -> Result<()> {
             "/api/status" => json(api::status(database)),
             "/api/history" => json(api::history(database, query)),
             "/api/tempcomp" => json(api::tempcomp(database, query)),
+            "/api/tempcomp/fit" => json(api::tempcomp_fit(database, query)),
             "/api/overlay" => json(api::overlay(database, query)),
             "/api/sources" => json(api::sources(database)),
             "/api/events" => json(api::events(database, query)),

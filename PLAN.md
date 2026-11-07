@@ -275,22 +275,7 @@ Journal, Distribution, Kiosk.
   `tempcomp_changed`).  No settling time after a restart: chronyd's
   first estimates are rough for a few minutes, a little noise in a
   fit of days.  The fits are robust (Huber, reweighted least squares):
-  an NTP-only host's frequency wanders and steps.  The lag is a
-  checkbox, off by default, not the fit's own: chronyd's
-  `read_timeout` (`tempcomp.c`, 4.6) compensates each raw reading, so
-  a lagged line is right only for a sensor file filtered the same
-  way, and fitting it with the lag on its own would hand out a line
-  that adds the sensor's swings to the compensation.  The lag is the
-  time constant of a first-order filter, picked from none, 1 and
-  2 min by blocked cross-validation (six contiguous stretches held out
-  in turn, an hour's margin), all judged on the same PPS-steered
-  updates by the quadratic, the shortest within a standard error of
-  the best, and only where it beats the same filter read its lag later
-  (as much smoothing, no delay), which a sensor's coarse steps alone
-  favor.  PPS-steered: the reference a refclock whose latest raw
-  sample, within 10 min, was a pulse.  Capped at 2 min, warned
-  of past 1: a sensor further behind is a poor one, and a longer lag
-  is chronyd's estimate or a misfit, not the crystal.  Fitted from the
+  an NTP-only host's frequency wanders and steps.  Fitted from the
   readings, not buckets (`/api/tempcomp`): a bucket's mean bends a
   curve, and a bucket's temperature and frequency can be most of it
   apart.  The server takes out the compensation in force when each
@@ -298,22 +283,15 @@ Journal, Distribution, Kiosk.
   tracking.log's lines first, stamped at the update; the daemon's rows
   only where the log has none, bounded by the poll before
   (`poll_interval`, schema 8).  An update a change may have fallen in
-  is dropped.  Judged on the
-  readings it was fitted to, a lag wins where it should not: a step
-  of a sensor the frequency follows at once, smeared into a trail,
-  barely moves a robust spread, which picked 20 min on apu-0, whose
-  sensor is at the crystal.  Generalized least squares for the
-  frequency's correlated noise was tried and fails: the noise is
-  nearly a random walk (AR(1) rho 0.99), and prewhitening it leaves
-  only the fast changes, losing the slope.  Full system
-  identification (output-error models, orders and dead time
-  cross-validated) does better only where a single lag cannot follow
-  the response: held-out RMSE, ppm, none / lag / output-error, over
-  1.6 to 10 days: chronos 0.066 / 0.045 (30 min) / 0.036, apu-0
-  0.034 / 0.032 (5 min) / 0.030, draws 0.029 / 0.020 (10 min) /
-  0.019, tare (NTP, CPU sensor) 0.69 / 0.37 (90 min) / 0.26.  Not
-  worth a solver in the browser.  The study, its data and the design
-  it led to are in
+  is dropped.  The server fits (`/api/tempcomp/fit`, `tempcomp.rs`),
+  not the page: tested as Rust, one copy, and quick; `/api/tempcomp`
+  stays, the raw readings, for tools of one's own.  No lag: a fit of
+  the sensor's lag (none, 1 or 2 min, by blocked cross-validation) was
+  tried and dropped.  chronyd compensates each raw reading, so the
+  unlagged line is the one to paste; and the lag could not be told on
+  a range whose temperature trends, chronyd's own window looks like
+  one, and a load's heat and the room's reach the crystal by different
+  paths that no single lag holds.  Lag is the study's, in
   [chrony-tempcomp](https://github.com/charlieh0tel/chrony-tempcomp).
 - A page whose table is empty says why: chronyd logs refclocks and
   tempcomp only when told to.
