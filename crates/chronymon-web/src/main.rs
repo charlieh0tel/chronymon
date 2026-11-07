@@ -161,6 +161,7 @@ fn main() -> Result<()> {
             "/api/about" => json(Ok(about(&cli))),
             "/api/status" => json(api::status(database)),
             "/api/history" => json(api::history(database, query)),
+            "/api/tempcomp" => json(api::tempcomp(database, query)),
             "/api/overlay" => json(api::overlay(database, query)),
             "/api/sources" => json(api::sources(database)),
             "/api/events" => json(api::events(database, query)),

@@ -14,7 +14,7 @@ use chronymon_control::report::ReferenceId;
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 7;
+pub const VERSION: i64 = 8;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
@@ -227,6 +227,11 @@ pub const INODE_KEY: i64 = 6;
 /// older database gains it, empty, on open: no migration but `TABLES`.
 pub const GNSS: i64 = 7;
 
+/// The first schema with `poll_interval`, how often each run of the
+/// daemon polled.  An older database gains it, empty, on open: no
+/// migration but `TABLES`; its runs' intervals are not known.
+pub const POLL_INTERVAL: i64 = 8;
+
 /// An older schema's `log_file` renamed out of [`TABLES`]' way.
 pub(crate) const LOG_FILE_ASIDE: &str = "
     ALTER TABLE log_file RENAME TO old_log_file;
@@ -255,6 +260,14 @@ pub(crate) const TABLES: &str = r"
     -- The daemon's view of chronyd as of its last poll, one row: what
     -- the web view's status strip shows, and how it tells a stale feed
     -- from a quiet one.
+    -- How often the daemon polled, a row each time it started: a clock
+    -- update a poll first sees was made after the poll before it, so
+    -- the compensation in it can be told within about that.
+    CREATE TABLE IF NOT EXISTS poll_interval (
+        at      INTEGER NOT NULL,
+        seconds REAL    NOT NULL
+    ) STRICT;
+
     CREATE TABLE IF NOT EXISTS status (
         id          INTEGER PRIMARY KEY CHECK (id = 1),
         polled_at   INTEGER NOT NULL,

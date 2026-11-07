@@ -28,6 +28,8 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -428,6 +430,177 @@ impl Window {
 /// A row's numeric columns, by name.
 pub type Values = Vec<(&'static str, f64)>;
 
+/// What a tempcomp fit reads, row by row, each of a range's rows or
+/// every so many of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TempcompReadings {
+    /// tempcomp.log's, oldest first.
+    pub temperature: Every<TempcompReading>,
+    /// chronyd's clock updates, oldest first.
+    pub updates: Every<ClockUpdate>,
+}
+
+/// Rows, every `stride`th of a range's: 1 for all of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Every<T> {
+    pub rows: Vec<T>,
+    pub stride: usize,
+}
+
+/// A line of tempcomp.log.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TempcompReading {
+    /// Unix seconds.
+    pub at: f64,
+    /// As the sensor reads, in its own units.
+    pub temperature: f64,
+    /// The compensation chronyd applied from it, ppm.
+    pub compensation: f64,
+}
+
+/// A clock update of chronyd's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockUpdate {
+    /// Its time, unix seconds.
+    pub at: f64,
+    /// The clock's own frequency, ppm: chronyd's, the compensation in
+    /// force when it was read out taken out by its exact inverse,
+    /// F (1 - C 1e-6) - C (`LCL_ReadAbsoluteFrequency`, chrony 4.6
+    /// `local.c`).
+    pub frequency: f64,
+    /// Whether a PPS steered it: its reference a refclock whose latest
+    /// raw sample then was a pulse.
+    pub pps: bool,
+}
+
+/// How many of `rows` rows to take one of, to keep to about `limit`.
+fn stride(rows: usize, limit: usize) -> usize {
+    rows.div_ceil(limit.max(1)).max(1)
+}
+
+/// A second, in unix nanoseconds: a log line's time's resolution.
+const SECOND: i64 = 1_000_000_000;
+
+/// How long before a clock update a PPS's latest raw sample may be and
+/// still say whether it was steering: well past the driver's poll, well
+/// short of the refclock's going unreachable unnoticed.
+const PPS_FRESH: i64 = 600 * SECOND;
+
+/// A clock update as a table holds it, before the compensation in its
+/// frequency is known.
+struct Update {
+    /// Its time, unix nanoseconds: the protocol's reference time, or the
+    /// log line's second.
+    at: i64,
+    /// When the update was made, unix nanoseconds, from and before:
+    /// chronyd's frequency changes only then, whatever compensation
+    /// follows (`LCL_SetTempComp` keeps `LCL_ReadAbsoluteFrequency`'s
+    /// value, chrony 4.6 `local.c`), so the compensation in it is the
+    /// one in force then.  Logged, the line's second; read by the
+    /// protocol, to the poll that saw it, from the poll before, where
+    /// the daemon was polling then, else from its reference time,
+    /// fuzzed up to a second earlier (`fuzz_ref_time`, `reference.c`).
+    made: (i64, i64),
+    /// chronyd's frequency, ppm, compensation and all.
+    frequency: f64,
+    /// Its reference's name, if a refclock, not an NTP server.
+    refclock: Option<String>,
+}
+
+/// tempcomp.log's readings, walked in order to find the compensation in
+/// force at times that only go forward; each `stride`th kept.
+struct Compensations {
+    stride: usize,
+    /// How many have been read.
+    read: usize,
+    /// Those kept.
+    kept: Vec<TempcompReading>,
+    /// The last reading's compensation known to be before the time last
+    /// asked of, if any.
+    before: Option<f64>,
+    /// Readings that may or may not be before it, oldest first: unix
+    /// nanoseconds, compensation.
+    unsure: VecDeque<(i64, f64)>,
+}
+
+impl Compensations {
+    fn new(stride: usize) -> Self {
+        Self {
+            stride,
+            read: 0,
+            kept: Vec::new(),
+            before: None,
+            unsure: VecDeque::new(),
+        }
+    }
+
+    fn take(&mut self, (at, temperature, compensation): (i64, f64, f64)) {
+        if self.read.is_multiple_of(self.stride) {
+            self.kept.push(TempcompReading {
+                at: at as f64 / NANOSECONDS,
+                temperature,
+                compensation,
+            });
+        }
+        self.read += 1;
+    }
+
+    /// A reading from before the range, not kept: the one in force at
+    /// its start.
+    fn seed(&mut self, at: i64, compensation: f64) {
+        self.unsure.push_back((at, compensation));
+    }
+
+    /// The readings known to be before `from`, each in the second its
+    /// line says, taken as in force.
+    fn settle(&mut self, from: i64) {
+        while let Some(&(at, compensation)) = self.unsure.front() {
+            if at + SECOND > from {
+                break;
+            }
+            self.before = Some(compensation);
+            self.unsure.pop_front();
+        }
+    }
+
+    /// The compensation in force throughout `(from, before)`, unix
+    /// nanoseconds, from readings `next` gives: None where none was, or
+    /// where it may have changed in it, so which is not known.  `from`
+    /// only goes forward from one asked to the next.
+    fn in_force(
+        &mut self,
+        next: &mut impl FnMut() -> Result<Option<(i64, f64, f64)>>,
+        (from, before): (i64, i64),
+    ) -> Result<Option<f64>> {
+        self.settle(from);
+        // Read on to the first reading at or past `before`, held for a
+        // later one.
+        while self.unsure.back().is_none_or(|(at, _)| *at < before) {
+            let Some(reading) = next()? else { break };
+            self.take(reading);
+            self.unsure.push_back((reading.0, reading.2));
+            self.settle(from);
+        }
+        // The last that may be before `before`.
+        let latest = self
+            .unsure
+            .iter()
+            .rev()
+            .find(|(at, _)| *at < before)
+            .map(|(_, c)| *c)
+            .or(self.before);
+        Ok(self.before.filter(|before| Some(*before) == latest))
+    }
+
+    /// The rest of the readings, to keep.
+    fn drain(&mut self, next: &mut impl FnMut() -> Result<Option<(i64, f64, f64)>>) -> Result<()> {
+        while let Some(reading) = next()? {
+            self.take(reading);
+        }
+        Ok(())
+    }
+}
+
 /// The `status` row: the daemon's last poll.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
@@ -674,18 +847,302 @@ impl Reader {
             .collect())
     }
 
-    /// Whether a refclock's latest raw sample in `refclocks.log`, by its
-    /// reference ID as text, was a pulse, a PPS's; `None` without one.
-    pub fn refclock_pulsed(&self, reference: &str) -> Result<Option<bool>> {
-        Ok(self
+    /// What a tempcomp fit needs from `from` to `to`, unix seconds, row by
+    /// row, not bucketed: a bucket's mean temperature is not a reading,
+    /// and a temperature and a frequency in one bucket can be most of it
+    /// apart.  The temperatures kept to about `temperatures` rows and the
+    /// updates to about `updates`, by taking every so many; each update's
+    /// compensation found from all the readings, kept or not, and the
+    /// rows read one at a time, not held.
+    pub fn tempcomp_readings(
+        &self,
+        from: f64,
+        to: f64,
+        temperatures: usize,
+        updates: usize,
+    ) -> Result<TempcompReadings> {
+        let (from, to, _) = Window {
+            from,
+            to,
+            points: MIN_POINTS,
+        }
+        .stored();
+        // One snapshot: rows written between the counts and the reads
+        // would push past the limits.
+        let _snapshot = self.connection.unchecked_transaction()?;
+        let sampled = self.exists(Table::TempcompSample)?;
+        let readings = if sampled {
+            self.connection.query_row(
+                "SELECT COUNT(*) FROM tempcomp_sample WHERE at >= ?1 AND at <= ?2",
+                params![from, to],
+                |row| row.get::<_, i64>(0),
+            )? as usize
+        } else {
+            0
+        };
+        let mut found = 0;
+        self.clock_updates(from, to, |_| {
+            found += 1;
+            Ok(())
+        })?;
+        let (temperature_stride, update_stride) =
+            (stride(readings, temperatures), stride(found, updates));
+        let mut cursor = Compensations::new(temperature_stride);
+        // The reading in force at the range's start.
+        if sampled
+            && let Some((at, compensation)) = self
+                .connection
+                .query_row(
+                    "SELECT at, compensation FROM tempcomp_sample WHERE at < ?1
+                     ORDER BY at DESC LIMIT 1",
+                    params![from],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+        {
+            cursor.seed(at, compensation);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT at, temperature, compensation FROM tempcomp_sample
+             WHERE at >= ?1 AND at <= ?2 ORDER BY at",
+        )?;
+        let mut rows = if readings > 0 {
+            Some(statement.query(params![from, to])?)
+        } else {
+            None
+        };
+        let mut next = || -> Result<Option<(i64, f64, f64)>> {
+            match rows.as_mut() {
+                Some(rows) => Ok(rows
+                    .next()?
+                    .map(|row| Ok::<_, rusqlite::Error>((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .transpose()?),
+                None => Ok(None),
+            }
+        };
+        let refclocks = self.exists(Table::RefclockSample)?;
+        let mut kept = Vec::new();
+        let mut index = 0;
+        self.clock_updates(from, to, |update| {
+            let compensation = cursor.in_force(&mut next, update.made)?;
+            index += 1;
+            if (index - 1) % update_stride != 0 {
+                return Ok(());
+            }
+            let Some(compensation) = compensation else {
+                return Ok(());
+            };
+            let pps = match &update.refclock {
+                Some(reference) if refclocks => self.pulsed(reference, update.at)?,
+                _ => false,
+            };
+            kept.push(ClockUpdate {
+                at: update.at as f64 / NANOSECONDS,
+                frequency: update.frequency * (1.0 - compensation * 1e-6) - compensation,
+                pps,
+            });
+            Ok(())
+        })?;
+        cursor.drain(&mut next)?;
+        Ok(TempcompReadings {
+            temperature: Every {
+                rows: cursor.kept,
+                stride: temperature_stride,
+            },
+            updates: Every {
+                rows: kept,
+                stride: update_stride,
+            },
+        })
+    }
+
+    /// chronyd's clock updates from `from` to `to`, unix nanoseconds, in
+    /// the order they were made, to `each`.  tracking.log's first, its
+    /// line written as the update was made, and every one; the
+    /// protocol's only where the log has none for it, as where chronyd
+    /// does not log tracking or the log is not yet read: those the
+    /// daemon read, and only the latest at each read.  Neither chronyd's
+    /// local reference, which the protocol reports at every read, nor
+    /// the log's line of chronyd losing its reference, stratum 0
+    /// (`REF_SetUnsynchronised`), is an update.
+    fn clock_updates(
+        &self,
+        from: i64,
+        to: i64,
+        mut each: impl FnMut(&Update) -> Result<()>,
+    ) -> Result<()> {
+        let logged = self.exists(Table::LogTracking)?;
+        let recording = self.recording()?;
+        let intervals = self.poll_intervals()?;
+        // The poll before `polled`, unix nanoseconds, no later than it
+        // was, if the daemon was polling then: a poll late by up to its
+        // interval taken in.
+        let poll_before = |polled: i64| {
+            let (started, seconds) = intervals
+                .iter()
+                .rev()
+                .find(|(started, _)| *started <= polled)?;
+            let before = polled - (2.0 * seconds * NANOSECONDS) as i64;
+            (*started <= before && recording.contains(before as f64)).then_some(before)
+        };
+        let log_query = "SELECT at, frequency, reference FROM log_tracking
+             WHERE at >= ?1 AND at <= ?2 AND stratum > 0 ORDER BY at";
+        let mut statement;
+        let mut protocol_rows = if self.exists(Table::Tracking)? {
+            statement = self.connection.prepare(
+                "SELECT reference_time, at, frequency, reference_id, reference_address,
+                     last_offset, rms_offset FROM tracking
+                 WHERE reference_time >= ?1 AND reference_time <= ?2 AND reference_id != ?3
+                 ORDER BY reference_time",
+            )?;
+            Some(statement.query(params![from, to, ReferenceId::LOCAL.0])?)
+        } else {
+            None
+        };
+        let mut log_statement;
+        let mut log_rows = if logged {
+            log_statement = self.connection.prepare(log_query)?;
+            Some(log_statement.query(params![from, to])?)
+        } else {
+            None
+        };
+        // The log's lines again, walked alongside the protocol's rows to
+        // find which the log has.
+        let mut probe_statement;
+        let mut probe_rows = if logged {
+            probe_statement = self.connection.prepare(log_query)?;
+            Some(probe_statement.query(params![from - 2 * SECOND, to])?)
+        } else {
+            None
+        };
+        let mut probed: Option<i64> = None;
+        let mut log_has = |(made, polled): (i64, i64)| -> Result<bool> {
+            // A line whose second meets the time the update was made in.
+            loop {
+                if let Some(at) = probed
+                    && at + SECOND > made
+                {
+                    return Ok(at < polled);
+                }
+                match probe_rows
+                    .as_mut()
+                    .map(|rows| rows.next())
+                    .transpose()?
+                    .flatten()
+                {
+                    Some(row) => probed = Some(row.get(0)?),
+                    None => return Ok(false),
+                }
+            }
+        };
+        // The last row's (reference ID, last offset, RMS offset): rows
+        // written before schema 5 repeat an update at every slew.
+        let mut last: Option<(u32, f64, f64)> = None;
+        let mut next_protocol = || -> Result<Option<Update>> {
+            while let Some(row) = protocol_rows
+                .as_mut()
+                .map(|rows| rows.next())
+                .transpose()?
+                .flatten()
+            {
+                let at: i64 = row.get(0)?;
+                let polled: i64 = row.get(1)?;
+                let reference_id: u32 = row.get(3)?;
+                let same = Some((reference_id, row.get(5)?, row.get(6)?));
+                if std::mem::replace(&mut last, same) == same {
+                    continue;
+                }
+                let made = (
+                    poll_before(polled).map_or(at - SECOND, |before| before.max(at - SECOND)),
+                    polled + 1,
+                );
+                if log_has(made)? {
+                    continue;
+                }
+                let address: String = row.get(4)?;
+                return Ok(Some(Update {
+                    at,
+                    made,
+                    frequency: row.get(2)?,
+                    refclock: if address.parse::<IpAddr>().is_ok() {
+                        None
+                    } else {
+                        ReferenceId(reference_id).text()
+                    },
+                }));
+            }
+            Ok(None)
+        };
+        let mut next_log = || -> Result<Option<Update>> {
+            let Some(row) = log_rows
+                .as_mut()
+                .map(|rows| rows.next())
+                .transpose()?
+                .flatten()
+            else {
+                return Ok(None);
+            };
+            let at: i64 = row.get(0)?;
+            let reference: String = row.get(2)?;
+            Ok(Some(Update {
+                at,
+                made: (at, at + SECOND),
+                frequency: row.get(1)?,
+                refclock: reference.parse::<IpAddr>().is_err().then_some(reference),
+            }))
+        };
+        let (mut a, mut b) = (next_protocol()?, next_log()?);
+        loop {
+            let protocol_first = match (&a, &b) {
+                (Some(p), Some(l)) => p.made.0 <= l.made.0,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if protocol_first {
+                each(a.as_ref().expect("a protocol update"))?;
+                a = next_protocol()?;
+            } else {
+                each(b.as_ref().expect("a logged update"))?;
+                b = next_log()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Each run of the daemon's start and poll interval, unix
+    /// nanoseconds and seconds, oldest first: none where its database
+    /// is older than the table.
+    fn poll_intervals(&self) -> Result<Vec<(i64, f64)>> {
+        let known: bool = self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'poll_interval')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !known {
+            return Ok(Vec::new());
+        }
+        let mut statement = self
             .connection
-            .query_row(
-                "SELECT pulse FROM refclock_sample WHERE reference = ?1 AND pulse IS NOT NULL \
+            .prepare("SELECT at, seconds FROM poll_interval ORDER BY at")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Whether `reference`'s latest raw sample at or before `at`, unix
+    /// nanoseconds, and no more than `PPS_FRESH` before it, was a pulse:
+    /// a PPS steering the clock then.
+    fn pulsed(&self, reference: &str, at: i64) -> Result<bool> {
+        let pulse: Option<bool> = self
+            .connection
+            .prepare_cached(
+                "SELECT pulse FROM refclock_sample
+                 WHERE reference = ?1 AND at <= ?2 AND at >= ?3 AND pulse IS NOT NULL
                  ORDER BY at DESC LIMIT 1",
-                params![reference],
-                |row| row.get(0),
-            )
-            .optional()?)
+            )?
+            .query_row(params![reference, at, at - PPS_FRESH], |row| row.get(0))
+            .optional()?;
+        Ok(pulse == Some(true))
     }
 
     /// Why the daemon's last read of chronyd's configuration failed, if
@@ -1902,6 +2359,7 @@ mod tests {
     use super::*;
     use crate::chrony_log::Line;
     use crate::chrony_log::RefclockLine;
+    use crate::chrony_log::TempcompLine;
     use crate::chrony_log::TrackingLine;
     use crate::writer::ChronydState;
     use crate::writer::Log;
@@ -2260,37 +2718,282 @@ mod tests {
         );
     }
 
+    /// tempcomp.log's line at `second`, its compensation `compensation`.
+    fn reading(second: i64, compensation: f64) -> Line {
+        Line::Tempcomp(TempcompLine {
+            at: at(second),
+            temperature: 40_000.0 + second as f64,
+            compensation,
+        })
+    }
+
+    /// refclock.log's raw line for `reference` at `second`, a pulse or
+    /// not.
+    fn raw(reference: &str, second: i64, pulse: bool) -> Line {
+        Line::Refclock(RefclockLine {
+            at: at(second),
+            reference: reference.to_owned(),
+            driver_polls: Some(1),
+            leap: 'N',
+            pulse: Some(pulse),
+            raw_offset: Some(0.0),
+            cooked_offset: 0.0,
+            dispersion: 1e-6,
+        })
+    }
+
+    /// The clock's own frequency from chronyd's `frequency` and the
+    /// compensation `compensation` in it.
+    fn own(frequency: f64, compensation: f64) -> f64 {
+        frequency * (1.0 - compensation * 1e-6) - compensation
+    }
+
     #[test]
-    fn a_refclock_pulsed_by_its_latest_raw_sample() {
-        let mut db = Database::new("pulsed");
+    fn tempcomp_readings_row_by_row_each_update_said_pps_or_not() {
+        let mut db = Database::new("tempcomp-readings");
         db.log
             .write(|batch| {
-                // PPS's pulses, then a filtered sample; NMEA's once a
-                // pulse, then not.
-                for (second, reference, pulse) in [
-                    (0, "PPS", Some(true)),
-                    (1, "PPS", None),
-                    (0, "NMEA", Some(true)),
-                    (1, "NMEA", Some(false)),
-                ] {
-                    batch.log_line(&Line::Refclock(RefclockLine {
-                        at: at(second),
-                        reference: reference.to_owned(),
-                        driver_polls: pulse.map(|_| 1),
-                        leap: 'N',
-                        pulse,
-                        raw_offset: pulse.map(|_| 0.0),
-                        cooked_offset: 0.0,
-                        dispersion: 1e-6,
-                    }))?;
+                // The daemon recording for the first 50 s, an NTP server
+                // its reference; the log from 40 s on, a PPS's.
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.event(at(49), EventKind::DaemonStop, None, None)?;
+                for second in 0..50 {
+                    batch.tracking(at(second), &tracking(second, 1.0))?;
+                }
+                for second in 40..100 {
+                    batch.log_line(&logged(second, 2.0))?;
+                }
+                for second in (0..100).step_by(10) {
+                    batch.log_line(&reading(second, 0.1))?;
+                    batch.log_line(&raw("PPS", second, true))?;
+                    batch.log_line(&raw("NMEA", second, false))?;
                 }
                 Ok(())
             })
             .expect("written");
         let reader = db.reader();
-        assert_eq!(reader.refclock_pulsed("PPS").expect("a read"), Some(true));
-        assert_eq!(reader.refclock_pulsed("NMEA").expect("a read"), Some(false));
-        assert_eq!(reader.refclock_pulsed("GPS").expect("a read"), None);
+        let (from, to) = (START as f64, (START + 99) as f64);
+        let read = reader
+            .tempcomp_readings(from, to, 1000, 1000)
+            .expect("a read");
+        assert_eq!(read.temperature.stride, 1);
+        assert_eq!(read.temperature.rows.len(), 10);
+        assert_eq!(read.temperature.rows[3].temperature, 40_030.0);
+        assert_eq!(read.temperature.rows[3].at, (START + 30) as f64);
+        let updates = &read.updates.rows;
+        // The first two, within a second of the first reading, fuzzed,
+        // not known to follow it.
+        assert_eq!(updates.len(), 98);
+        assert!(updates.windows(2).all(|w| w[0].at < w[1].at));
+        // The protocol's, an NTP server's, where the log has none; then
+        // the log's, the PPS's: none twice.
+        assert!(
+            updates[..38]
+                .iter()
+                .all(|u| u.frequency == own(1.0, 0.1) && !u.pps)
+        );
+        assert!(
+            updates[38..]
+                .iter()
+                .all(|u| u.frequency == own(2.0, 0.1) && u.pps)
+        );
+        // Kept to about a limit, every so many; the temperatures too,
+        // their compensations all still read.
+        let read = reader.tempcomp_readings(from, to, 4, 30).expect("a read");
+        assert_eq!(read.updates.stride, 4);
+        assert_eq!(read.updates.rows.len(), 24);
+        assert_eq!(read.temperature.stride, 3);
+        assert_eq!(read.temperature.rows.len(), 4);
+    }
+
+    #[test]
+    fn tempcomp_readings_take_out_the_compensation_in_force() {
+        let mut db = Database::new("tempcomp-in-force");
+        db.log
+            .write(|batch| {
+                // Logged updates, a reading each 10 s, its compensation
+                // its second's tenth of a ppm: one each second from 0 to
+                // 29, each in the same second as a reading or after one.
+                for second in (0..30).step_by(10) {
+                    batch.log_line(&reading(second, second as f64 / 100.0))?;
+                }
+                for second in 1..30 {
+                    batch.log_line(&logged(second, 5.0))?;
+                }
+                Ok(())
+            })
+            .expect("written");
+        let read = db
+            .reader()
+            .tempcomp_readings(START as f64, (START + 29) as f64, 1000, 1000)
+            .expect("a read");
+        let seconds: Vec<i64> = read
+            .updates
+            .rows
+            .iter()
+            .map(|u| u.at as i64 - START)
+            .collect();
+        // Those in a changing reading's second are left out: which came
+        // first is not known.
+        assert_eq!(
+            seconds,
+            [
+                (1..10).collect::<Vec<_>>(),
+                (11..20).collect(),
+                (21..30).collect()
+            ]
+            .concat()
+        );
+        for update in &read.updates.rows {
+            let second = update.at as i64 - START;
+            assert_eq!(
+                update.frequency,
+                own(5.0, (second / 10 * 10) as f64 / 100.0)
+            );
+        }
+    }
+
+    #[test]
+    fn tempcomp_readings_say_pps_by_the_latest_raw_sample_and_not_an_ntp_server() {
+        let mut db = Database::new("tempcomp-pps");
+        // An NTP server whose address, as a reference ID, reads "PPS1".
+        let server = u32::from_be_bytes(*b"PPS1");
+        db.log
+            .write(|batch| {
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.event(at(39), EventKind::DaemonStop, None, None)?;
+                batch.log_line(&reading(-5, 0.0))?;
+                for second in 0..40 {
+                    // The refclock pulses for 25 s, then gives none.
+                    batch.log_line(&raw("PPS1", second, second < 25))?;
+                }
+                for second in 0..40 {
+                    // The server the reference for 10 s, then the refclock.
+                    let address = if second < 10 {
+                        Address::Ip(IpAddr::from(server.to_be_bytes()))
+                    } else {
+                        Address::ReferenceId(server)
+                    };
+                    batch.tracking(
+                        at(second),
+                        &chronymon_control::report::Tracking {
+                            reference_id: ReferenceId(server),
+                            address,
+                            ..tracking(second, 1.0)
+                        },
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("written");
+        let read = db
+            .reader()
+            .tempcomp_readings(START as f64, (START + 39) as f64, 1000, 1000)
+            .expect("a read");
+        let pps: Vec<bool> = read.updates.rows.iter().map(|u| u.pps).collect();
+        // The server's never, though its ID reads as the refclock's name;
+        // the refclock's while it pulses, and not after.
+        let expected: Vec<bool> = (0..40).map(|second| (10..25).contains(&second)).collect();
+        assert_eq!(pps, expected);
+    }
+
+    /// tracking.log's line at `second` of chronyd's frequency
+    /// `frequency`, at stratum `stratum`: 0 for its losing its reference.
+    fn logged_at(second: i64, frequency: f64, stratum: u8) -> Line {
+        match logged(second, frequency) {
+            Line::Tracking(line) => Line::Tracking(TrackingLine { stratum, ..line }),
+            line => line,
+        }
+    }
+
+    /// The updates `tempcomp_readings` gives of `db` over the first
+    /// `seconds`: each its second and the clock's own frequency.
+    fn updates_of(db: &Database, seconds: i64) -> Vec<(i64, f64)> {
+        db.reader()
+            .tempcomp_readings(START as f64, (START + seconds) as f64, 1000, 1000)
+            .expect("a read")
+            .updates
+            .rows
+            .iter()
+            .map(|u| (u.at as i64 - START, u.frequency))
+            .collect()
+    }
+
+    #[test]
+    fn an_update_read_late_and_logged_is_the_logs_once_at_its_compensation() {
+        let mut db = Database::new("tempcomp-late");
+        db.log
+            .write(|batch| {
+                for (second, compensation) in [(0, 0.0), (20, 0.2), (30, 0.3), (40, 0.4)] {
+                    batch.log_line(&reading(second, compensation))?;
+                }
+                // Its sample at 15, made at 25, the daemon down until 41.
+                batch.log_line(&logged(25, 5.0))?;
+                batch.tracking(at(41), &tracking(15, 5.0))?;
+                Ok(())
+            })
+            .expect("written");
+        assert_eq!(updates_of(&db, 45), [(25, own(5.0, 0.2))]);
+    }
+
+    #[test]
+    fn an_update_not_logged_whose_compensation_may_have_changed_is_left_out() {
+        let mut db = Database::new("tempcomp-unlogged");
+        db.log
+            .write(|batch| {
+                for (second, compensation) in [(0, 0.0), (20, 0.2)] {
+                    batch.log_line(&reading(second, compensation))?;
+                }
+                // Made between 10 and 30: before the reading at 20 or after.
+                batch.tracking(at(30), &tracking(10, 5.0))?;
+                // Made between 22 and 24: after it.
+                batch.tracking(at(24), &tracking(23, 6.0))?;
+                Ok(())
+            })
+            .expect("written");
+        assert_eq!(updates_of(&db, 30), [(23, own(6.0, 0.2))]);
+    }
+
+    #[test]
+    fn an_update_not_logged_is_made_after_the_poll_before_it() {
+        let mut db = Database::new("tempcomp-poll-before");
+        db.log
+            .write(|batch| {
+                batch.event(at(0), EventKind::DaemonStart, None, None)?;
+                batch.poll_interval(at(0), 1.0)?;
+                for (second, compensation) in [(0, 0.0), (20, 0.2)] {
+                    batch.log_line(&reading(second, compensation))?;
+                }
+                // Its sample at 10, seen at 30 by a daemon polling every
+                // second: made after 28, after the reading at 20.
+                batch.tracking(at(30), &tracking(10, 5.0))?;
+                Ok(())
+            })
+            .expect("written");
+        assert_eq!(updates_of(&db, 30), [(10, own(5.0, 0.2))]);
+    }
+
+    #[test]
+    fn the_local_reference_and_losing_the_reference_are_no_updates() {
+        let mut db = Database::new("tempcomp-local");
+        db.log
+            .write(|batch| {
+                batch.log_line(&reading(0, 0.1))?;
+                for second in 5..15 {
+                    batch.tracking(
+                        at(second),
+                        &chronymon_control::report::Tracking {
+                            reference_id: ReferenceId::LOCAL,
+                            ..tracking(5, 1.0)
+                        },
+                    )?;
+                }
+                batch.log_line(&logged_at(20, 2.0, 0))?;
+                batch.log_line(&logged_at(25, 3.0, 1))?;
+                Ok(())
+            })
+            .expect("written");
+        assert_eq!(updates_of(&db, 30), [(25, own(3.0, 0.1))]);
     }
 
     #[test]

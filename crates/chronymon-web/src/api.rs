@@ -14,7 +14,6 @@ use std::path::Path;
 use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::bail;
-use chronymon_control::report::ReferenceId;
 use chronymon_log::reader::Column;
 use chronymon_log::reader::Key;
 use chronymon_log::reader::MAX_POINTS;
@@ -337,26 +336,46 @@ fn on_backups(sources: &[Source], paired: &[String]) -> bool {
         })
 }
 
-/// Whether chronyd has a PPS, as `sources` last say: a refclock whose
-/// latest raw sample, by `pulsed(reference)`, was a pulse.  Without one
-/// its frequency is steered by NTP or a receiver's messages, which
-/// trail the clock by far more than its crystal trails a sensor.
-fn has_pps(sources: &[Source], pulsed: impl Fn(&str) -> Result<Option<bool>>) -> Result<bool> {
-    for source in sources
-        .iter()
-        .filter(|s| !s.removed && s.mode == "refclock")
-    {
-        let Some(reference) = u32::from_str_radix(&source.address, 16)
-            .ok()
-            .and_then(|id| ReferenceId(id).text())
-        else {
-            continue;
-        };
-        if pulsed(&reference)? == Some(true) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+/// About how many of each `/api/tempcomp` gives at most, a longer range
+/// every so many: temperatures, a few weeks of a 15 s sensor's, which
+/// the lag's filter needs at their own interval; and clock updates,
+/// whose noise is slow, so more add little but the page's time fitting
+/// them, about 40 ms a thousand.
+const TEMPCOMP_TEMPERATURES: usize = 100_000;
+const TEMPCOMP_UPDATES: usize = 20_000;
+
+/// `/api/tempcomp`: tempcomp.log's rows and chronyd's clock updates
+/// over the range, row by row, each update with the clock's own
+/// frequency and whether a PPS steered it, for the Temperature page's
+/// fit.
+pub(crate) fn tempcomp(path: &Path, query: &str) -> Result<Value> {
+    let asked = asked(query, MIN_POINTS)?;
+    read(path, |reader| {
+        let (window, bounds) = window(reader, &[Table::TempcompSample], asked)?;
+        let read = reader.tempcomp_readings(
+            window.from,
+            window.to,
+            TEMPCOMP_TEMPERATURES,
+            TEMPCOMP_UPDATES,
+        )?;
+        let (temperature, updates) = (&read.temperature, &read.updates);
+        Ok(with(
+            json!({
+                "temperature": {
+                    "at": temperature.rows.iter().map(|r| r.at).collect::<Vec<_>>(),
+                    "temperature": temperature.rows.iter().map(|r| r.temperature).collect::<Vec<_>>(),
+                    "stride": temperature.stride,
+                },
+                "updates": {
+                    "at": updates.rows.iter().map(|r| r.at).collect::<Vec<_>>(),
+                    "frequency": updates.rows.iter().map(|r| r.frequency).collect::<Vec<_>>(),
+                    "pps": updates.rows.iter().map(|r| r.pps).collect::<Vec<_>>(),
+                    "stride": updates.stride,
+                },
+            }),
+            bounds,
+        ))
+    })
 }
 
 /// `/api/status`: the daemon's last poll and the newest clock update,
@@ -411,7 +430,6 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "tracking": tracking,
             "reference_name": reference_name,
             "on_backups": on_backups(&sources, &paired),
-            "has_pps": has_pps(&sources, |reference| Ok(reader.refclock_pulsed(reference)?))?,
             "selected_unreachable": selected_unreachable(&sources),
             "last_event": reader.latest_event_at()?.map(seconds),
             "tempcomp": match reader.tempcomp()? {
@@ -696,6 +714,7 @@ mod tests {
     use std::net::IpAddr;
 
     use chronymon_control::report::Address;
+    use chronymon_control::report::ReferenceId;
     use chronymon_control::report::SourceMode;
     use chronymon_log::schema::RefclockLock;
     use chronymon_log::writer::Log;
@@ -859,39 +878,6 @@ mod tests {
         ));
         // An NMEA nothing is locked to is a refclock of its own.
         assert!(on_backups(&sources("selected", "selected")[1..], &[]));
-    }
-
-    #[test]
-    fn a_pps_only_while_a_refclock_not_removed_last_pulsed() {
-        let source = |address: &str, mode: &str, removed: bool| Source {
-            id: 0,
-            address: address.to_owned(),
-            mode: mode.to_owned(),
-            name: None,
-            first_seen: 0,
-            last_seen: 0,
-            removed,
-            report: None,
-            selection: None,
-            stats: None,
-            ntp: None,
-        };
-        // PPS's samples pulses, NMEA's not.
-        let pulsed = |reference: &str| Ok(Some(reference == "PPS"));
-        let ntp = source("192.0.2.1", "client", false);
-        let pps = source("50505300", "refclock", false);
-        let nmea = source("4E4D4541", "refclock", false);
-        let has = |sources: &[Source]| has_pps(sources, pulsed).expect("a read");
-        assert!(has(&[ntp.clone(), nmea.clone(), pps.clone()]));
-        assert!(!has(&[ntp.clone(), nmea]));
-        assert!(!has(&[
-            ntp.clone(),
-            Source {
-                removed: true,
-                ..pps
-            }
-        ]));
-        assert!(!has(&[ntp]));
     }
 
     #[test]

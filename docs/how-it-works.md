@@ -257,33 +257,67 @@ and the polling, go on.
 The Temperature page sets the clock's own frequency against the
 temperature chronyd's `tempcomp` reads, from `tempcomp.log`, which
 chronyd writes with a `tempcomp` line and `log tempcomp`.  chronyd
-reports the frequency left once tempcomp has corrected, so the page
-adds the logged compensation back: the clock's own, whatever the
-coefficients, 0 or a points file.  The
-scatter of one against the other draws the linear and the quadratic
-fits over it, and gives each one's R and R^2, and the line's slope.
-The fits are robust (Huber) least squares: a reading far off the
-line, an NTP source's wander or step, pulls it less than it would
-plain least squares.
+reports the frequency with tempcomp's compensation undone, so the page
+takes the logged compensation back out, exactly as chronyd put it in
+(`LCL_ReadAbsoluteFrequency`, `local.c`): the clock's own, whatever
+the coefficients, 0 or a points file.  The scatter and the fits are of
+the readings themselves, from `/api/tempcomp`, not the charts'
+buckets: a bucket's mean temperature is not a reading, and a
+temperature and a frequency in one bucket can be most of it apart.
+Each of chronyd's clock updates is set against the reading in force
+at it, the last before it; one with no reading within three of the
+sensor's intervals is left out.  The compensation taken out is the one
+in force when the update was made: chronyd's frequency changes only
+at an update, whatever compensation follows (`LCL_SetTempComp` keeps
+`LCL_ReadAbsoluteFrequency`'s value, `local.c`).  tracking.log's line
+is written as the update is made, to the second, and every update has
+one, so the log's are the updates wherever chronyd logs tracking.  The
+daemon's rows fill in only where the log has none, as where chronyd
+does not log tracking: each the latest update at a poll, made after
+the poll before, where the daemon was polling then (`poll_interval`),
+else after its reference time, fuzzed up to a second earlier.  An
+update the compensation may have changed in the time it was made in
+is left out, which came first not known; tempcomp.log's times are to
+the second.  Neither chronyd's local reference nor its losing its
+reference is an update.  A long range is read every so many, up to
+100,000 temperatures and 20,000 updates, each update's compensation
+found from all the readings, the rows read one at a time, in one
+snapshot.  The fits, linear and quadratic, are robust (Huber)
+least squares: a reading far off the line, an NTP source's wander or
+step, pulls it less than it would plain least squares.  The caption
+gives each one's R and R^2, and the line's slope.
 
 A sensor that swings with load, a CPU's, leads the crystal, which
 warms more slowly.  Fit the sensor's lag filters the temperature by a
-first-order lag and fits that.  Its time constant, none, 5 or 10 min,
-tried only in a range ten times as long, is the shortest whose
-quadratic predicts readings left out of its fit no worse than the
-best, within the noise: the range in six stretches, each left out in
-turn, an hour either side left out with it, and the stretches' mean
-square misses compared, the same stretches for each lag.  No longer
-lag is tried: a crystal follows a sensor on its board within minutes,
-and a longer lag fitted is chronyd's estimate trailing the clock, or
-a curve the fit lacks.  For the same reason the checkbox is off
-without a PPS, a refclock whose latest raw sample in `refclocks.log`
-is a pulse (`/api/status`'s `has_pps`): NTP's or a receiver's
-messages' frequency trails the clock by more than the crystal does.  The caption says how
-far those readings were missed with the lag and with none; where none
-is chosen, it says so and fits none.  chronyd compensates each reading
-as it is, so a line fitted with a lag suits only a sensor file
-filtered by that lag, which the dialog says.
+first-order lag and fits that.  Its time constant, none, 1 or 2 min,
+tried only in a range ten times as long and no shorter than the
+readings' interval, is the shortest whose quadratic predicts the
+frequency left out of its fit no worse than the best: the range in six
+stretches, each left out in turn, an hour either side left out with
+it, and the stretches' mean square misses compared, the same stretches
+for each lag, a lag no worse where it is within a standard error, a
+rule of thumb, the stretches not quite independent.  A lag counts only
+where it predicts better than the same filter read its lag later, as
+much smoothing without the delay: smoothing alone fits a sensor's
+coarse steps better, and that is not a lag.  A lag slight beside the
+sensor's steps is so not resolved, and the caption says so.  The
+filter starts again after each gap in the readings; its first three
+time constants, and the last lag's worth, of each run are not judged.
+Only updates a PPS steered are judged: their reference a refclock, not
+an NTP server, whose latest raw sample, no more than 10 min before,
+was a pulse.  Without them the checkbox is off: NTP's or a receiver's messages' frequency trails the clock by
+more than the crystal does.  No lag over 2 min is tried: a crystal
+follows a sensor on its board within about a minute, and a longer lag
+fitted is chronyd's estimate trailing the clock, or a curve the fit
+lacks.  Past 1 min the caption and the dialog say the sensor is a
+poor one for tempcomp, or chronyd's estimate trails the crystal.
+Where no lag can be fitted, the readings too far apart, the range too
+short, or too few PPS-steered updates past the settling, the caption
+says why.  It gives how far the readings left
+out were missed with the lag and with none, and the longest lag as
+good, where longer.  chronyd compensates each reading as it is, so a
+line fitted with a lag suits only a sensor file filtered by that lag,
+which the dialog says.
 
 Once a range holds a good spread of temperatures, the page's Fit
 tempcomp opens a dialog of that range's fit, with Copy, and a block

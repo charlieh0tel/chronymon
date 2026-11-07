@@ -268,10 +268,9 @@ Journal, Distribution, Kiosk.
   chrony's formula going no further, in that unit, the sensor and
   interval read from chronyd's configuration (`meta` `tempcomp`).
   Any range is fitted, against the clock's own frequency: chronyd
-  reports what is left once tempcomp has corrected
-  (`LCL_ReadAbsoluteFrequency`), so the scatter and the fit add the
-  compensation back, frequency less compensation, whatever the
-  coefficients.  Readings from before the
+  reports the frequency with tempcomp's compensation undone
+  (`LCL_ReadAbsoluteFrequency`), so the scatter and the fit take it
+  back out as chronyd put it in, whatever the coefficients.  Readings from before the
   sensor last changed are not (`meta` `tempcomp_since`, journaled
   `tempcomp_changed`).  No settling time after a restart: chronyd's
   first estimates are rough for a few minutes, a little noise in a
@@ -282,12 +281,24 @@ Journal, Distribution, Kiosk.
   a lagged line is right only for a sensor file filtered the same
   way, and fitting it with the lag on its own would hand out a line
   that adds the sensor's swings to the compensation.  The lag is the
-  time constant of a first-order filter, picked from none, 5 and
-  10 min by blocked cross-validation (six contiguous stretches held
-  out in turn, an hour's margin), all judged on the same readings by
-  the quadratic, the shortest within a standard error of the best.
-  Capped at 10 min, and off without a PPS: a longer lag is chronyd's
-  estimate or a misfit, not the crystal.  Judged on the
+  time constant of a first-order filter, picked from none, 1 and
+  2 min by blocked cross-validation (six contiguous stretches held out
+  in turn, an hour's margin), all judged on the same PPS-steered
+  updates by the quadratic, the shortest within a standard error of
+  the best, and only where it beats the same filter read its lag later
+  (as much smoothing, no delay), which a sensor's coarse steps alone
+  favor.  PPS-steered: the reference a refclock whose latest raw
+  sample, within 10 min, was a pulse.  Capped at 2 min, warned
+  of past 1: a sensor further behind is a poor one, and a longer lag
+  is chronyd's estimate or a misfit, not the crystal.  Fitted from the
+  readings, not buckets (`/api/tempcomp`): a bucket's mean bends a
+  curve, and a bucket's temperature and frequency can be most of it
+  apart.  The server takes out the compensation in force when each
+  update was made (chronyd's frequency changes only then), from
+  tracking.log's lines first, stamped at the update; the daemon's rows
+  only where the log has none, bounded by the poll before
+  (`poll_interval`, schema 8).  An update a change may have fallen in
+  is dropped.  Judged on the
   readings it was fitted to, a lag wins where it should not: a step
   of a sensor the frequency follows at once, smeared into a trail,
   barely moves a robust spread, which picked 20 min on apu-0, whose
