@@ -350,6 +350,15 @@ impl Batch<'_> {
         )
     }
 
+    /// Record that the daemon, started at `at`, polls every `seconds`.
+    pub fn poll_interval(&self, at: Timestamp, seconds: f64) -> Result<()> {
+        self.transaction.execute(
+            "INSERT INTO poll_interval (at, seconds) VALUES (?1, ?2)",
+            params![to_stored(at)?, seconds],
+        )?;
+        Ok(())
+    }
+
     /// Record what the daemon's watchers find wrong now, in place of
     /// what was recorded before.
     pub fn troubles(&self, troubles: &[Trouble]) -> Result<()> {
@@ -778,6 +787,7 @@ mod tests {
 
     use super::*;
     use crate::schema::GNSS;
+    use crate::schema::POLL_INTERVAL;
 
     fn schema_version(log: &Log) -> i64 {
         log.connection
@@ -800,6 +810,30 @@ mod tests {
             schema_version(&Log::open(&path).expect("reopened")),
             VERSION
         );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn adds_poll_interval_to_schema_7() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v7-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let log = Log::open(&path).expect("created");
+            log.connection
+                .execute_batch(
+                    "DROP TABLE poll_interval;
+                     UPDATE meta SET value = '7' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let mut log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        const { assert!(VERSION >= POLL_INTERVAL) };
+        log.write(|batch| batch.poll_interval(Timestamp::UNIX_EPOCH, 1.0))
+            .expect("written");
         let _ = std::fs::remove_dir_all(&directory);
     }
 

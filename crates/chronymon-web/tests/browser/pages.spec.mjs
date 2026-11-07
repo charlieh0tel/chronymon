@@ -726,6 +726,11 @@ const copiedHeader = async (page) =>
   (await page.locator("#fits pre.fitted").textContent()).split("\n").map((line) => `# ${line}`).join("\n");
 
 // The tempcomp lines the Temperature page's fit gives, each as words.
+// The synthetic clock's slope, ppm a millidegree, and how near a fit
+// of it finds it, relative.
+const SYNTHETIC_SLOPE = 8.75e-5;
+const SLOPE_WITHIN = 0.02;
+
 const fittedLines = async (page) =>
   (await page.locator("#fits pre.tempcomp").allTextContents()).join("\n").split("\n")
     .filter((line) => line.startsWith("tempcomp ")).map((line) => line.trim().split(/\s+/));
@@ -743,10 +748,12 @@ test("Temperature: the fit gives tempcomp lines that cancel the synthetic clock'
     expect(line[4]).toBe("0");
   }
   // The synthetic clock runs faster by 8.75e-5 ppm a millidegree, bent
-  // by -2e-9 a millidegree squared: the compensation is its negative.
-  expect(Number(linear[5])).toBeCloseTo(-8.75e-5, 6);
+  // by -2e-9 a millidegree squared: the compensation is its negative,
+  // within what the sensor's noise and the robust fit's weights move it.
+  const near = (v, expected) => expect(Math.abs(Number(v) / expected - 1)).toBeLessThan(SLOPE_WITHIN);
+  near(linear[5], -SYNTHETIC_SLOPE);
   expect(linear[6]).toBe("0");
-  expect(Number(quadratic[5])).toBeCloseTo(-8.75e-5, 6);
+  near(quadratic[5], -SYNTHETIC_SLOPE);
   expect(Number(quadratic[6]) / 2e-9).toBeGreaterThan(0.8);
   expect(Number(quadratic[6]) / 2e-9).toBeLessThan(1.2);
   // In ASCII, as chrony.conf is.
@@ -849,9 +856,6 @@ test("Temperature: no fit without a tempcomp line chronymond read", async ({ pag
   await expect(page.locator("#fit")).toBeHidden();
 });
 
-// The synthetic clock's slope, ppm a millidegree, and its temperature's
-// mean.
-const SYNTHETIC_SLOPE = 8.75e-5;
 const SYNTHETIC_MEAN = 41000;
 
 // The Temperature page's readings, `/api/tempcomp`'s, made over by
@@ -1108,7 +1112,7 @@ test("Temperature: the fit takes tempcomp's compensation out of chronyd's freque
   await expect(page.locator("#scatter .uplot")).toBeVisible();
   await page.locator("#fit").click();
   const [linear] = await fittedLines(page);
-  expect(Number(linear[5])).toBeCloseTo(-SYNTHETIC_SLOPE, 6);
+  expect(Math.abs(Number(linear[5]) / -SYNTHETIC_SLOPE - 1)).toBeLessThan(SLOPE_WITHIN);
 });
 
 test("Journal: the synthetic run's events", async ({ page }) => {

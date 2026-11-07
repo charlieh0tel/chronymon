@@ -293,8 +293,12 @@ Journal, Distribution, Kiosk.
   is chronyd's estimate or a misfit, not the crystal.  Fitted from the
   readings, not buckets (`/api/tempcomp`): a bucket's mean bends a
   curve, and a bucket's temperature and frequency can be most of it
-  apart.  The server takes out the compensation in force at each
-  update's read-out, dropping updates in the second of a change.  Judged on the
+  apart.  The server takes out the compensation in force when each
+  update was made (chronyd's frequency changes only then), from
+  tracking.log's lines first, stamped at the update; the daemon's rows
+  only where the log has none, bounded by the poll before
+  (`poll_interval`, schema 8).  An update a change may have fallen in
+  is dropped.  Judged on the
   readings it was fitted to, a lag wins where it should not: a step
   of a sensor the frequency follows at once, smeared into a trail,
   barely moves a robust spread, which picked 20 min on apu-0, whose

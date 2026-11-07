@@ -229,7 +229,11 @@ fn run(cli: &Cli) -> Result<()> {
         boot_id: host::boot_id(),
         kernel_crash_recorded: host::kernel_crash_recorded(),
     };
-    log.write(|batch| lifecycle::start(batch, Timestamp::now(), &host))?;
+    log.write(|batch| {
+        let at = Timestamp::now();
+        lifecycle::start(batch, at, &host)?;
+        batch.poll_interval(at, interval.as_secs_f64())
+    })?;
 
     // The backfill: everything in chronyd's logs not yet recorded.
     let mut ingest = Ingest::new(cli.chrony_logs.clone());

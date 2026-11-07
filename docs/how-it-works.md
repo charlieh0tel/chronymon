@@ -267,15 +267,22 @@ temperature and a frequency in one bucket can be most of it apart.
 Each of chronyd's clock updates is set against the reading in force
 at it, the last before it; one with no reading within three of the
 sensor's intervals is left out.  The compensation taken out is the one
-in force when chronyd's frequency was read out: the daemon's poll, or
-tracking.log's line.  tempcomp.log's times are to the second, so an
-update in the same second as a reading that changed the compensation
-is left out, which came first not known.  Updates are the daemon's
-where it was recording, and tracking.log's whose second it was not
-recording in any of, so none twice.  A long range is read every so
-many, up to 100,000 temperatures and 20,000 updates, each update's
-compensation found from all the readings, the rows read one at a
-time.  The fits, linear and quadratic, are robust (Huber)
+in force when the update was made: chronyd's frequency changes only
+at an update, whatever compensation follows (`LCL_SetTempComp` keeps
+`LCL_ReadAbsoluteFrequency`'s value, `local.c`).  tracking.log's line
+is written as the update is made, to the second, and every update has
+one, so the log's are the updates wherever chronyd logs tracking.  The
+daemon's rows fill in only where the log has none, as where chronyd
+does not log tracking: each the latest update at a poll, made after
+the poll before, where the daemon was polling then (`poll_interval`),
+else after its reference time, fuzzed up to a second earlier.  An
+update the compensation may have changed in the time it was made in
+is left out, which came first not known; tempcomp.log's times are to
+the second.  Neither chronyd's local reference nor its losing its
+reference is an update.  A long range is read every so many, up to
+100,000 temperatures and 20,000 updates, each update's compensation
+found from all the readings, the rows read one at a time, in one
+snapshot.  The fits, linear and quadratic, are robust (Huber)
 least squares: a reading far off the line, an NTP source's wander or
 step, pulls it less than it would plain least squares.  The caption
 gives each one's R and R^2, and the line's slope.
