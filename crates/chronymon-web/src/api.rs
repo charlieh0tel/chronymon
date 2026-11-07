@@ -27,6 +27,8 @@ use jiff::Timestamp;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::tempcomp;
+
 /// The strip's name for chronyd's reference while it serves its local
 /// reference, whose address is unspecified.
 const LOCAL_REFERENCE: &str = "local reference";
@@ -378,6 +380,56 @@ pub(crate) fn tempcomp(path: &Path, query: &str) -> Result<Value> {
     })
 }
 
+/// `/api/tempcomp/fit`: the Temperature page's fit of the range,
+/// `/api/tempcomp`'s readings since the sensor last changed: the pairs
+/// fitted and the linear and quadratic fits.
+pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
+    let asked = asked(query, MIN_POINTS)?;
+    let (read, since, bounds) = read(path, |reader| {
+        let (window, bounds) = window(reader, &[Table::TempcompSample], asked)?;
+        let read = reader.tempcomp_readings(
+            window.from,
+            window.to,
+            TEMPCOMP_TEMPERATURES,
+            TEMPCOMP_UPDATES,
+        )?;
+        Ok((read, reader.tempcomp_since()?.map(seconds), bounds))
+    })?;
+    // Fitted only since the sensor last changed: readings before are
+    // another sensor's.
+    let rows = &read.temperature.rows;
+    let first = since.map_or(0, |since| rows.partition_point(|r| r.at < since));
+    let at: Vec<f64> = rows[first..].iter().map(|r| r.at).collect();
+    let temperature: Vec<f64> = rows[first..].iter().map(|r| r.temperature).collect();
+    let fitted = tempcomp::scatter(&at, &temperature, &read.updates.rows).map(|s| {
+        json!({
+            "pairs": {
+                "at": s.pairs.iter().map(|p| p.at).collect::<Vec<_>>(),
+                "x": s.pairs.iter().map(|p| p.x).collect::<Vec<_>>(),
+                "y": s.pairs.iter().map(|p| p.y).collect::<Vec<_>>(),
+            },
+            "t0": s.t0,
+            "spread": s.spread,
+            "fits": s.fits.iter().map(|f| json!({
+                "degree": f.degree,
+                "c": f.c,
+                "left": f.left,
+                "determined": f.determined,
+            })).collect::<Vec<_>>(),
+        })
+    });
+    Ok(with(
+        json!({
+            // Where the cut fell within the range: readings before it
+            // left out.
+            "since": since.filter(|_| first > 0 && first < rows.len()),
+            "stride": read.updates.stride,
+            "fitted": fitted,
+        }),
+        bounds,
+    ))
+}
+
 /// `/api/status`: the daemon's last poll and the newest clock update,
 /// with the reference's name.
 pub(crate) fn status(path: &Path) -> Result<Value> {
@@ -716,7 +768,11 @@ mod tests {
     use chronymon_control::report::Address;
     use chronymon_control::report::ReferenceId;
     use chronymon_control::report::SourceMode;
+    use chronymon_log::chrony_log::Line;
+    use chronymon_log::chrony_log::TempcompLine;
+    use chronymon_log::chrony_log::TrackingLine;
     use chronymon_log::schema::RefclockLock;
+    use chronymon_log::schema::Tempcomp;
     use chronymon_log::writer::Log;
 
     use super::*;
@@ -791,6 +847,67 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn the_tempcomp_fit_is_only_since_the_sensor_changed() {
+        const START: i64 = 1_800_000_000;
+        const CHANGED: i64 = 600;
+        let at = |second: i64| Timestamp::new(START + second, 0).expect("in range");
+        let sensor = |path: &str| Tempcomp {
+            sensor: path.to_owned(),
+            interval: "16".to_owned(),
+            rest: "0 0 0 0".to_owned(),
+        };
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-api-tempcomp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let mut log = Log::open(&path).expect("a database");
+        log.write(|batch| {
+            batch.tempcomp(at(0), Some(&sensor("/sys/class/hwmon/hwmon1/temp1_input")))?;
+            batch.tempcomp(
+                at(CHANGED),
+                Some(&sensor("/sys/class/hwmon/hwmon2/temp1_input")),
+            )?;
+            for second in (0..1200).step_by(16) {
+                batch.log_line(&Line::Tempcomp(TempcompLine {
+                    at: at(second),
+                    temperature: 40_000.0 + second as f64,
+                    compensation: 0.0,
+                }))?;
+                batch.log_line(&Line::Tracking(TrackingLine {
+                    at: at(second + 5),
+                    reference: "PPS".to_owned(),
+                    stratum: 1,
+                    frequency: second as f64 * 1e-3,
+                    skew: 0.01,
+                    offset: 1e-6,
+                    leap: 'N',
+                    combined_sources: 1,
+                    offset_sd: 1e-7,
+                    remaining_correction: 0.0,
+                    root_delay: 1e-9,
+                    root_dispersion: 1e-5,
+                    max_error: 1e-5,
+                }))?;
+            }
+            Ok(())
+        })
+        .expect("written");
+        let got = tempcomp_fit(&path, "").expect("a fit");
+        std::fs::remove_dir_all(&directory).expect("removed");
+        let since = (START + CHANGED) as f64;
+        assert_eq!(got["since"], json!(since));
+        let fitted: Vec<f64> = got["fitted"]["pairs"]["at"]
+            .as_array()
+            .expect("pairs")
+            .iter()
+            .filter_map(Value::as_f64)
+            .collect();
+        assert!(fitted.len() > 30);
+        assert!(fitted.iter().all(|t| *t >= since));
     }
 
     #[test]

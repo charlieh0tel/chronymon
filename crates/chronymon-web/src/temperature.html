@@ -39,10 +39,6 @@
   <div id="figures" class="muted"></div>
   <div class="controls fit">
     <button id="fit" type="button" hidden>Fit tempcomp</button>
-    <label title="The clock's crystal warms more slowly than a sensor swinging with load: the temperature is
-filtered by the lag that best predicts readings left out of the fit: none, 1 or 2 min,
-in a range whose buckets are no longer.  More than 1 min is warned of: a poor sensor for tempcomp.
-Off where chronyd has no PPS: NTP's or a receiver's messages' frequency trails the clock by more than the crystal does."><input type="checkbox" id="lag"> Fit the sensor's lag</label>
   </div>
 </div>
 
@@ -96,7 +92,7 @@ let scatterChart = null;
 const OWN_FREQUENCY = "Clock's own frequency, ppm";
 
 // The fits of the pairs the last scatter set against each other, the
-// clock's own frequency against the temperature (`ownFrequency`).
+// clock's own frequency against the temperature.
 let fitFrom = null;
 
 // The most compensation chronyd takes, in ppm; past it a reading is
@@ -106,278 +102,20 @@ const TEMPCOMP_LIMIT = 10;
 // Significant figures of a fitted coefficient.
 const COEFFICIENT_FIGURES = 4;
 
-// The root mean square of `values`.
-const rms = (values) => Math.sqrt(values.reduce((s, v) => s + v * v, 0) / values.length);
-
 // A time as a comment in chrony.conf says it, to the minute, in UTC.
 const utcMinute = (at) => new Date(at * 1000).toISOString().slice(0, 16).replace("T", " ");
 
 // A coefficient as chrony.conf takes it.
 const coefficient = (v) => String(Number(v.toPrecision(COEFFICIENT_FIGURES)));
 
-// Huber's constant, in robust standard deviations of the residuals:
-// a residual past it counts for less, an NTP source's wander or a step
-// pulling the fit less than it would least squares; on normal noise
-// the fit is 95% as efficient as least squares.
-const HUBER = 1.345;
-// The median absolute deviation to the standard deviation, for normal
-// noise.
-const MAD_SIGMA = 1.4826;
-// Most rounds of reweighting, and the change in the residuals' scale,
-// relative, below which the weights have settled.
-const ROBUST_ROUNDS = 50;
-const ROBUST_SETTLED = 1e-6;
-
-const median = (values) => {
-  const sorted = Float64Array.from(values).sort();
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-};
+// A polynomial's value at `x`, its coefficients `c`, constant first.
 const evaluate = (c, x) => c.reduce((s, v, n) => s + v * x ** n, 0);
 
-// The robust (Huber) polynomial of `degree` through `pairs`, x from T0,
-// by least squares reweighted until the weights settle: its
-// coefficients, constant first, and the residuals' robust scale; or
-// null.
-function robustPolynomial(pairs, degree) {
-  let c = polynomial(pairs, degree);
-  let scale = null;
-  for (let round = 0; c && round < ROBUST_ROUNDS; round++) {
-    const residuals = pairs.map(({ x, y }) => y - evaluate(c, x));
-    const next = MAD_SIGMA * median(residuals.map(Math.abs));
-    if (!(next > 0)) return { c, scale: next };
-    const settled = scale != null && Math.abs(next - scale) <= ROBUST_SETTLED * scale;
-    scale = next;
-    if (settled) break;
-    c = polynomial(pairs, degree, residuals.map((r) => Math.min(1, HUBER * scale / Math.abs(r))));
-  }
-  return c && { c, scale };
-}
-
-// Lags tried, as a first-order filter's time constant in seconds:
-// none, then each minute to two.  A crystal follows a sensor on its
-// board within about a minute (draws's, by its PPS against the raw
-// clock); a sensor further behind is a poor one for tempcomp, and a
-// longer lag fits chronyd's estimate trailing the clock, or a curve
-// the fit lacks, not the crystal, so is not tried.  One shorter than
-// the readings' interval is not told from none, so is not tried
-// either.
-const LAG_STEP = 60;
-const LAG_MAX = 120;
-// A lag past this is warned of: the sensor, or chronyd's estimate,
-// trails the crystal by more than a sensor for tempcomp should.
-const LAG_WARN = 60;
-const LAGS = Array.from({ length: LAG_MAX / LAG_STEP + 1 }, (_, n) => n * LAG_STEP);
-// The lag is chosen by how well each predicts readings left out of its
-// fit: the range in this many contiguous stretches, each left out in
-// turn, and the seconds either side of it left out too, as the
-// frequency's noise is slow.  Judged by its own fit, a lag takes in
-// what it should not: a step of the sensor the frequency followed at
-// once, smeared into a trail, fits the bulk no worse.
-const LAG_FOLDS = 6;
-const LAG_MARGIN = 3600;
-// Each lag's fit, the quadratic: judged by a line, a lag wins by
-// bending a clock's curve, as the day's warming and cooling differ,
-// toward the line.
-const LAG_DEGREE = 2;
-// A lag is tried only in a range this many times as long; and the
-// filter's first this many time constants of each run of readings,
-// while it settles from the run's first, are not fitted.
-const LAG_SPAN = 10;
-const LAG_SETTLE = 3;
-// Readings no further apart than this many of their usual interval
-// are one run; a longer gap, chronyd or the sensor stopped, ends it.
-const GAP_READINGS = 3;
-
-// The usual interval of `at`, times in order: the median step.
-const usualStep = (at) => (at.length < 2 ? 0 : median(at.slice(1).map((t, i) => t - at[i])));
-
-// Each of `at`'s readings' run's first time, a run ending at a gap of
-// more than GAP_READINGS intervals.
-function runStarts(at, interval) {
-  const starts = new Float64Array(at.length);
-  for (let i = 0; i < at.length; i++) {
-    starts[i] = i > 0 && at[i] - at[i - 1] <= GAP_READINGS * interval ? starts[i - 1] : at[i];
-  }
-  return starts;
-}
-
-// Each of `at`'s readings' run's last time.
-function runEnds(at, starts) {
-  const ends = new Float64Array(at.length);
-  for (let i = at.length - 1; i >= 0; i--) {
-    ends[i] = i < at.length - 1 && starts[i + 1] === starts[i] ? ends[i + 1] : at[i];
-  }
-  return ends;
-}
-
-// `values` at the times `at` through a first-order filter of time
-// constant `lag` seconds, as a crystal follows the air around it,
-// begun again at each run's first reading (`starts`).  With `ends`,
-// each the filter's `lag` later instead, to its run's end: as much
-// smoothing, without the delay.
-function lagged(at, values, lag, starts, ends = null) {
-  if (lag === 0) return values;
-  const out = new Array(values.length);
-  let filtered = null;
-  for (let i = 0; i < values.length; i++) {
-    filtered = starts[i] === at[i]
-      ? values[i]
-      : filtered + (1 - Math.exp(-(at[i] - at[i - 1]) / lag)) * (values[i] - filtered);
-    out[i] = filtered;
-  }
-  if (!ends) return out;
-  const ahead = new Array(values.length);
-  let j = 0;
-  for (let i = 0; i < values.length; i++) {
-    const when = Math.min(at[i] + lag, ends[i]);
-    j = Math.max(j, i);
-    while (at[j] < when) j++;
-    ahead[i] = at[j] === when
-      ? out[j]
-      : out[j - 1] + (out[j] - out[j - 1]) * (when - at[j - 1]) / (at[j] - at[j - 1]);
-  }
-  return ahead;
-}
-
-// Each of chronyd's clock updates with the temperature reading in
-// force at it, the last at or before it, and no further back than
-// GAP_READINGS intervals: its time, the reading's index, the clock's
-// own frequency, and whether a PPS steered it.
-function updatesOn(at, updates, interval) {
-  const found = [];
-  let i = -1;
-  for (let u = 0; u < updates.at.length; u++) {
-    while (i + 1 < at.length && at[i + 1] <= updates.at[u]) i++;
-    if (i < 0 || updates.at[u] - at[i] > GAP_READINGS * interval) continue;
-    found.push({ at: updates.at[u], i, y: updates.frequency[u], pps: updates.pps[u] });
-  }
-  return found;
-}
-
-// What robust fits miss the frequency of `pairs`, in time order, left
-// out of their fit, LAG_FOLDS stretches in turn: each stretch's mean
-// square miss, and the RMS of all; or null for too few to fit.
-function heldOut(pairs) {
-  const folds = [], missed = [];
-  for (let fold = 0; fold < LAG_FOLDS; fold++) {
-    const left = pairs.slice(Math.floor(fold * pairs.length / LAG_FOLDS),
-      Math.floor((fold + 1) * pairs.length / LAG_FOLDS));
-    if (left.length === 0) continue;
-    const from = left[0].at - LAG_MARGIN, to = left[left.length - 1].at + LAG_MARGIN;
-    const train = pairs.filter((p) => p.at < from || p.at > to);
-    if (train.length < MIN_PAIRS) return null;
-    const mean = train.reduce((s, p) => s + p.x, 0) / train.length;
-    const fit = robustPolynomial(train.map((p) => ({ x: p.x - mean, y: p.y })), LAG_DEGREE);
-    if (!fit) return null;
-    const misses = left.map((p) => p.y - evaluate(fit.c, p.x - mean));
-    folds.push(rms(misses) ** 2);
-    missed.push(...misses);
-  }
-  return folds.length < LAG_FOLDS ? null : { folds, missed: rms(missed) };
-}
-
-// Whether `a` misses by no more than `b`, by a rule of thumb: the mean
-// of their stretches' differences in mean square miss within one
-// standard error of it, the stretches taken as independent, which,
-// sharing most of their fits' readings, they are not quite.  The same
-// stretches, so a hard stretch counts against both.
-function noWorse(a, b) {
-  const d = a.folds.map((f, i) => f - b.folds[i]);
-  const mean = d.reduce((s, v) => s + v, 0) / d.length;
-  const spread = Math.sqrt(d.reduce((s, v) => s + (v - mean) ** 2, 0) / (d.length - 1));
-  return mean <= spread / Math.sqrt(d.length);
-}
-
-// Why no lag is fitted, where none can be.
-const NO_PPS = "No lag fitted: no PPS steered the clock in this range, and NTP's or a receiver's " +
-  "messages' frequency trails it by more than a crystal trails its sensor.";
-const tooSparse = (interval) => `No lag fitted: readings ${Math.round(interval)} s apart are too far ` +
-  `apart to tell a lag of ${lagText(LAG_MAX)} or less from none.`;
-const TOO_SHORT = "No lag fitted: the range is too short to tell a lag from none.";
-const TOO_FEW = "No lag fitted: too few PPS-steered updates past the filter's settling to tell a lag from none.";
-
-// The lag the frequency follows the temperature by, from the updates a
-// PPS steered: of those the range is long enough for, and no shorter
-// than the readings' interval, the shortest that predicts readings
-// left out of its fit no worse than the best, each judged on the same
-// updates, those past the longest's settling.  A lag counts only where
-// it predicts better than the same filter read its lag later, as much
-// smoothing without the delay: smoothing alone fits a sensor's coarse
-// steps better, and that is not a lag.  A lag slight beside the
-// sensor's steps is not told from smoothing, so is not resolved.
-// `at`, `values` and `starts` are the readings, `updates` as
-// `updatesOn` gives them.  The lag, the longest as good, and what it
-// and none miss by; or why none is fitted.
-function bestLag(at, values, starts, interval, updates) {
-  const steered = updates.filter((u) => u.pps);
-  if (steered.length < MIN_PAIRS) return { why: NO_PPS };
-  const span = at[at.length - 1] - at[0];
-  const sampled = LAGS.filter((lag) => lag > 0 && lag >= interval);
-  const tried = [0, ...sampled.filter((lag) => lag * LAG_SPAN <= span)];
-  if (tried.length < 2) return { why: sampled.length > 0 ? TOO_SHORT : tooSparse(interval) };
-  const longest = tried[tried.length - 1];
-  const ends = runEnds(at, starts);
-  // Past the longest's settling, and short of its run's end by as
-  // much, where it is not seen ahead.
-  const judged = steered.filter((u) => at[u.i] - starts[u.i] >= LAG_SETTLE * longest &&
-    ends[u.i] - at[u.i] >= longest);
-  const score = (xs) => heldOut(judged.map((u) => ({ at: u.at, x: xs[u.i], y: u.y })));
-  const scored = tried.map((lag) => {
-    const missed = score(lagged(at, values, lag, starts));
-    if (!missed) return null;
-    const smoothed = lag === 0 ? null : score(lagged(at, values, lag, starts, ends));
-    return { lag, ...missed, smoothed };
-  }).filter(Boolean);
-  const none = scored.find((s) => s.lag === 0);
-  if (!none) return { why: TOO_FEW };
-  const delayed = scored.filter((s) => s.lag === 0 || (s.smoothed && !noWorse(s.smoothed, s)));
-  const best = delayed.reduce((b, s) => (s.missed < b.missed ? s : b), none);
-  const within = delayed.filter((s) => noWorse(s, best));
-  return { lag: within[0].lag, upTo: within[within.length - 1].lag, missed: within[0].missed, unlagged: none.missed };
-}
-
-// The lag the last scatter was fitted with, in seconds, and what it
-// and none missed readings left out by; and its readings, drawn again
-// when the lag is turned on or off.
-let lagFitted = 0;
-let lagChosen = null;
-let scatterFrom = null;
-
-// A lag as the page says it; and the chosen one, with the longest as
-// good where that is longer.
-const lagText = (lag) => `${lag / 60} min`;
-const lagChosenText = (best) =>
-  lagText(best.lag) + (best.upTo > best.lag ? ` (up to ${lagText(best.upTo)} as good)` : "");
-// What a lag past LAG_WARN says.
-const LAG_WARNING = `More than ${LAG_WARN / 60} min behind: a poor sensor for tempcomp, ` +
-  "or chronyd's estimate trailing the crystal.";
-
-// The robust fits, linear and quadratic, of the frequency against the
-// temperature over `pairs`, from T0, their mean temperature: each its
-// name, color, coefficients (constant first, x from T0), and the RMS it
-// leaves; and the frequency's own spread about its mean.  What the
-// scatter draws and the dialog gives.
+// The fits, linear and quadratic: each its name and color.
 const FITS = [
   { name: "Linear", degree: 1, color: FIT_COLOR },
   { name: "Quadratic", degree: 2, color: CURVE_COLOR },
 ];
-function fitsOf(pairs) {
-  const t0 = Math.round(pairs.reduce((s, p) => s + p.x, 0) / pairs.length);
-  const from = pairs.map((p) => ({ x: p.x - t0, y: p.y }));
-  const mean = from.reduce((s, p) => s + p.y, 0) / from.length;
-  const spread = rms(from.map((p) => p.y - mean));
-  const fits = FITS.flatMap((f) => {
-    const c = robustPolynomial(from, f.degree)?.c;
-    if (!c) return [];
-    const value = (x) => evaluate(c, x - t0);
-    const left = rms(pairs.map(({ x, y }) => y - value(x)));
-    // R^2, the share of the frequency's variance the fit accounts for.
-    const determined = spread > 0 ? 1 - (left / spread) ** 2 : null;
-    return [{ ...f, c, value, left, determined }];
-  });
-  return { pairs, t0, spread, fits };
-}
 
 // The tempcomp lines that cancel the frequency's following the
 // temperature, from the last scatter's fits, each with what it leaves of
@@ -411,14 +149,7 @@ function drawFits() {
   const common = [
     `# Fitted by chronymon from ${pairs.length} points, ` +
       `${utcMinute(pairs[0].at)} to ${utcMinute(pairs[pairs.length - 1].at)} UTC,`,
-    `# of ${sensor.sensor}, robust (Huber) least squares` +
-      (lagFitted > 0 ? `, the temperature lagged ${lagChosenText(lagChosen)}.` : "."),
-    ...(lagFitted > 0
-      ? [`# The lag predicts readings left out of the fit to ${ppm(lagChosen.missed)} RMS, ` +
-          `against ${ppm(lagChosen.unlagged)} with none.`,
-        ...(lagFitted > LAG_WARN ? [`# ${LAG_WARNING}`] : []),
-        `# chronyd compensates each reading as it is: these lines suit a sensor file filtered by the same lag.`]
-      : []),
+    `# of ${sensor.sensor}, robust (Huber) least squares.`,
   ].join("\n");
   // What was fitted, as text, its comment marks the copy's alone; then
   // each fit, the block to paste, its Copy in its corner, which copies
@@ -433,60 +164,41 @@ function drawFits() {
 // What each fit's Copy copies.
 let fitCopies = [];
 
-// The scatter of the clock's own frequency against the temperature, of
-// `readings`, `/api/tempcomp`'s, reading by reading: a bucket's mean
-// temperature is not a reading, and a temperature and a frequency in
-// one bucket can be most of it apart.
-function drawScatter(readings) {
-  scatterFrom = readings;
+// The scatter of the clock's own frequency against the temperature,
+// and its fits, as `/api/tempcomp/fit` gives them: `got`.
+function drawScatter(got) {
   scatterChart?.destroy();
   scatterChart = null;
   $("scatter").innerHTML = "";
   fitFrom = null;
   $("fit").hidden = true;
-  // Fitted only since the sensor last changed: readings before are
-  // another sensor's.
-  const since = lastStatus?.tempcomp?.since ?? null;
-  const first = since == null ? 0 : readings.temperature.at.findIndex((t) => t >= since);
-  const t = readings.temperature;
-  const kept = first < 0 ? 0 : first;
-  const at = first < 0 ? [] : t.at.slice(kept);
-  const values = first < 0 ? [] : t.temperature.slice(kept);
-  const interval = usualStep(at);
-  const starts = runStarts(at, interval);
-  const updates = first < 0 ? [] : updatesOn(at, readings.updates, interval);
-  // No lag without a PPS: NTP's or a receiver's messages' frequency
-  // trails the clock by more than the crystal trails its sensor, and a
-  // lag would be that.
-  $("lag").disabled = !updates.some((u) => u.pps);
-  if ($("lag").disabled) $("lag").checked = false;
-  const found = $("lag").checked ? bestLag(at, values, starts, interval, updates) : null;
-  const best = found?.why == null ? found : null;
-  lagFitted = best?.lag ?? 0;
-  lagChosen = best;
-  const xs = lagged(at, values, lagFitted, starts);
-  const pairs = updates
-    .filter((u) => at[u.i] - starts[u.i] >= LAG_SETTLE * lagFitted)
-    .map((u) => ({ at: u.at, x: xs[u.i], y: u.y }));
-  if (pairs.length < MIN_PAIRS) {
+  const fitted = got.fitted;
+  if (!fitted) {
     showHtml($("figures"), "too few readings of both in this range to set against each other");
     return;
   }
-  fitFrom = fitsOf(pairs);
+  const { at, x, y } = fitted.pairs;
+  const pairs = at.map((t, i) => ({ at: t, x: x[i], y: y[i] }));
+  const fits = fitted.fits.map((f) => ({
+    ...FITS.find((d) => d.degree === f.degree),
+    ...f,
+    value: (v) => evaluate(f.c, v - fitted.t0),
+  }));
+  fitFrom = { pairs, t0: fitted.t0, spread: fitted.spread, fits };
   scatterChart = scatter(
     $("scatter"),
     pairs,
-    { name: columnName(key(TEMPCOMP, "temperature")) + (lagFitted > 0 ? `, lagged ${lagText(lagFitted)}` : "") },
+    { name: columnName(key(TEMPCOMP, "temperature")) },
     { name: OWN_FREQUENCY },
     $("scatter").clientWidth || 800,
-    fitFrom.fits,
+    fits,
   );
   // Only for a tempcomp line chronymond read, which the fit replaces.
   $("fit").hidden = !lastStatus?.tempcomp;
   // Each fit on its own line, its name in its color, the scatter's
   // legend, with its R and R^2, the line's slope too, and since when,
   // if not the whole range.
-  const named = fitFrom.fits.map((f) => {
+  const named = fits.map((f) => {
     const figures = [
       ...(f.degree === 1 ? [`${f.c[1].toPrecision(3)} ppm per unit of temperature`] : []),
       ...(f.determined == null
@@ -495,21 +207,11 @@ function drawScatter(readings) {
     ];
     return `<span style="color:${f.color}">${f.name}</span>: ${figures.join(", ")}`;
   });
-  const sinceChange = since != null && first > 0 ? ` since the sensor changed, ${local(since)}` : "";
-  const stride = readings.updates.stride;
+  const sinceChange = got.since != null ? ` since the sensor changed, ${local(got.since)}` : "";
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} clock updates` +
-    (stride > 1 ? `, every ${stride}th` : "") +
-    `, robust least squares${sinceChange}:<br>${named.join("<br>")}` +
-    (best
-      ? "<br>" + (lagFitted > 0
-        ? `The temperature lagged ${lagChosenText(best)}: readings left out of the fit missed by ` +
-          `${ppm(best.missed)} RMS, against ${ppm(best.unlagged)} with none.` +
-          (lagFitted > LAG_WARN ? `<br>${LAG_WARNING}` : "")
-        : `No lag resolved: none predicts readings left out of the fit better than no lag, and than ` +
-          `as much smoothing without the delay; no lag misses them by ${ppm(best.unlagged)} RMS.`)
-      : "") +
-    (found?.why ? `<br>${found.why}` : ""));
+    (got.stride > 1 ? `, every ${got.stride}th` : "") +
+    `, robust least squares${sinceChange}:<br>${named.join("<br>")}`);
 }
 
 async function load(signal) {
@@ -542,19 +244,11 @@ async function load(signal) {
     ...filledCharts("tracking", frequency, { frequency: "frequency" }).map((d) => ({ ...d, x: frequency.at })),
   ];
   drawStack(stack, { x: [], span: spanOf([temperature, frequency]), drawn }, "no temperature readings in this range");
-  drawScatter(await ask(`/api/tempcomp?from=${temperature.from}&to=${temperature.to}`, signal));
+  drawScatter(await ask(`/api/tempcomp/fit?from=${temperature.from}&to=${temperature.to}`, signal));
 }
 
 // How long Copy says it copied, in ms.
 const COPIED_FOR = 1500;
-
-// The lag kept in the address, and the scatter drawn again when it is
-// turned on or off.
-$("lag").checked = new URLSearchParams(location.search).has("lag");
-$("lag").addEventListener("change", () => {
-  remember({ lag: $("lag").checked ? "" : null });
-  if (scatterFrom) drawScatter(scatterFrom);
-});
 
 $("fit").addEventListener("click", () => {
   drawFits();

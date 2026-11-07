@@ -260,11 +260,15 @@ chronyd writes with a `tempcomp` line and `log tempcomp`.  chronyd
 reports the frequency with tempcomp's compensation undone, so the page
 takes the logged compensation back out, exactly as chronyd put it in
 (`LCL_ReadAbsoluteFrequency`, `local.c`): the clock's own, whatever
-the coefficients, 0 or a points file.  The scatter and the fits are of
-the readings themselves, from `/api/tempcomp`, not the charts'
-buckets: a bucket's mean temperature is not a reading, and a
-temperature and a frequency in one bucket can be most of it apart.
-Each of chronyd's clock updates is set against the reading in force
+the coefficients, 0 or a points file.  The server fits
+(`/api/tempcomp/fit`), and the page draws what it gives; the readings
+and updates themselves, the compensation taken out, are
+`/api/tempcomp`, for a tool of one's own, each update with whether a
+PPS steered it: its reference a refclock, not an NTP server, whose
+latest raw sample, no more than 10 min before, was a pulse.  The fits
+are of the readings themselves, not the charts' buckets: a bucket's
+mean temperature is not a reading, and a temperature and a frequency
+in one bucket can be most of it apart.  Each of chronyd's clock updates is set against the reading in force
 at it, the last before it; one with no reading within three of the
 sensor's intervals is left out.  The compensation taken out is the one
 in force when the update was made: chronyd's frequency changes only
@@ -287,37 +291,11 @@ least squares: a reading far off the line, an NTP source's wander or
 step, pulls it less than it would plain least squares.  The caption
 gives each one's R and R^2, and the line's slope.
 
+No lag is fitted.  chronyd compensates each reading as it comes, so
+the line to paste is the one fitted against the readings as they are.
 A sensor that swings with load, a CPU's, leads the crystal, which
-warms more slowly.  Fit the sensor's lag filters the temperature by a
-first-order lag and fits that.  Its time constant, none, 1 or 2 min,
-tried only in a range ten times as long and no shorter than the
-readings' interval, is the shortest whose quadratic predicts the
-frequency left out of its fit no worse than the best: the range in six
-stretches, each left out in turn, an hour either side left out with
-it, and the stretches' mean square misses compared, the same stretches
-for each lag, a lag no worse where it is within a standard error, a
-rule of thumb, the stretches not quite independent.  A lag counts only
-where it predicts better than the same filter read its lag later, as
-much smoothing without the delay: smoothing alone fits a sensor's
-coarse steps better, and that is not a lag.  A lag slight beside the
-sensor's steps is so not resolved, and the caption says so.  The
-filter starts again after each gap in the readings; its first three
-time constants, and the last lag's worth, of each run are not judged.
-Only updates a PPS steered are judged: their reference a refclock, not
-an NTP server, whose latest raw sample, no more than 10 min before,
-was a pulse.  Without them the checkbox is off: NTP's or a receiver's messages' frequency trails the clock by
-more than the crystal does.  No lag over 2 min is tried: a crystal
-follows a sensor on its board within about a minute, and a longer lag
-fitted is chronyd's estimate trailing the clock, or a curve the fit
-lacks.  Past 1 min the caption and the dialog say the sensor is a
-poor one for tempcomp, or chronyd's estimate trails the crystal.
-Where no lag can be fitted, the readings too far apart, the range too
-short, or too few PPS-steered updates past the settling, the caption
-says why.  It gives how far the readings left
-out were missed with the lag and with none, and the longest lag as
-good, where longer.  chronyd compensates each reading as it is, so a
-line fitted with a lag suits only a sensor file filtered by that lag,
-which the dialog says.
+warms more slowly: the scatter shows it as a loop, warming and cooling
+apart.
 
 Once a range holds a good spread of temperatures, the page's Fit
 tempcomp opens a dialog of that range's fit, with Copy, and a block

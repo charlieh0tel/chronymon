@@ -1364,57 +1364,8 @@ const NO_UPLOT =
 
 // ------------------------------------------------------------- scatter
 //
-// One measure against another, a dot per bucket both have, with its
-// least squares fits: smartclock's correlation page's, cut down.
-
-// Fewest pairs a statistic is given for.
-const MIN_PAIRS = 3;
-
-// The least squares polynomial of `degree`, 1 or 2, through `pairs`, x
-// already from T0, each pair weighted by `weights`' own, 1 if none: its
-// coefficients, constant first.  x is scaled to about 1 for the normal
-// equations, then the coefficients back.
-function polynomial(pairs, degree, weights = null) {
-  const scale = pairs.reduce((m, p) => Math.max(m, Math.abs(p.x)), 0) || 1;
-  const size = degree + 1;
-  const a = Array.from({ length: size }, () => new Array(size + 1).fill(0));
-  // The sums of x's powers, to twice the degree, and of y by each; run
-  // per pair in a fit of thousands, many times over.
-  const sums = new Float64Array(2 * size - 1);
-  const ySums = new Float64Array(size);
-  for (let n = 0; n < pairs.length; n++) {
-    const w = weights ? weights[n] : 1;
-    const x = pairs[n].x / scale;
-    let power = w;
-    for (let k = 0; k < sums.length; k++) {
-      sums[k] += power;
-      if (k < size) ySums[k] += power * pairs[n].y;
-      power *= x;
-    }
-  }
-  for (let i = 0; i < size; i++) {
-    for (let j = 0; j < size; j++) a[i][j] = sums[i + j];
-    a[i][size] = ySums[i];
-  }
-  // Gaussian elimination, with partial pivoting.
-  for (let col = 0; col < size; col++) {
-    const pivot = a.slice(col).reduce((best, row, n) =>
-      Math.abs(row[col]) > Math.abs(a[best][col]) ? n + col : best, col);
-    [a[col], a[pivot]] = [a[pivot], a[col]];
-    if (Math.abs(a[col][col]) < Number.EPSILON) return null;
-    for (let row = col + 1; row < size; row++) {
-      const f = a[row][col] / a[col][col];
-      for (let k = col; k <= size; k++) a[row][k] -= f * a[col][k];
-    }
-  }
-  const c = new Array(size).fill(0);
-  for (let row = size - 1; row >= 0; row--) {
-    let s = a[row][size];
-    for (let k = row + 1; k < size; k++) s -= a[row][k] * c[k];
-    c[row] = s / a[row][row];
-  }
-  return c.map((v, n) => v / scale ** n);
-}
+// One measure against another, a dot per pair, with the fits through
+// them: smartclock's correlation page's, cut down.
 
 // A scatter series drawn as a dot per point, for uPlot's `paths`: its
 // mode 2 joins a series' points with a line unless given its own.
