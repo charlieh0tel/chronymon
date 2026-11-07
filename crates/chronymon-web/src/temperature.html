@@ -164,7 +164,7 @@ function drawFits() {
     ].join("\n");
   });
   const common = [
-    `# Fitted by chronymon from ${pairs.length} points, ` +
+    `# Fitted by chronymon from ${fitFrom.count} points, ` +
       `${utcMinute(pairs[0].at)} to ${utcMinute(pairs[pairs.length - 1].at)} UTC,`,
     `# of ${sensor.sensor}, robust (Huber) least squares, at ${lowest} to ${highest}:`,
     `# outside them, the lines are a guess.`,
@@ -208,7 +208,7 @@ function drawScatter(got) {
     ...f,
     value: (v) => evaluate(f.c, v - fitted.t0),
   }));
-  fitFrom = { pairs, t0: fitted.t0, spread: fitted.spread, fits, settling: fitted.settling };
+  fitFrom = { pairs, count: fitted.count, t0: fitted.t0, spread: fitted.spread, fits, settling: fitted.settling };
   scatterChart = scatter(
     $("scatter"),
     pairs,
@@ -241,8 +241,8 @@ function drawScatter(got) {
   });
   const sinceChange = cut ? ` since ${cut}, when chronymond first read this sensor, or it changed` : "";
   showHtml($("figures"),
-    `${pairs.length.toLocaleString()} clock updates` +
-    (got.stride > 1 ? `, every ${got.stride}th` : "") +
+    `${fitted.count.toLocaleString()} clock updates` +
+    (got.stride > 1 ? `, one in ${got.stride} drawn` : "") +
     `, robust least squares${sinceChange}:<br>${[...named, ...unnamed].join("<br>")}` +
     (fitted.settling > 0
       ? `<br>${fitted.settling.toLocaleString()} of them within an hour of chronyd starting, its estimate settling.`

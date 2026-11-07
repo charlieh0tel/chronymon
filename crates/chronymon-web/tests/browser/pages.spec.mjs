@@ -909,6 +909,17 @@ test("Temperature: updates in chronyd's first hour are fitted, and said", async 
   await expect(page.locator("#fits pre.fitted")).toContainText("42 of the points within an hour of chronyd starting");
 });
 
+test("Temperature: every update is fitted, a long range's drawn one in so many", async ({ page }) => {
+  await tempcompFit(page, (got) => {
+    got.fitted.count = 123456;
+    got.stride = 7;
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#figures")).toContainText("123,456 clock updates, one in 7 drawn");
+  await page.locator("#fit").click();
+  await expect(page.locator("#fits pre.fitted")).toContainText("from 123456 points");
+});
+
 test("Temperature: a range all before the readings start says why nothing is fitted", async ({ page }) => {
   await tempcompFit(page, (got) => {
     got.fitted = null;
