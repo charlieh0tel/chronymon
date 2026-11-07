@@ -14,7 +14,7 @@ use chronymon_control::report::ReferenceId;
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 8;
+pub const VERSION: i64 = 9;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
@@ -231,6 +231,27 @@ pub const GNSS: i64 = 7;
 /// daemon polled.  An older database gains it, empty, on open: no
 /// migration but `TABLES`; its runs' intervals are not known.
 pub const POLL_INTERVAL: i64 = 8;
+
+/// The first schema whose tempcomp readings start when the daemon first
+/// recorded a `tempcomp` line (`meta` `tempcomp_since`), not only when
+/// the sensor changed: those before, read from tempcomp.log, may be
+/// another sensor's.  An older database with a line recorded and no
+/// start gets one: its first daemon start, when it first read
+/// chronyd's configuration.
+pub const TEMPCOMP_FROM_FIRST: i64 = 9;
+
+/// A `tempcomp_since` for an older database with a `tempcomp` line
+/// recorded and none: its first daemon start.
+pub(crate) fn tempcomp_since_first() -> String {
+    format!(
+        "INSERT INTO meta (key, value)
+             SELECT '{TEMPCOMP_SINCE}', CAST(MIN(at) AS TEXT) FROM event WHERE kind = '{start}'
+             HAVING MIN(at) IS NOT NULL
+                AND EXISTS (SELECT 1 FROM meta WHERE key = '{TEMPCOMP}' AND value != '')
+                AND NOT EXISTS (SELECT 1 FROM meta WHERE key = '{TEMPCOMP_SINCE}');",
+        start = EventKind::DaemonStart.name(),
+    )
+}
 
 /// An older schema's `log_file` renamed out of [`TABLES`]' way.
 pub(crate) const LOG_FILE_ASIDE: &str = "

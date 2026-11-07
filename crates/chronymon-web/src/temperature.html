@@ -99,6 +99,9 @@ let fitFrom = null;
 // ignored (`chrony.conf`, tempcomp, 4.3 to 4.9).
 const TEMPCOMP_LIMIT = 10;
 
+// Significant figures of a temperature a comment gives.
+const TEMPERATURE_FIGURES = 6;
+
 // Significant figures of a fitted coefficient.
 const COEFFICIENT_FIGURES = 4;
 
@@ -122,6 +125,19 @@ const FITS = [
 // the frequency's spread.  The frequency is how fast the clock runs,
 // positive fast, and a positive compensation runs it faster, so each
 // coefficient is the fitted one negated; T0 has none, so k0 is 0.
+// The lowest and highest temperatures of `pairs`.
+const temperatureRange = (pairs) =>
+  pairs.reduce(([lo, hi], { x }) => [Math.min(lo, x), Math.max(hi, x)], [Infinity, -Infinity]);
+
+// The most compensation, ppm, either way, of a line k1 d + k2 d^2 over
+// d from `from` to `to`, the temperature from T0: at the ends, or the
+// curve's turn between them.
+function mostCompensation(k1, k2, from, to) {
+  const at = (d) => Math.abs(k1 * d + k2 * d * d);
+  const turn = k2 === 0 ? null : -k1 / (2 * k2);
+  return Math.max(at(from), at(to), turn != null && turn > from && turn < to ? at(turn) : 0);
+}
+
 function drawFits() {
   if (!fitFrom) return;
   const { pairs, t0, spread, fits } = fitFrom;
@@ -131,10 +147,11 @@ function drawFits() {
   // One block to paste: what both were fitted from, the sensor too, so
   // the file says it later, then each fit, its quality in a comment
   // above it, in ASCII, as chrony.conf is.
+  const [lowest, highest] = temperatureRange(pairs).map((t) => Number(t.toPrecision(TEMPERATURE_FIGURES)));
   const groups = fits.map(({ name, degree, c, left, determined }) => {
-    const [k1, k2] = [-c[1], degree === 2 ? -c[2] : 0];
-    // R, R^2's root: for the line, |r|.
-    const most = pairs.reduce((m, { x }) => Math.max(m, Math.abs(k1 * (x - t0) + k2 * (x - t0) ** 2)), 0);
+    // As the line has them, rounded.
+    const [k1, k2] = [-c[1], degree === 2 ? -c[2] : 0].map((k) => Number(coefficient(k)));
+    const most = mostCompensation(k1, k2, lowest - t0, highest - t0);
     return [
       `# ${name} fit: leaves ${ppm(left)} RMS of the frequency's ${ppm(spread)}` +
         (determined == null
@@ -149,7 +166,11 @@ function drawFits() {
   const common = [
     `# Fitted by chronymon from ${pairs.length} points, ` +
       `${utcMinute(pairs[0].at)} to ${utcMinute(pairs[pairs.length - 1].at)} UTC,`,
-    `# of ${sensor.sensor}, robust (Huber) least squares.`,
+    `# of ${sensor.sensor}, robust (Huber) least squares, at ${lowest} to ${highest}:`,
+    `# outside them, the lines are a guess.`,
+    ...(fitFrom.settling > 0
+      ? [`# ${fitFrom.settling} of the points within an hour of chronyd starting, its estimate settling.`]
+      : []),
   ].join("\n");
   // What was fitted, as text, its comment marks the copy's alone; then
   // each fit, the block to paste, its Copy in its corner, which copies
@@ -173,8 +194,11 @@ function drawScatter(got) {
   fitFrom = null;
   $("fit").hidden = true;
   const fitted = got.fitted;
+  const cut = got.since != null ? local(got.since) : null;
   if (!fitted) {
-    showHtml($("figures"), "too few readings of both in this range to set against each other");
+    showHtml($("figures"), "too few readings of both in this range to set against each other" +
+      (cut ? `: those before ${cut} are left out, when chronymond first read this sensor, or it changed, ` +
+        "and they may be another sensor's" : ""));
     return;
   }
   const { at, x, y } = fitted.pairs;
@@ -184,7 +208,7 @@ function drawScatter(got) {
     ...f,
     value: (v) => evaluate(f.c, v - fitted.t0),
   }));
-  fitFrom = { pairs, t0: fitted.t0, spread: fitted.spread, fits };
+  fitFrom = { pairs, t0: fitted.t0, spread: fitted.spread, fits, settling: fitted.settling };
   scatterChart = scatter(
     $("scatter"),
     pairs,
@@ -193,8 +217,9 @@ function drawScatter(got) {
     $("scatter").clientWidth || 800,
     fits,
   );
-  // Only for a tempcomp line chronymond read, which the fit replaces.
-  $("fit").hidden = !lastStatus?.tempcomp;
+  // Only for a tempcomp line chronymond read, which the fit replaces,
+  // and a fit to give.
+  $("fit").hidden = !lastStatus?.tempcomp || fits.length === 0;
   // Each fit on its own line, its name in its color, the scatter's
   // legend, with its R and R^2, the line's slope too, and since when,
   // if not the whole range.
@@ -207,11 +232,33 @@ function drawScatter(got) {
     ];
     return `<span style="color:${f.color}">${f.name}</span>: ${figures.join(", ")}`;
   });
-  const sinceChange = got.since != null ? ` since the sensor changed, ${local(got.since)}` : "";
+  // Those not fitted, and why.
+  const unnamed = fitted.unfitted.map((u) => {
+    const { name } = FITS.find((d) => d.degree === u.degree);
+    return `${name}: not fitted, ` + (u.why === "narrow"
+      ? `the temperatures fill only ${u.filled} of ${u.of} stretches of their range`
+      : "too few distinct temperatures to determine it");
+  });
+  const sinceChange = cut ? ` since ${cut}, when chronymond first read this sensor, or it changed` : "";
   showHtml($("figures"),
     `${pairs.length.toLocaleString()} clock updates` +
     (got.stride > 1 ? `, every ${got.stride}th` : "") +
-    `, robust least squares${sinceChange}:<br>${named.join("<br>")}`);
+    `, robust least squares${sinceChange}:<br>${[...named, ...unnamed].join("<br>")}` +
+    (fitted.settling > 0
+      ? `<br>${fitted.settling.toLocaleString()} of them within an hour of chronyd starting, its estimate settling.`
+      : ""));
+}
+
+// The scatter, its caption and its fit gone: none of another range's
+// readings left to fit from.  An open dialog stays, its text its own
+// range's, through a passing failure to read.
+function clearScatter() {
+  scatterChart?.destroy();
+  scatterChart = null;
+  $("scatter").innerHTML = "";
+  showHtml($("figures"), "");
+  fitFrom = null;
+  $("fit").hidden = true;
 }
 
 async function load(signal) {
@@ -222,14 +269,12 @@ async function load(signal) {
   const probe = await ask(`/api/history?table=${TEMPCOMP}&columns=temperature&points=16`, signal);
   if (probe.first == null) {
     clearStack(stack, NOTHING);
-    scatterChart?.destroy();
-    scatterChart = null;
-    $("scatter").innerHTML = "";
-    showHtml($("figures"), "");
+    clearScatter();
     return;
   }
   if (!haveUplot) {
     clearStack(stack, NO_UPLOT);
+    clearScatter();
     return;
   }
   const { from, to } = rangeBounds();
@@ -302,10 +347,7 @@ content({
   floor: 30,
   clear(why) {
     clearStack(stack, why);
-    scatterChart?.destroy();
-    scatterChart = null;
-    $("scatter").innerHTML = "";
-    showHtml($("figures"), "");
+    clearScatter();
   },
   load,
 });

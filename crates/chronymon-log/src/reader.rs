@@ -1110,6 +1110,30 @@ impl Reader {
         Ok(())
     }
 
+    /// When chronyd started, unix nanoseconds, oldest first, from `from`
+    /// to `to`, unix seconds: up, restarted, or the host booted, as the
+    /// daemon saw it.
+    pub fn chronyd_starts(&self, from: f64, to: f64) -> Result<Vec<i64>> {
+        let (from, to, _) = Window {
+            from,
+            to,
+            points: MIN_POINTS,
+        }
+        .stored();
+        let kinds = [
+            EventKind::ChronydUp,
+            EventKind::ChronydRestart,
+            EventKind::Boot,
+        ];
+        let names: Vec<String> = kinds.iter().map(|k| format!("'{}'", k.name())).collect();
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT at FROM event WHERE kind IN ({}) AND at >= ?1 AND at <= ?2 ORDER BY at",
+            names.join(", ")
+        ))?;
+        let rows = statement.query_map(params![from, to], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Each run of the daemon's start and poll interval, unix
     /// nanoseconds and seconds, oldest first: none where its database
     /// is older than the table.
@@ -3347,12 +3371,16 @@ mod tests {
                 .write(|batch| batch.tempcomp(at(second), t))
                 .expect("written");
         };
-        // The first seen is no change, and read again, nothing either.
+        // The first seen is no change, but the readings start then; read
+        // again, nothing.
         write(&mut db, 0, Some(&null));
         write(&mut db, 1, Some(&null));
         assert_eq!(db.reader().tempcomp().expect("read"), Some(null.clone()));
         assert!(changes(&mut db).is_empty());
-        assert_eq!(db.reader().tempcomp_since().expect("read"), None);
+        assert_eq!(
+            db.reader().tempcomp_since().expect("read"),
+            Some(to_stored(at(0)).expect("in range"))
+        );
         // New coefficients: a change, the sensor the same.
         write(&mut db, 2, Some(&fitted));
         assert_eq!(
@@ -3361,7 +3389,10 @@ mod tests {
                 "{hwmon2} 30 0 0 0 0 to {hwmon2} 30 41000 0 -8.7e-5 0"
             )]
         );
-        assert_eq!(db.reader().tempcomp_since().expect("read"), None);
+        assert_eq!(
+            db.reader().tempcomp_since().expect("read"),
+            Some(to_stored(at(0)).expect("in range"))
+        );
         // Another sensor: the readings start again.
         write(&mut db, 3, Some(&other));
         assert_eq!(
@@ -3371,6 +3402,19 @@ mod tests {
         write(&mut db, 4, None);
         assert_eq!(changes(&mut db).len(), 3);
         assert_eq!(db.reader().tempcomp().expect("read"), None);
+        // Forgotten, the configuration not read: then the next is the
+        // first again, no change, the readings started again.
+        write(&mut db, 5, Some(&other));
+        db.log
+            .write(|batch| batch.forget_tempcomp())
+            .expect("written");
+        assert_eq!(db.reader().tempcomp().expect("read"), None);
+        write(&mut db, 6, Some(&null));
+        assert_eq!(changes(&mut db).len(), 4);
+        assert_eq!(
+            db.reader().tempcomp_since().expect("read"),
+            Some(to_stored(at(6)).expect("in range"))
+        );
     }
 
     #[test]

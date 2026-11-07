@@ -789,7 +789,7 @@ test("Temperature: fitted only since the sensor last changed, and said", async (
     got.since = since;
   });
   await page.goto("/temperature?last=172800");
-  await expect(page.locator("#figures")).toContainText("since the sensor changed");
+  await expect(page.locator("#figures")).toContainText("when chronymond first read this sensor, or it changed");
 });
 
 test("Temperature: a fit's Copy copies it with what it was fitted from; text selects, and a drag out stays open", async ({ page, context }) => {
@@ -839,6 +839,18 @@ test("Temperature: Copy copies over plain HTTP, the clipboard API refused", asyn
     .toBe(`${await copiedHeader(page)}\n\n${linear}`);
 });
 
+test("Temperature: a range that fails to read leaves no fit of the one before", async ({ page }) => {
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#fit")).toBeVisible();
+  await page.route("**/api/history?*", (route) => route.abort());
+  await page.locator('#ranges button[data-last="3600"]').click();
+  await expect(page.locator("#fit")).toBeHidden();
+  await expect(page.locator("#scatter .uplot")).toHaveCount(0);
+  // The reads failed are the test's, not the page's.
+  const errors = pageErrors.get(test.info().testId);
+  errors.splice(0, errors.length, ...errors.filter((e) => !/api\/history.*ERR_FAILED|Failed to load resource/.test(e)));
+});
+
 test("Temperature: no fit without a tempcomp line chronymond read", async ({ page }) => {
   await page.route("**/api/status", async (route) => {
     const response = await route.fetch();
@@ -865,6 +877,62 @@ test("Temperature: the readings themselves served, for a tool of one's own", asy
   expect(got.updates.at.length).toBeGreaterThan(MIN_FITTED);
   expect(got.updates.frequency.length).toBe(got.updates.at.length);
   expect(got.updates.pps.some((p) => p)).toBe(true);
+});
+
+test("Temperature: a fit not made says why, and with none there is nothing to fit", async ({ page }) => {
+  await tempcompFit(page, (got) => {
+    got.fitted.fits = got.fitted.fits.filter((f) => f.degree === 1);
+    got.fitted.unfitted = [{ degree: 2, why: "narrow", filled: 3, of: 5 }];
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#figures")).toContainText("Quadratic: not fitted, the temperatures fill only 3 of 5");
+  await page.locator("#fit").click();
+  await expect(page.locator("#fits pre.tempcomp")).toHaveCount(1);
+  await page.unrouteAll();
+  await tempcompFit(page, (got) => {
+    got.fitted.fits = [];
+    got.fitted.unfitted = [{ degree: 1, why: "narrow", filled: 2, of: 5 }, { degree: 2, why: "singular" }];
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#figures")).toContainText("Linear: not fitted");
+  await expect(page.locator("#figures")).toContainText("Quadratic: not fitted, too few distinct temperatures");
+  await expect(page.locator("#fit")).toBeHidden();
+});
+
+test("Temperature: updates in chronyd's first hour are fitted, and said", async ({ page }) => {
+  await tempcompFit(page, (got) => {
+    got.fitted.settling = 42;
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#figures")).toContainText("42 of them within an hour of chronyd starting");
+  await page.locator("#fit").click();
+  await expect(page.locator("#fits pre.fitted")).toContainText("42 of the points within an hour of chronyd starting");
+});
+
+test("Temperature: a range all before the readings start says why nothing is fitted", async ({ page }) => {
+  await tempcompFit(page, (got) => {
+    got.fitted = null;
+    got.since = Math.floor(Date.now() / 1000) - 3600;
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#figures")).toContainText("when chronymond first read this sensor, or it changed");
+});
+
+test("Temperature: a curve past chronyd's limit between the readings is warned of", async ({ page }) => {
+  // Within the limit at the readings, at either end, but 20 ppm at the
+  // curve's turn between them.
+  const TURN = 20;
+  const k2 = -TURN / 2.25e6;
+  await tempcompFit(page, (got) => {
+    got.fitted.t0 = 0;
+    got.fitted.pairs = { at: [1, 2, 3, 4].map((n) => got.to - n), x: [-1000, -999, 1999, 2000], y: [0, 0, 0, 0] };
+    got.fitted.fits = [{ degree: 2, c: [0, 1000 * k2, -k2], left: 0, determined: null }];
+    got.fitted.unfitted = [];
+  });
+  await page.goto("/temperature?last=172800");
+  await page.locator("#fit").click();
+  await expect(page.locator("#fits pre.tempcomp")).toContainText("past chronyd's 10 ppm");
+  await expect(page.locator("#fits pre.fitted")).toContainText("at -1000 to 2000");
 });
 
 test("Temperature: the fit takes tempcomp's compensation out of chronyd's frequency", async ({ page }) => {

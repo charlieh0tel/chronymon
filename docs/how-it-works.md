@@ -300,18 +300,35 @@ apart.
 Once a range holds a good spread of temperatures, the page's Fit
 tempcomp opens a dialog of that range's fit, with Copy, and a block
 to put in place of the `tempcomp` line: a comment of the sensor,
-the range and the points fitted, then a linear and a quadratic line,
-each after a comment of how much of the frequency's spread it leaves
-and its R and R^2.  Keep one of the two lines; chronyd takes the last.
+the range, the points fitted and the temperatures they span, outside
+which the lines are a guess, then a linear and a quadratic line, each
+after a comment of how much of the frequency's spread it leaves and
+its R and R^2.  Keep one of the two lines; chronyd takes the last.
 In each, T0 is the mean temperature, k0 0, and k1 and k2 fitted, in
-the sensor's own units (millidegrees, for a Linux sensor).  The sensor
-and interval are the ones chronymond read from chronyd's
-configuration; without a `tempcomp` line read there, as with
-`--chrony-config none`, there is no fit.  A change of the `tempcomp`
-line, read when chronyd starts, is journaled (`tempcomp_changed`, the
-old line and the new), and a change of its sensor starts the fit's
-readings again: those before are another sensor's.  On Ubuntu, AppArmor lets chronyd read a sensor only
-by a `hwmon*/temp*_input` path.
+the sensor's own units (millidegrees, for a Linux sensor).  A fit of
+degree d is made only where the temperatures fill at least d + 2 of
+five equal stretches of their range, each by 2% of the points: two
+temperatures fit a line exactly and three a curve, which say nothing.
+The caption says which was not fitted, and why.  A line whose
+compensation, as rounded, passes chronyd's 10 ppm at either end of
+the temperatures or at the curve's turn between them says so: chronyd
+ignores a reading past it.  Updates within an hour of chronyd
+starting, as chronymond saw it, are fitted, its estimate still
+settling, and the caption and dialog say how many.  The sensor and
+interval are the ones chronymond read from chronyd's configuration;
+without a `tempcomp` line read there, as with `--chrony-config none`,
+there is no fit, and a line an earlier run read is forgotten.  A
+change of the `tempcomp` line, read when chronyd starts, is journaled
+(`tempcomp_changed`, the old line and the new), and a change of its
+sensor starts the fit's readings again: those before are another
+sensor's.  So does the first line recorded: readings before it, from
+tempcomp.log, may be another sensor's; a database from before schema
+9 starts them at the daemon's first start.  The caption says when the
+readings start, and where a range is all before it, why nothing is
+fitted.  A failed or empty read of a range leaves no fit of the one
+before to open; one open stays, its text its own range's.  On Ubuntu,
+AppArmor lets chronyd read a sensor only by a `hwmon*/temp*_input`
+path.
 
 ## Events
 

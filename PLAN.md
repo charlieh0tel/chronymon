@@ -271,10 +271,16 @@ Journal, Distribution, Kiosk.
   reports the frequency with tempcomp's compensation undone
   (`LCL_ReadAbsoluteFrequency`), so the scatter and the fit take it
   back out as chronyd put it in, whatever the coefficients.  Readings from before the
-  sensor last changed are not (`meta` `tempcomp_since`, journaled
-  `tempcomp_changed`).  No settling time after a restart: chronyd's
-  first estimates are rough for a few minutes, a little noise in a
-  fit of days.  The fits are robust (Huber, reweighted least squares):
+  sensor last changed, or before the first line recorded, are not
+  (`meta` `tempcomp_since`, journaled `tempcomp_changed`): older
+  readings' sensor is not known; a database from before schema 9
+  starts them at its first daemon start.  Updates in chronyd's first
+  hour are fitted but counted and said, not left out: rough for a few
+  minutes, a little noise in a fit of days, but not in one of hours.
+  A fit of degree d needs temperatures across d + 2 of five stretches
+  of their range, else is not made, and says why; the limit check is
+  at the range's ends and the curve's turn, with the rounded
+  coefficients.  The fits are robust (Huber, reweighted least squares):
   an NTP-only host's frequency wanders and steps.  Fitted from the
   readings, not buckets (`/api/tempcomp`): a bucket's mean bends a
   curve, and a bucket's temperature and frequency can be most of it

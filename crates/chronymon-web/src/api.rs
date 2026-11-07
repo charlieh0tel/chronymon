@@ -28,6 +28,7 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::tempcomp;
+use crate::tempcomp::Unfitted;
 
 /// The strip's name for chronyd's reference while it serves its local
 /// reference, whose address is unspecified.
@@ -345,6 +346,10 @@ fn on_backups(sources: &[Source], paired: &[String]) -> bool {
 /// them, about 40 ms a thousand.
 const TEMPCOMP_TEMPERATURES: usize = 100_000;
 const TEMPCOMP_UPDATES: usize = 20_000;
+/// Seconds after chronyd starts its frequency estimate is taken to be
+/// settling: rough for a few minutes, longer without a drift file.
+/// Fitted all the same, and said.
+const TEMPCOMP_SETTLING: f64 = 3600.0;
 
 /// `/api/tempcomp`: tempcomp.log's rows and chronyd's clock updates
 /// over the range, row by row, each update with the clock's own
@@ -385,7 +390,7 @@ pub(crate) fn tempcomp(path: &Path, query: &str) -> Result<Value> {
 /// fitted and the linear and quadratic fits.
 pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
     let asked = asked(query, MIN_POINTS)?;
-    let (read, since, bounds) = read(path, |reader| {
+    let (read, since, starts, bounds) = read(path, |reader| {
         let (window, bounds) = window(reader, &[Table::TempcompSample], asked)?;
         let read = reader.tempcomp_readings(
             window.from,
@@ -393,15 +398,26 @@ pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
             TEMPCOMP_TEMPERATURES,
             TEMPCOMP_UPDATES,
         )?;
-        Ok((read, reader.tempcomp_since()?.map(seconds), bounds))
+        let starts = reader.chronyd_starts(window.from - TEMPCOMP_SETTLING, window.to)?;
+        Ok((read, reader.tempcomp_since()?.map(seconds), starts, bounds))
     })?;
-    // Fitted only since the sensor last changed: readings before are
-    // another sensor's.
+    // Fitted only since the sensor's readings start: before, another
+    // sensor's, or not known.
     let rows = &read.temperature.rows;
     let first = since.map_or(0, |since| rows.partition_point(|r| r.at < since));
     let at: Vec<f64> = rows[first..].iter().map(|r| r.at).collect();
     let temperature: Vec<f64> = rows[first..].iter().map(|r| r.temperature).collect();
+    let starts: Vec<f64> = starts.into_iter().map(seconds).collect();
     let fitted = tempcomp::scatter(&at, &temperature, &read.updates.rows).map(|s| {
+        // Updates in chronyd's first hour, its estimate still settling.
+        let settling = s
+            .pairs
+            .iter()
+            .filter(|p| {
+                let k = starts.partition_point(|start| *start <= p.at);
+                k > 0 && p.at - starts[k - 1] < TEMPCOMP_SETTLING
+            })
+            .count();
         json!({
             "pairs": {
                 "at": s.pairs.iter().map(|p| p.at).collect::<Vec<_>>(),
@@ -416,13 +432,23 @@ pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
                 "left": f.left,
                 "determined": f.determined,
             })).collect::<Vec<_>>(),
+            "unfitted": s.unfitted.iter().map(|(degree, why)| match why {
+                Unfitted::Narrow(filled) => json!({
+                    "degree": degree,
+                    "why": "narrow",
+                    "filled": filled,
+                    "of": tempcomp::SPREAD_STRETCHES,
+                }),
+                Unfitted::Singular => json!({ "degree": degree, "why": "singular" }),
+            }).collect::<Vec<_>>(),
+            "settling": settling,
         })
     });
     Ok(with(
         json!({
-            // Where the cut fell within the range: readings before it
-            // left out.
-            "since": since.filter(|_| first > 0 && first < rows.len()),
+            // Where the readings start, if any in the range are left out
+            // before it.
+            "since": since.filter(|_| first > 0),
             "stride": read.updates.stride,
             "fitted": fitted,
         }),
@@ -765,6 +791,7 @@ pub(crate) fn distribution(path: &Path, query: &str) -> Result<Value> {
 mod tests {
     use std::net::IpAddr;
 
+    use chronymon::event::EventKind;
     use chronymon_control::report::Address;
     use chronymon_control::report::ReferenceId;
     use chronymon_control::report::SourceMode;
@@ -853,6 +880,7 @@ mod tests {
     fn the_tempcomp_fit_is_only_since_the_sensor_changed() {
         const START: i64 = 1_800_000_000;
         const CHANGED: i64 = 600;
+        const RESTARTED: i64 = 900;
         let at = |second: i64| Timestamp::new(START + second, 0).expect("in range");
         let sensor = |path: &str| Tempcomp {
             sensor: path.to_owned(),
@@ -867,6 +895,7 @@ mod tests {
         let mut log = Log::open(&path).expect("a database");
         log.write(|batch| {
             batch.tempcomp(at(0), Some(&sensor("/sys/class/hwmon/hwmon1/temp1_input")))?;
+            batch.event(at(RESTARTED), EventKind::ChronydUp, None, None)?;
             batch.tempcomp(
                 at(CHANGED),
                 Some(&sensor("/sys/class/hwmon/hwmon2/temp1_input")),
@@ -897,7 +926,12 @@ mod tests {
         })
         .expect("written");
         let got = tempcomp_fit(&path, "").expect("a fit");
+        // A range all before the cut: nothing fitted, and the cut said.
+        let before = tempcomp_fit(&path, &format!("from={START}&to={}", START + CHANGED - 1))
+            .expect("an answer");
         std::fs::remove_dir_all(&directory).expect("removed");
+        assert_eq!(before["fitted"], Value::Null);
+        assert_eq!(before["since"], json!((START + CHANGED) as f64));
         let since = (START + CHANGED) as f64;
         assert_eq!(got["since"], json!(since));
         let fitted: Vec<f64> = got["fitted"]["pairs"]["at"]
@@ -908,6 +942,13 @@ mod tests {
             .collect();
         assert!(fitted.len() > 30);
         assert!(fitted.iter().all(|t| *t >= since));
+        // Those after chronyd came up, within its hour of settling.
+        let restarted = (START + RESTARTED) as f64;
+        assert_eq!(
+            got["fitted"]["settling"],
+            json!(fitted.iter().filter(|t| **t >= restarted).count())
+        );
+        assert!(fitted.iter().any(|t| *t < restarted));
     }
 
     #[test]
