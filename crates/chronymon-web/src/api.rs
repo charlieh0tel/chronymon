@@ -340,10 +340,9 @@ fn on_backups(sources: &[Source], paired: &[String]) -> bool {
 }
 
 /// About how many of each `/api/tempcomp` gives at most, a longer range
-/// every so many: temperatures, a few weeks of a 15 s sensor's, which
-/// the lag's filter needs at their own interval; and clock updates,
-/// whose noise is slow, so more add little but the page's time fitting
-/// them, about 40 ms a thousand.
+/// every so many: temperatures, a few weeks of a 15 s sensor's; and
+/// clock updates, a few weeks of a PPS's.  The fit reads them all and
+/// gives about as many pairs as updates, for the scatter.
 const TEMPCOMP_TEMPERATURES: usize = 100_000;
 const TEMPCOMP_UPDATES: usize = 20_000;
 /// Seconds after chronyd starts its frequency estimate is taken to be
@@ -386,18 +385,13 @@ pub(crate) fn tempcomp(path: &Path, query: &str) -> Result<Value> {
 }
 
 /// `/api/tempcomp/fit`: the Temperature page's fit of the range,
-/// `/api/tempcomp`'s readings since the sensor last changed: the pairs
-/// fitted and the linear and quadratic fits.
+/// `/api/tempcomp`'s readings since the sensor last changed, every one:
+/// the linear and quadratic fits, and the pairs fitted, every so many.
 pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
     let asked = asked(query, MIN_POINTS)?;
     let (read, since, starts, bounds) = read(path, |reader| {
         let (window, bounds) = window(reader, &[Table::TempcompSample], asked)?;
-        let read = reader.tempcomp_readings(
-            window.from,
-            window.to,
-            TEMPCOMP_TEMPERATURES,
-            TEMPCOMP_UPDATES,
-        )?;
+        let read = reader.tempcomp_readings(window.from, window.to, usize::MAX, usize::MAX)?;
         let starts = reader.chronyd_starts(window.from - TEMPCOMP_SETTLING, window.to)?;
         Ok((read, reader.tempcomp_since()?.map(seconds), starts, bounds))
     })?;
@@ -408,6 +402,7 @@ pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
     let at: Vec<f64> = rows[first..].iter().map(|r| r.at).collect();
     let temperature: Vec<f64> = rows[first..].iter().map(|r| r.temperature).collect();
     let starts: Vec<f64> = starts.into_iter().map(seconds).collect();
+    let mut drawn = 1;
     let fitted = tempcomp::scatter(&at, &temperature, &read.updates.rows).map(|s| {
         // Updates in chronyd's first hour, its estimate still settling.
         let settling = s
@@ -418,11 +413,14 @@ pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
                 k > 0 && p.at - starts[k - 1] < TEMPCOMP_SETTLING
             })
             .count();
+        drawn = s.pairs.len().div_ceil(TEMPCOMP_UPDATES);
+        let pairs = || s.pairs.iter().step_by(drawn);
         json!({
+            "count": s.pairs.len(),
             "pairs": {
-                "at": s.pairs.iter().map(|p| p.at).collect::<Vec<_>>(),
-                "x": s.pairs.iter().map(|p| p.x).collect::<Vec<_>>(),
-                "y": s.pairs.iter().map(|p| p.y).collect::<Vec<_>>(),
+                "at": pairs().map(|p| p.at).collect::<Vec<_>>(),
+                "x": pairs().map(|p| p.x).collect::<Vec<_>>(),
+                "y": pairs().map(|p| p.y).collect::<Vec<_>>(),
             },
             "t0": s.t0,
             "spread": s.spread,
@@ -449,7 +447,8 @@ pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
             // Where the readings start, if any in the range are left out
             // before it.
             "since": since.filter(|_| first > 0),
-            "stride": read.updates.stride,
+            // The pairs given, every so many of those fitted.
+            "stride": drawn,
             "fitted": fitted,
         }),
         bounds,
@@ -941,6 +940,9 @@ mod tests {
             .filter_map(Value::as_f64)
             .collect();
         assert!(fitted.len() > 30);
+        // Few enough to give them all.
+        assert_eq!(got["stride"], json!(1));
+        assert_eq!(got["fitted"]["count"], json!(fitted.len()));
         assert!(fitted.iter().all(|t| *t >= since));
         // Those after chronyd came up, within its hour of settling.
         let restarted = (START + RESTARTED) as f64;

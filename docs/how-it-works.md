@@ -283,10 +283,11 @@ else after its reference time, fuzzed up to a second earlier.  An
 update the compensation may have changed in the time it was made in
 is left out, which came first not known; tempcomp.log's times are to
 the second.  Neither chronyd's local reference nor its losing its
-reference is an update.  A long range is read every so many, up to
-100,000 temperatures and 20,000 updates, each update's compensation
-found from all the readings, the rows read one at a time, in one
-snapshot.  The fits, linear and quadratic, are robust (Huber)
+reference is an update.  The fit is of every update in the range;
+`/api/tempcomp` gives a long range every so many, up to 100,000
+temperatures and 20,000 updates, each update's compensation found
+from all the readings, and the fit's pairs for the scatter as many as
+its updates, all read in one snapshot.  The fits, linear and quadratic, are robust (Huber)
 least squares: a reading far off the line, an NTP source's wander or
 step, pulls it less than it would plain least squares.  The caption
 gives each one's R and R^2, and the line's slope.
