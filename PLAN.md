@@ -291,7 +291,10 @@ Journal, Distribution, Kiosk.
   (`poll_interval`, schema 8).  An update a change may have fallen in
   is dropped.  The server fits (`/api/tempcomp/fit`, `tempcomp.rs`),
   not the page: tested as Rust, one copy, and quick; `/api/tempcomp`
-  stays, the raw readings, for tools of one's own.  No lag: a fit of
+  stays, the raw readings, for tools of one's own.  Whether a PPS
+  steered each update is from one scan of each refclock's raw samples,
+  not a query per update: at 7.5 us each, that was 2.1 s of 2.2 to read
+  a 2-week range's every update.  No lag: a fit of
   the sensor's lag (none, 1 or 2 min, by blocked cross-validation) was
   tried and dropped.  chronyd compensates each raw reading, so the
   unlagged line is the one to paste; and the lag could not be told on

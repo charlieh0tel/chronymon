@@ -507,6 +507,44 @@ struct Update {
     refclock: Option<String>,
 }
 
+/// When each refclock's raw samples say a PPS was steering the clock,
+/// read once per refclock over a range: its latest sample with a pulse
+/// field, at or before a time and no more than `PPS_FRESH` before it,
+/// was a pulse.
+struct Pulses {
+    /// Whether there are raw samples at all.
+    sampled: bool,
+    /// The range's updates, unix nanoseconds, from and to.
+    range: (i64, i64),
+    /// Each refclock's spans, unix nanoseconds, from and before, oldest
+    /// first, where it was.
+    spans: HashMap<String, Vec<(i64, i64)>>,
+}
+
+impl Pulses {
+    fn new(sampled: bool, range: (i64, i64)) -> Self {
+        Self {
+            sampled,
+            range,
+            spans: HashMap::new(),
+        }
+    }
+
+    /// Whether a PPS was steering `reference` at `at`, unix nanoseconds.
+    fn pulsed(&mut self, reader: &Reader, reference: &str, at: i64) -> Result<bool> {
+        if !self.sampled {
+            return Ok(false);
+        }
+        if !self.spans.contains_key(reference) {
+            let spans = reader.pulse_spans(reference, self.range)?;
+            self.spans.insert(reference.to_owned(), spans);
+        }
+        let spans = &self.spans[reference];
+        let k = spans.partition_point(|(start, _)| *start <= at);
+        Ok(k > 0 && at < spans[k - 1].1)
+    }
+}
+
 /// tempcomp.log's readings, walked in order to find the compensation in
 /// force at times that only go forward; each `stride`th kept.
 struct Compensations {
@@ -880,13 +918,9 @@ impl Reader {
         } else {
             0
         };
-        let mut found = 0;
-        self.clock_updates(from, to, |_| {
-            found += 1;
-            Ok(())
-        })?;
+        let found = self.clock_updates(from, to)?;
         let (temperature_stride, update_stride) =
-            (stride(readings, temperatures), stride(found, updates));
+            (stride(readings, temperatures), stride(found.len(), updates));
         let mut cursor = Compensations::new(temperature_stride);
         // The reading in force at the range's start.
         if sampled
@@ -920,29 +954,26 @@ impl Reader {
                 None => Ok(None),
             }
         };
-        let refclocks = self.exists(Table::RefclockSample)?;
+        let mut pulses = Pulses::new(self.exists(Table::RefclockSample)?, (from, to));
         let mut kept = Vec::new();
-        let mut index = 0;
-        self.clock_updates(from, to, |update| {
+        for (index, update) in found.iter().enumerate() {
             let compensation = cursor.in_force(&mut next, update.made)?;
-            index += 1;
-            if (index - 1) % update_stride != 0 {
-                return Ok(());
+            if index % update_stride != 0 {
+                continue;
             }
             let Some(compensation) = compensation else {
-                return Ok(());
+                continue;
             };
             let pps = match &update.refclock {
-                Some(reference) if refclocks => self.pulsed(reference, update.at)?,
-                _ => false,
+                Some(reference) => pulses.pulsed(self, reference, update.at)?,
+                None => false,
             };
             kept.push(ClockUpdate {
                 at: update.at as f64 / NANOSECONDS,
                 frequency: update.frequency * (1.0 - compensation * 1e-6) - compensation,
                 pps,
             });
-            Ok(())
-        })?;
+        }
         cursor.drain(&mut next)?;
         Ok(TempcompReadings {
             temperature: Every {
@@ -957,7 +988,7 @@ impl Reader {
     }
 
     /// chronyd's clock updates from `from` to `to`, unix nanoseconds, in
-    /// the order they were made, to `each`.  tracking.log's first, its
+    /// the order they were made.  tracking.log's first, its
     /// line written as the update was made, and every one; the
     /// protocol's only where the log has none for it, as where chronyd
     /// does not log tracking or the log is not yet read: those the
@@ -965,12 +996,7 @@ impl Reader {
     /// local reference, which the protocol reports at every read, nor
     /// the log's line of chronyd losing its reference, stratum 0
     /// (`REF_SetUnsynchronised`), is an update.
-    fn clock_updates(
-        &self,
-        from: i64,
-        to: i64,
-        mut each: impl FnMut(&Update) -> Result<()>,
-    ) -> Result<()> {
+    fn clock_updates(&self, from: i64, to: i64) -> Result<Vec<Update>> {
         let logged = self.exists(Table::LogTracking)?;
         let recording = self.recording()?;
         let intervals = self.poll_intervals()?;
@@ -1091,6 +1117,7 @@ impl Reader {
                 refclock: reference.parse::<IpAddr>().is_err().then_some(reference),
             }))
         };
+        let mut updates = Vec::new();
         let (mut a, mut b) = (next_protocol()?, next_log()?);
         loop {
             let protocol_first = match (&a, &b) {
@@ -1100,14 +1127,14 @@ impl Reader {
                 (None, None) => break,
             };
             if protocol_first {
-                each(a.as_ref().expect("a protocol update"))?;
+                updates.extend(a.take());
                 a = next_protocol()?;
             } else {
-                each(b.as_ref().expect("a logged update"))?;
+                updates.extend(b.take());
                 b = next_log()?;
             }
         }
-        Ok(())
+        Ok(updates)
     }
 
     /// When chronyd started, unix nanoseconds, oldest first, from `from`
@@ -1153,20 +1180,37 @@ impl Reader {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Whether `reference`'s latest raw sample at or before `at`, unix
-    /// nanoseconds, and no more than `PPS_FRESH` before it, was a pulse:
-    /// a PPS steering the clock then.
-    fn pulsed(&self, reference: &str, at: i64) -> Result<bool> {
-        let pulse: Option<bool> = self
-            .connection
-            .prepare_cached(
-                "SELECT pulse FROM refclock_sample
-                 WHERE reference = ?1 AND at <= ?2 AND at >= ?3 AND pulse IS NOT NULL
-                 ORDER BY at DESC LIMIT 1",
-            )?
-            .query_row(params![reference, at, at - PPS_FRESH], |row| row.get(0))
-            .optional()?;
-        Ok(pulse == Some(true))
+    /// Where `reference`'s raw samples say a PPS was steering the clock,
+    /// from `range.0` to `range.1`, unix nanoseconds: from each pulse
+    /// until `PPS_FRESH` after it, or the next sample, whichever is
+    /// first.  Spans from and before, oldest first, run together.
+    fn pulse_spans(&self, reference: &str, (from, to): (i64, i64)) -> Result<Vec<(i64, i64)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT at, pulse FROM refclock_sample
+             WHERE reference = ?1 AND at >= ?2 AND at <= ?3 AND pulse IS NOT NULL
+             ORDER BY at",
+        )?;
+        let mut rows = statement.query(params![reference, from - PPS_FRESH, to])?;
+        let mut spans: Vec<(i64, i64)> = Vec::new();
+        // The latest pulse not yet ended by a later sample.
+        let mut open: Option<i64> = None;
+        let close = |spans: &mut Vec<(i64, i64)>, start: i64, end: i64| match spans.last_mut() {
+            Some(last) if last.1 >= start => last.1 = end,
+            _ => spans.push((start, end)),
+        };
+        while let Some(row) = rows.next()? {
+            let (at, pulse): (i64, bool) = (row.get(0)?, row.get(1)?);
+            if let Some(start) = open.take() {
+                close(&mut spans, start, at.min(start + PPS_FRESH + 1));
+            }
+            if pulse {
+                open = Some(at);
+            }
+        }
+        if let Some(start) = open {
+            close(&mut spans, start, start + PPS_FRESH + 1);
+        }
+        Ok(spans)
     }
 
     /// Why the daemon's last read of chronyd's configuration failed, if
@@ -2919,6 +2963,43 @@ mod tests {
         // the refclock's while it pulses, and not after.
         let expected: Vec<bool> = (0..40).map(|second| (10..25).contains(&second)).collect();
         assert_eq!(pps, expected);
+    }
+
+    #[test]
+    fn a_pulse_steers_until_the_next_sample_or_it_goes_stale() {
+        let mut db = Database::new("pulse-spans");
+        db.log
+            .write(|batch| {
+                // Before the range, too long before to count.
+                batch.log_line(&raw("PPS", -700, true))?;
+                for second in [0, 10] {
+                    batch.log_line(&raw("PPS", second, true))?;
+                }
+                batch.log_line(&raw("PPS", 20, false))?;
+                batch.log_line(&raw("PPS", 30, true))?;
+                Ok(())
+            })
+            .expect("written");
+        let reader = db.reader();
+        let nanoseconds = |second: i64| (START + second) * SECOND;
+        let range = (nanoseconds(0), nanoseconds(1000));
+        let mut pulses = Pulses::new(true, range);
+        let pulsed =
+            |pulses: &mut Pulses, at: i64| pulses.pulsed(&reader, "PPS", at).expect("read");
+        assert!(!pulsed(&mut pulses, nanoseconds(-1)));
+        assert!(pulsed(&mut pulses, nanoseconds(0)));
+        assert!(pulsed(&mut pulses, nanoseconds(20) - 1));
+        assert!(!pulsed(&mut pulses, nanoseconds(20)));
+        assert!(!pulsed(&mut pulses, nanoseconds(30) - 1));
+        assert!(pulsed(&mut pulses, nanoseconds(30)));
+        assert!(pulsed(&mut pulses, nanoseconds(30) + PPS_FRESH));
+        assert!(!pulsed(&mut pulses, nanoseconds(30) + PPS_FRESH + 1));
+        assert!(!pulsed(&mut pulses, nanoseconds(40) + PPS_FRESH));
+        assert!(
+            !Pulses::new(false, range)
+                .pulsed(&reader, "PPS", nanoseconds(0))
+                .expect("read")
+        );
     }
 
     /// tracking.log's line at `second` of chronyd's frequency
