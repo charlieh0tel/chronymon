@@ -1,3 +1,14 @@
+chronymon (1.3.1-1) unstable; urgency=medium
+
+  * The tempcomp fit is of every clock update in the range, not one in
+    so many past 20,000; only the scatter's points are thinned, and
+    the caption says how many were fitted.
+  * Reading a long range's tempcomp updates is several times quicker:
+    whether a PPS steered each is from one scan of the refclock's raw
+    samples, not a query per update.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 07 Nov 2026 15:28:16 -0800
+
 chronymon (1.3.0-1) unstable; urgency=medium
 
   * The Temperature page's fit is computed by the server
