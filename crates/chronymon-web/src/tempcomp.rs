@@ -25,6 +25,18 @@ const ROBUST_SETTLED: f64 = 1e-6;
 /// stopped.
 const GAP_READINGS: f64 = 3.0;
 
+/// A fit of degree d is made only where the temperatures fill at least
+/// d + 2 of this many equal stretches of their range, each by this
+/// share of the pairs, the range from the lowest and highest this share
+/// in: two temperatures fit a line exactly and three a curve, and a
+/// stretch's few strays are not a spread.
+pub(crate) const SPREAD_STRETCHES: usize = 5;
+const SPREAD_SHARE: f64 = 0.02;
+const SPREAD_TAIL: f64 = 0.01;
+/// A pivot this small beside the pairs' total weight, x scaled to about
+/// 1, leaves the normal equations singular: the fit is not determined.
+const SINGULAR: f64 = 1e-9;
+
 /// A clock update set against a temperature: its time, unix seconds,
 /// the temperature, and the clock's own frequency, ppm.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,6 +71,18 @@ pub(crate) struct Scatter {
     pub(crate) spread: f64,
     /// The linear fit, then the quadratic, those that could be made.
     pub(crate) fits: Vec<Fit>,
+    /// Those that could not, and why: their degrees.
+    pub(crate) unfitted: Vec<(usize, Unfitted)>,
+}
+
+/// Why a fit is not made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unfitted {
+    /// The temperatures fill only this many of `SPREAD_STRETCHES`
+    /// stretches of their range: too few to fit a curve of the degree.
+    Narrow(usize),
+    /// Its normal equations are singular.
+    Singular,
 }
 
 /// The root mean square of `values`.
@@ -112,7 +136,7 @@ fn polynomial(pairs: &[(f64, f64)], degree: usize, weights: Option<&[f64]>) -> O
             .max_by(|&p, &q| a[p][col].abs().total_cmp(&a[q][col].abs()).then(q.cmp(&p)))
             .expect("a row");
         a.swap(col, pivot);
-        if a[col][col].abs() < f64::EPSILON {
+        if a[col][col].is_nan() || a[col][col].abs() < SINGULAR * sums[0] {
             return None;
         }
         let (above, below) = a.split_at_mut(col + 1);
@@ -200,31 +224,61 @@ fn updates_on(
     found
 }
 
+/// How many of `SPREAD_STRETCHES` equal stretches of `xs`' range, short
+/// of its tails, hold `SPREAD_SHARE` of them.
+fn stretches_filled(xs: &[f64]) -> usize {
+    let mut sorted = xs.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let n = sorted.len();
+    let tail = (SPREAD_TAIL * n as f64) as usize;
+    let (lo, hi) = (sorted[tail], sorted[n - 1 - tail]);
+    if hi <= lo {
+        return 1;
+    }
+    let mut counts = [0_usize; SPREAD_STRETCHES];
+    for x in sorted.iter().filter(|x| (lo..=hi).contains(*x)) {
+        let stretch = ((x - lo) / (hi - lo) * SPREAD_STRETCHES as f64) as usize;
+        counts[stretch.min(SPREAD_STRETCHES - 1)] += 1;
+    }
+    counts
+        .iter()
+        .filter(|count| **count as f64 >= SPREAD_SHARE * n as f64)
+        .count()
+}
+
 /// The robust fits, linear and quadratic, of the frequency against the
 /// temperature over `pairs`, from T0, their mean temperature rounded;
-/// and the frequency's own spread about its mean.
-fn fits_of(pairs: &[Pair]) -> (f64, f64, Vec<Fit>) {
+/// the frequency's own spread about its mean; and those not made, and
+/// why.
+fn fits_of(pairs: &[Pair]) -> (f64, f64, Vec<Fit>, Vec<(usize, Unfitted)>) {
     let n = pairs.len() as f64;
-    // As JavaScript's Math.round, half up, as the page did.
+    // Half up, as JavaScript's Math.round, as the page did.
     let t0 = (pairs.iter().map(|p| p.x).sum::<f64>() / n + 0.5).floor();
     let from: Vec<(f64, f64)> = pairs.iter().map(|p| (p.x - t0, p.y)).collect();
     let mean = from.iter().map(|(_, y)| y).sum::<f64>() / n;
     let spread = rms(from.iter().map(|(_, y)| y - mean));
-    let fits = [1, 2]
-        .into_iter()
-        .filter_map(|degree| {
-            let c = robust_polynomial(&from, degree)?;
-            let left = rms(from.iter().map(|(x, y)| y - evaluate(&c, *x)));
-            let determined = (spread > 0.0).then(|| 1.0 - (left / spread).powi(2));
-            Some(Fit {
-                degree,
-                c,
-                left,
-                determined,
-            })
-        })
-        .collect();
-    (t0, spread, fits)
+    let filled = stretches_filled(&from.iter().map(|(x, _)| *x).collect::<Vec<_>>());
+    let mut fits = Vec::new();
+    let mut unfitted = Vec::new();
+    for degree in [1, 2] {
+        if filled < degree + 2 {
+            unfitted.push((degree, Unfitted::Narrow(filled)));
+            continue;
+        }
+        let Some(c) = robust_polynomial(&from, degree) else {
+            unfitted.push((degree, Unfitted::Singular));
+            continue;
+        };
+        let left = rms(from.iter().map(|(x, y)| y - evaluate(&c, *x)));
+        let determined = (spread > 0.0).then(|| 1.0 - (left / spread).powi(2));
+        fits.push(Fit {
+            degree,
+            c,
+            left,
+            determined,
+        });
+    }
+    (t0, spread, fits, unfitted)
 }
 
 /// The fit of the clock `updates` against the temperatures
@@ -235,12 +289,13 @@ pub(crate) fn scatter(at: &[f64], temperature: &[f64], updates: &[ClockUpdate]) 
     if pairs.len() < MIN_PAIRS {
         return None;
     }
-    let (t0, spread, fits) = fits_of(&pairs);
+    let (t0, spread, fits, unfitted) = fits_of(&pairs);
     Some(Scatter {
         pairs,
         t0,
         spread,
         fits,
+        unfitted,
     })
 }
 
@@ -356,6 +411,40 @@ mod tests {
         .expect("a fit");
         let xs: Vec<f64> = fitted.pairs.iter().map(|p| p.x).collect();
         assert_eq!(xs, [2.0, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn two_temperatures_fit_no_line_and_three_no_curve() {
+        // A hundred readings at each, as a sensor parked between two of
+        // its steps; R^2 0.9998 for a curve through them, determined by
+        // nothing.
+        let at: Vec<f64> = (0..300).map(|n| f64::from(n) * READ_EVERY).collect();
+        let levels = |count: usize| -> Vec<f64> {
+            (0..at.len())
+                .map(|i| MEAN + 100.0 * (i % count) as f64)
+                .collect()
+        };
+        let two = levels(2);
+        let fitted = scatter(&at, &two, &updates(&at, &vec![0.0; at.len()])).expect("pairs");
+        assert!(fitted.fits.is_empty());
+        assert_eq!(
+            fitted.unfitted,
+            [(1, Unfitted::Narrow(2)), (2, Unfitted::Narrow(2))]
+        );
+        let three = levels(3);
+        let fitted = scatter(&at, &three, &updates(&at, &vec![0.0; at.len()])).expect("pairs");
+        assert_eq!(
+            fitted.fits.iter().map(|f| f.degree).collect::<Vec<_>>(),
+            [1]
+        );
+        assert_eq!(fitted.unfitted, [(2, Unfitted::Narrow(3))]);
+    }
+
+    #[test]
+    fn a_spread_fills_every_stretch() {
+        let at = times();
+        assert_eq!(stretches_filled(&daily(&at)), SPREAD_STRETCHES);
+        assert_eq!(stretches_filled(&[MEAN; 10]), 1);
     }
 
     #[test]

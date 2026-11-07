@@ -1110,6 +1110,30 @@ impl Reader {
         Ok(())
     }
 
+    /// When chronyd started, unix nanoseconds, oldest first, from `from`
+    /// to `to`, unix seconds: up, restarted, or the host booted, as the
+    /// daemon saw it.
+    pub fn chronyd_starts(&self, from: f64, to: f64) -> Result<Vec<i64>> {
+        let (from, to, _) = Window {
+            from,
+            to,
+            points: MIN_POINTS,
+        }
+        .stored();
+        let kinds = [
+            EventKind::ChronydUp,
+            EventKind::ChronydRestart,
+            EventKind::Boot,
+        ];
+        let names: Vec<String> = kinds.iter().map(|k| format!("'{}'", k.name())).collect();
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT at FROM event WHERE kind IN ({}) AND at >= ?1 AND at <= ?2 ORDER BY at",
+            names.join(", ")
+        ))?;
+        let rows = statement.query_map(params![from, to], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Each run of the daemon's start and poll interval, unix
     /// nanoseconds and seconds, oldest first: none where its database
     /// is older than the table.

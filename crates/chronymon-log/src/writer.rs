@@ -37,6 +37,7 @@ use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
 use crate::schema::TABLES;
 use crate::schema::TEMPCOMP;
+use crate::schema::TEMPCOMP_FROM_FIRST;
 use crate::schema::TEMPCOMP_SINCE;
 use crate::schema::TRACKING_ASIDE;
 use crate::schema::TRACKING_BACK;
@@ -46,6 +47,7 @@ use crate::schema::Tempcomp;
 use crate::schema::Trouble;
 use crate::schema::VERSION;
 use crate::schema::WHOLE_LINES;
+use crate::schema::tempcomp_since_first;
 use crate::text;
 use crate::timestamp::to_stored;
 
@@ -232,6 +234,9 @@ impl Log {
         }
         if rebuild {
             transaction.execute_batch(TRACKING_BACK)?;
+        }
+        if found.is_some_and(|found| found < TEMPCOMP_FROM_FIRST) {
+            transaction.execute_batch(&tempcomp_since_first())?;
         }
         transaction.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
@@ -823,6 +828,63 @@ mod tests {
             schema_version(&Log::open(&path).expect("reopened")),
             VERSION
         );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn starts_an_older_databases_tempcomp_readings_at_its_first_daemon_start() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v8-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let since = |log: &Log| -> Option<String> {
+            log.connection
+                .query_row(
+                    "SELECT value FROM meta WHERE key = ?1",
+                    params![TEMPCOMP_SINCE],
+                    |row| row.get(0),
+                )
+                .optional()
+                .expect("read")
+        };
+        let at = |second: i64| Timestamp::new(1_800_000_000 + second, 0).expect("in range");
+        // Each: a line recorded, a start already, and what it starts at.
+        for (line, already, expected) in [
+            (
+                true,
+                None,
+                Some(to_stored(at(10)).expect("in range").to_string()),
+            ),
+            (false, None, None),
+            (true, Some("7"), Some("7".to_owned())),
+        ] {
+            let _ = std::fs::remove_file(&path);
+            {
+                let mut log = Log::open(&path).expect("created");
+                log.write(|batch| {
+                    batch.event(at(10), EventKind::DaemonStart, None, None)?;
+                    batch.event(at(20), EventKind::DaemonStart, None, None)?;
+                    if line {
+                        batch.set_meta(TEMPCOMP, "/sys/temp\t30\t0 0 0 0")?;
+                    }
+                    Ok(())
+                })
+                .expect("written");
+                log.connection
+                    .execute("DELETE FROM meta WHERE key = ?1", params![TEMPCOMP_SINCE])
+                    .expect("deleted");
+                if let Some(already) = already {
+                    log.write(|batch| batch.set_meta(TEMPCOMP_SINCE, already))
+                        .expect("written");
+                }
+                log.connection
+                    .execute_batch("UPDATE meta SET value = '8' WHERE key = 'schema_version';")
+                    .expect("downgraded");
+            }
+            let log = Log::open(&path).expect("migrated");
+            assert_eq!(schema_version(&log), VERSION);
+            assert_eq!(since(&log), expected);
+        }
         let _ = std::fs::remove_dir_all(&directory);
     }
 
