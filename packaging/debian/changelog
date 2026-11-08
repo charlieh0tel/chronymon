@@ -1,3 +1,11 @@
+chronymon (1.4.3-1) unstable; urgency=medium
+
+  * On a change of range, the Temperature page dims the old scatter
+    and caption at once and says it is reading, then fitting, until
+    the new range's fit draws.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sun, 08 Nov 2026 13:04:42 -0800
+
 chronymon (1.4.2-1) unstable; urgency=medium
 
   * The tempcomp fit's count of updates within an hour of chronyd
