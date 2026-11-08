@@ -171,6 +171,8 @@ table.numbers td { padding: 3px 18px 3px 0; font-variant-numeric: tabular-nums; 
 #table-wrap td, #table-wrap th { white-space: nowrap; padding-right: 14px; }
 #events td { padding-right: 14px; }
 #figures h2 { margin-top: 14px; }
+/* The Temperature page's scatter, another range's, until the new fit. */
+#scatter.dim, #figures.dim { opacity: 0.4; }
 
 /* The kiosk: one screen for an unattended display, full size from
    1440x1080 and scaled down below by `--u`, which the page sets.  The
