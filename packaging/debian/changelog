@@ -1,3 +1,15 @@
+chronymon (1.4.0-1) unstable; urgency=medium
+
+  * Reading a long range's tempcomp updates is several times quicker
+    again: whether a PPS steered each is a few lookups in a new index
+    of the refclock's samples by pulse (schema 10), not a read of
+    every sample, and tracking.log is read once.  A 60-day range on a
+    slow host went from about 10 s to an expected few.  Building the
+    index adds a little to the daemon's first start on a large
+    database.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 07 Nov 2026 20:12:32 -0800
+
 chronymon (1.3.1-1) unstable; urgency=medium
 
   * The tempcomp fit is of every clock update in the range, not one in
