@@ -1011,66 +1011,54 @@ impl Reader {
             let before = polled - (2.0 * seconds * NANOSECONDS) as i64;
             (*started <= before && recording.contains(before as f64)).then_some(before)
         };
-        let log_query = "SELECT at, frequency, reference FROM log_tracking
-             WHERE at >= ?1 AND at <= ?2 AND stratum > 0 ORDER BY at";
-        let mut statement;
-        let mut protocol_rows = if self.exists(Table::Tracking)? {
-            statement = self.connection.prepare(
+        // The log's lines, from a little before the range: those before
+        // it only to say which of the protocol's rows the log has.
+        let mut logged_lines = Vec::new();
+        if logged {
+            let mut statement = self.connection.prepare(
+                "SELECT at, frequency, reference FROM log_tracking
+                 WHERE at >= ?1 AND at <= ?2 AND stratum > 0 ORDER BY at",
+            )?;
+            let mut rows = statement.query(params![from - 2 * SECOND, to])?;
+            while let Some(row) = rows.next()? {
+                let at: i64 = row.get(0)?;
+                let reference: String = row.get(2)?;
+                logged_lines.push(Update {
+                    at,
+                    made: (at, at + SECOND),
+                    frequency: row.get(1)?,
+                    refclock: reference.parse::<IpAddr>().is_err().then_some(reference),
+                });
+            }
+        }
+        // The first line not yet passed, walked alongside the protocol's
+        // rows to find which the log has.
+        let mut probed = 0;
+        let mut log_has = |(made, polled): (i64, i64)| {
+            // A line whose second meets the time the update was made in.
+            while logged_lines
+                .get(probed)
+                .is_some_and(|line| line.at + SECOND <= made)
+            {
+                probed += 1;
+            }
+            logged_lines
+                .get(probed)
+                .is_some_and(|line| line.at < polled)
+        };
+        let mut protocol = Vec::new();
+        if self.exists(Table::Tracking)? {
+            let mut statement = self.connection.prepare(
                 "SELECT reference_time, at, frequency, reference_id, reference_address,
                      last_offset, rms_offset FROM tracking
                  WHERE reference_time >= ?1 AND reference_time <= ?2 AND reference_id != ?3
                  ORDER BY reference_time",
             )?;
-            Some(statement.query(params![from, to, ReferenceId::LOCAL.0])?)
-        } else {
-            None
-        };
-        let mut log_statement;
-        let mut log_rows = if logged {
-            log_statement = self.connection.prepare(log_query)?;
-            Some(log_statement.query(params![from, to])?)
-        } else {
-            None
-        };
-        // The log's lines again, walked alongside the protocol's rows to
-        // find which the log has.
-        let mut probe_statement;
-        let mut probe_rows = if logged {
-            probe_statement = self.connection.prepare(log_query)?;
-            Some(probe_statement.query(params![from - 2 * SECOND, to])?)
-        } else {
-            None
-        };
-        let mut probed: Option<i64> = None;
-        let mut log_has = |(made, polled): (i64, i64)| -> Result<bool> {
-            // A line whose second meets the time the update was made in.
-            loop {
-                if let Some(at) = probed
-                    && at + SECOND > made
-                {
-                    return Ok(at < polled);
-                }
-                match probe_rows
-                    .as_mut()
-                    .map(|rows| rows.next())
-                    .transpose()?
-                    .flatten()
-                {
-                    Some(row) => probed = Some(row.get(0)?),
-                    None => return Ok(false),
-                }
-            }
-        };
-        // The last row's (reference ID, last offset, RMS offset): rows
-        // written before schema 5 repeat an update at every slew.
-        let mut last: Option<(u32, f64, f64)> = None;
-        let mut next_protocol = || -> Result<Option<Update>> {
-            while let Some(row) = protocol_rows
-                .as_mut()
-                .map(|rows| rows.next())
-                .transpose()?
-                .flatten()
-            {
+            let mut rows = statement.query(params![from, to, ReferenceId::LOCAL.0])?;
+            // The last row's (reference ID, last offset, RMS offset): rows
+            // written before schema 5 repeat an update at every slew.
+            let mut last: Option<(u32, f64, f64)> = None;
+            while let Some(row) = rows.next()? {
                 let at: i64 = row.get(0)?;
                 let polled: i64 = row.get(1)?;
                 let reference_id: u32 = row.get(3)?;
@@ -1082,11 +1070,11 @@ impl Reader {
                     poll_before(polled).map_or(at - SECOND, |before| before.max(at - SECOND)),
                     polled + 1,
                 );
-                if log_has(made)? {
+                if log_has(made) {
                     continue;
                 }
                 let address: String = row.get(4)?;
-                return Ok(Some(Update {
+                protocol.push(Update {
                     at,
                     made,
                     frequency: row.get(2)?,
@@ -1095,44 +1083,25 @@ impl Reader {
                     } else {
                         ReferenceId(reference_id).text()
                     },
-                }));
+                });
             }
-            Ok(None)
-        };
-        let mut next_log = || -> Result<Option<Update>> {
-            let Some(row) = log_rows
-                .as_mut()
-                .map(|rows| rows.next())
-                .transpose()?
-                .flatten()
-            else {
-                return Ok(None);
-            };
-            let at: i64 = row.get(0)?;
-            let reference: String = row.get(2)?;
-            Ok(Some(Update {
-                at,
-                made: (at, at + SECOND),
-                frequency: row.get(1)?,
-                refclock: reference.parse::<IpAddr>().is_err().then_some(reference),
-            }))
-        };
+        }
+        let first = logged_lines.partition_point(|line| line.at < from);
+        let mut log = logged_lines.into_iter().skip(first).peekable();
+        let mut protocol = protocol.into_iter().peekable();
         let mut updates = Vec::new();
-        let (mut a, mut b) = (next_protocol()?, next_log()?);
         loop {
-            let protocol_first = match (&a, &b) {
+            let protocol_first = match (protocol.peek(), log.peek()) {
                 (Some(p), Some(l)) => p.made.0 <= l.made.0,
                 (Some(_), None) => true,
                 (None, Some(_)) => false,
                 (None, None) => break,
             };
-            if protocol_first {
-                updates.extend(a.take());
-                a = next_protocol()?;
+            updates.extend(if protocol_first {
+                protocol.next()
             } else {
-                updates.extend(b.take());
-                b = next_log()?;
-            }
+                log.next()
+            });
         }
         Ok(updates)
     }
