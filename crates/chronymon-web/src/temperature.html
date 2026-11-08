@@ -36,6 +36,7 @@
 <div class="panel">
   <h2>The clock's frequency against temperature</h2>
   <div id="scatter"></div>
+  <div id="fitting" class="muted" hidden>Fitting every clock update in this range&hellip;</div>
   <div id="figures" class="muted"></div>
   <div class="controls fit">
     <button id="fit" type="button" hidden>Fit tempcomp</button>
@@ -261,6 +262,9 @@ function clearScatter() {
   $("fit").hidden = true;
 }
 
+// How long the fit may take, in ms, before the page says it is fitting.
+const WORKING_AFTER = 500;
+
 async function load(signal) {
   // The status says which tempcomp line the fit replaces; read here if
   // the strip has not yet.
@@ -289,7 +293,17 @@ async function load(signal) {
     ...filledCharts("tracking", frequency, { frequency: "frequency" }).map((d) => ({ ...d, x: frequency.at })),
   ];
   drawStack(stack, { x: [], span: spanOf([temperature, frequency]), drawn }, "no temperature readings in this range");
-  drawScatter(await ask(`/api/tempcomp/fit?from=${temperature.from}&to=${temperature.to}`, signal));
+  // The fit reads every update in the range, a scan as long as the
+  // history's, so it waits as long; and says it is working, if it is
+  // slow enough to notice, over the scatter it will replace.
+  const working = setTimeout(() => { $("fitting").hidden = false; }, WORKING_AFTER);
+  try {
+    drawScatter(await ask(`/api/tempcomp/fit?from=${temperature.from}&to=${temperature.to}`, signal,
+      HISTORY_TIMEOUT));
+  } finally {
+    clearTimeout(working);
+    $("fitting").hidden = true;
+  }
 }
 
 // How long Copy says it copied, in ms.

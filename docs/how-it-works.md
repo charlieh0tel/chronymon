@@ -290,7 +290,9 @@ from all the readings, and the fit's pairs for the scatter as many as
 its updates, all read in one snapshot.  The fits, linear and quadratic, are robust (Huber)
 least squares: a reading far off the line, an NTP source's wander or
 step, pulls it less than it would plain least squares.  The caption
-gives each one's R and R^2, and the line's slope.
+gives each one's R and R^2, and the line's slope.  A long range on a
+slow host takes seconds to fit; the page says it is fitting meanwhile,
+and waits as long for it as for the history.
 
 No lag is fitted.  chronyd compensates each reading as it comes, so
 the line to paste is the one fitted against the readings as they are.
