@@ -1,3 +1,11 @@
+chronymon (1.4.1-1) unstable; urgency=medium
+
+  * The Temperature page waits for a slow tempcomp fit instead of
+    giving up after 5 s, so a long range on a slow host draws its
+    scatter and fit; while it fits, the page says so.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sun, 08 Nov 2026 10:10:37 -0800
+
 chronymon (1.4.0-1) unstable; urgency=medium
 
   * Reading a long range's tempcomp updates is several times quicker
