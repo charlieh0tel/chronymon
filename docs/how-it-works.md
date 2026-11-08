@@ -317,7 +317,10 @@ compensation, as rounded, passes chronyd's 10 ppm at either end of
 the temperatures or at the curve's turn between them says so: chronyd
 ignores a reading past it.  Updates within an hour of chronyd
 starting, as chronymond saw it, are fitted, its estimate still
-settling, and the caption and dialog say how many.  The sensor and
+settling, and the caption and dialog say how many.  A start is a new
+PID or the host booting; chronyd answering again after missed polls
+is the same process, and counts as a start only where its PID file
+is not read.  The sensor and
 interval are the ones chronymond read from chronyd's configuration;
 without a `tempcomp` line read there, as with `--chrony-config none`,
 there is no fit, and a line an earlier run read is forgotten.  A

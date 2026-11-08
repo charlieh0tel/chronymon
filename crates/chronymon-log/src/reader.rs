@@ -1106,8 +1106,11 @@ impl Reader {
     }
 
     /// When chronyd started, unix nanoseconds, oldest first, from `from`
-    /// to `to`, unix seconds: up, restarted, or the host booted, as the
-    /// daemon saw it.
+    /// to `to`, unix seconds: restarted, or the host booted, as the
+    /// daemon saw it.  Where its PID file is read, a new chronyd is a
+    /// new PID, `chronyd_restart`; coming back up is then only chronyd
+    /// answering again, a busy host's missed polls, the same process.
+    /// Only where the PID is unknown is coming back up taken as a start.
     pub fn chronyd_starts(&self, from: f64, to: f64) -> Result<Vec<i64>> {
         let (from, to, _) = Window {
             from,
@@ -1115,12 +1118,18 @@ impl Reader {
             points: MIN_POINTS,
         }
         .stored();
+        let known: bool = self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM status WHERE chronyd_pid IS NOT NULL)",
+            [],
+            |row| row.get(0),
+        )?;
         let kinds = [
-            EventKind::ChronydUp,
             EventKind::ChronydRestart,
             EventKind::Boot,
+            EventKind::ChronydUp,
         ];
-        let names: Vec<String> = kinds.iter().map(|k| format!("'{}'", k.name())).collect();
+        let counted = if known { &kinds[..2] } else { &kinds[..] };
+        let names: Vec<String> = counted.iter().map(|k| format!("'{}'", k.name())).collect();
         let mut statement = self.connection.prepare(&format!(
             "SELECT at FROM event WHERE kind IN ({}) AND at >= ?1 AND at <= ?2 ORDER BY at",
             names.join(", ")
@@ -3326,6 +3335,34 @@ mod tests {
         assert_eq!(a.gaps.len(), 1);
         assert!(a.mean[a.gaps[0]].is_none());
         assert!(b.gaps.is_empty());
+    }
+
+    #[test]
+    fn chronyd_answering_again_is_a_start_only_without_its_pid() {
+        let mut db = Database::new("starts");
+        let status = |db: &mut Database, pid| {
+            db.log
+                .write(|batch| batch.status(at(30), ChronydState::Up, None, pid))
+                .expect("written");
+        };
+        db.log
+            .write(|batch| {
+                batch.event(at(10), EventKind::Boot, None, None)?;
+                batch.event(at(20), EventKind::ChronydDown, None, None)?;
+                batch.event(at(25), EventKind::ChronydUp, None, None)?;
+                batch.event(at(30), EventKind::ChronydRestart, None, Some("pid 1 to 2"))
+            })
+            .expect("written");
+        let starts = |db: &Database| {
+            db.reader()
+                .chronyd_starts(START as f64, (START + 60) as f64)
+                .expect("starts")
+        };
+        let stored = |second: i64| (START + second) * 1_000_000_000;
+        status(&mut db, None);
+        assert_eq!(starts(&db), [stored(10), stored(25), stored(30)]);
+        status(&mut db, Some(2));
+        assert_eq!(starts(&db), [stored(10), stored(30)]);
     }
 
     #[test]
