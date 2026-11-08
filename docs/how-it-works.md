@@ -292,7 +292,9 @@ least squares: a reading far off the line, an NTP source's wander or
 step, pulls it less than it would plain least squares.  The caption
 gives each one's R and R^2, and the line's slope.  A long range on a
 slow host takes seconds to fit; the page says it is fitting meanwhile,
-and waits as long for it as for the history.
+and waits as long for it as for the history.  On a change of range the
+old scatter and caption dim at once, and stay dimmed until the new
+range's fit replaces them.
 
 No lag is fitted.  chronyd compensates each reading as it comes, so
 the line to paste is the one fitted against the readings as they are.

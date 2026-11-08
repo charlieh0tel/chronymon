@@ -36,7 +36,7 @@
 <div class="panel">
   <h2>The clock's frequency against temperature</h2>
   <div id="scatter"></div>
-  <div id="fitting" class="muted" hidden>Fitting every clock update in this range&hellip;</div>
+  <div id="fitting" class="muted" hidden></div>
   <div id="figures" class="muted"></div>
   <div class="controls fit">
     <button id="fit" type="button" hidden>Fit tempcomp</button>
@@ -260,12 +260,46 @@ function clearScatter() {
   showHtml($("figures"), "");
   fitFrom = null;
   $("fit").hidden = true;
+  scatterRange = null;
 }
 
 // How long the fit may take, in ms, before the page says it is fitting.
 const WORKING_AFTER = 500;
+// The range the scatter was drawn for, as `range` gives it; null with
+// none drawn.  A read of the same range, on the refresh timer, keeps it
+// as it is until the new fit replaces it.
+let scatterRange = null;
+const rangeKey = () => JSON.stringify(range);
+
+// Say what the page is doing in place of the scatter; null, nothing.
+function working(what) {
+  if (what) $("fitting").textContent = what;
+  $("fitting").hidden = !what;
+}
+
+// The old range's scatter and caption, dimmed or not: they stand until
+// the new range's fit replaces them, which on a slow host is seconds.
+function dimScatter(dim) {
+  $("scatter").classList.toggle("dim", dim);
+  $("figures").classList.toggle("dim", dim);
+}
 
 async function load(signal) {
+  // Another range: what is shown is not it, said at once.
+  const moved = scatterRange !== null && scatterRange !== rangeKey();
+  if (moved) {
+    dimScatter(true);
+    working("Reading this range\u2026");
+  }
+  try {
+    await readAndDraw(signal, moved);
+  } finally {
+    dimScatter(false);
+    working(null);
+  }
+}
+
+async function readAndDraw(signal, moved) {
   // The status says which tempcomp line the fit replaces; read here if
   // the strip has not yet.
   lastStatus ??= await ask("/api/status", signal);
@@ -296,14 +330,16 @@ async function load(signal) {
   // The fit reads every update in the range, a scan as long as the
   // history's, so it waits as long; and says it is working, if it is
   // slow enough to notice, over the scatter it will replace.
-  const working = setTimeout(() => { $("fitting").hidden = false; }, WORKING_AFTER);
+  const fitting = () => working("Fitting every clock update in this range\u2026");
+  if (moved) fitting();
+  const slow = setTimeout(fitting, WORKING_AFTER);
   try {
     drawScatter(await ask(`/api/tempcomp/fit?from=${temperature.from}&to=${temperature.to}`, signal,
       HISTORY_TIMEOUT));
   } finally {
-    clearTimeout(working);
-    $("fitting").hidden = true;
+    clearTimeout(slow);
   }
+  scatterRange = rangeKey();
 }
 
 // How long Copy says it copied, in ms.
