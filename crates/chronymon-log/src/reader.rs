@@ -507,26 +507,24 @@ struct Update {
     refclock: Option<String>,
 }
 
-/// When each refclock's raw samples say a PPS was steering the clock,
-/// read once per refclock over a range: its latest sample with a pulse
-/// field, at or before a time and no more than `PPS_FRESH` before it,
-/// was a pulse.
+/// When each refclock's raw samples say a PPS was steering the clock:
+/// its latest sample with a pulse field, at or before a time and no
+/// more than `PPS_FRESH` before it, was a pulse.  Asked of the index
+/// a few times, not read sample by sample: the answer holds until the
+/// pulse goes stale or another kind of sample comes.
 struct Pulses {
     /// Whether there are raw samples at all.
     sampled: bool,
-    /// The range's updates, unix nanoseconds, from and to.
-    range: (i64, i64),
-    /// Each refclock's spans, unix nanoseconds, from and before, oldest
-    /// first, where it was.
-    spans: HashMap<String, Vec<(i64, i64)>>,
+    /// Each refclock's latest answer: from and before when, unix
+    /// nanoseconds, and whether a pulse was steering.
+    known: HashMap<String, (i64, i64, bool)>,
 }
 
 impl Pulses {
-    fn new(sampled: bool, range: (i64, i64)) -> Self {
+    fn new(sampled: bool) -> Self {
         Self {
             sampled,
-            range,
-            spans: HashMap::new(),
+            known: HashMap::new(),
         }
     }
 
@@ -535,13 +533,14 @@ impl Pulses {
         if !self.sampled {
             return Ok(false);
         }
-        if !self.spans.contains_key(reference) {
-            let spans = reader.pulse_spans(reference, self.range)?;
-            self.spans.insert(reference.to_owned(), spans);
+        if let Some((from, before, pulsed)) = self.known.get(reference)
+            && (*from..*before).contains(&at)
+        {
+            return Ok(*pulsed);
         }
-        let spans = &self.spans[reference];
-        let k = spans.partition_point(|(start, _)| *start <= at);
-        Ok(k > 0 && at < spans[k - 1].1)
+        let known = reader.pulse_at(reference, at)?;
+        self.known.insert(reference.to_owned(), known);
+        Ok(known.2)
     }
 }
 
@@ -954,7 +953,7 @@ impl Reader {
                 None => Ok(None),
             }
         };
-        let mut pulses = Pulses::new(self.exists(Table::RefclockSample)?, (from, to));
+        let mut pulses = Pulses::new(self.exists(Table::RefclockSample)?);
         let mut kept = Vec::new();
         for (index, update) in found.iter().enumerate() {
             let compensation = cursor.in_force(&mut next, update.made)?;
@@ -1149,37 +1148,42 @@ impl Reader {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Where `reference`'s raw samples say a PPS was steering the clock,
-    /// from `range.0` to `range.1`, unix nanoseconds: from each pulse
-    /// until `PPS_FRESH` after it, or the next sample, whichever is
-    /// first.  Spans from and before, oldest first, run together.
-    fn pulse_spans(&self, reference: &str, (from, to): (i64, i64)) -> Result<Vec<(i64, i64)>> {
-        let mut statement = self.connection.prepare(
-            "SELECT at, pulse FROM refclock_sample
-             WHERE reference = ?1 AND at >= ?2 AND at <= ?3 AND pulse IS NOT NULL
-             ORDER BY at",
-        )?;
-        let mut rows = statement.query(params![reference, from - PPS_FRESH, to])?;
-        let mut spans: Vec<(i64, i64)> = Vec::new();
-        // The latest pulse not yet ended by a later sample.
-        let mut open: Option<i64> = None;
-        let close = |spans: &mut Vec<(i64, i64)>, start: i64, end: i64| match spans.last_mut() {
-            Some(last) if last.1 >= start => last.1 = end,
-            _ => spans.push((start, end)),
+    /// Whether `reference`'s raw samples say a PPS was steering the clock
+    /// at `at`, unix nanoseconds, as [`Pulses`] has it, and from and
+    /// before when that holds.
+    fn pulse_at(&self, reference: &str, at: i64) -> Result<(i64, i64, bool)> {
+        // The first sample after `after`, by no more than `PPS_FRESH`,
+        // that was a pulse, or not: bounded, so that without the index
+        // each lookup reads few samples.
+        let first_after = |pulse: bool, after: i64| -> Result<Option<i64>> {
+            Ok(self
+                .connection
+                .prepare_cached(
+                    "SELECT MIN(at) FROM refclock_sample
+                     WHERE reference = ?1 AND pulse = ?2 AND at > ?3 AND at <= ?4",
+                )?
+                .query_row(params![reference, pulse, after, after + PPS_FRESH], |row| {
+                    row.get(0)
+                })?)
         };
-        while let Some(row) = rows.next()? {
-            let (at, pulse): (i64, bool) = (row.get(0)?, row.get(1)?);
-            if let Some(start) = open.take() {
-                close(&mut spans, start, at.min(start + PPS_FRESH + 1));
-            }
-            if pulse {
-                open = Some(at);
+        let pulse: Option<i64> = self
+            .connection
+            .prepare_cached(
+                "SELECT MAX(at) FROM refclock_sample
+                 WHERE reference = ?1 AND pulse = 1 AND at <= ?2 AND at >= ?3",
+            )?
+            .query_row(params![reference, at, at - PPS_FRESH], |row| row.get(0))?;
+        if let Some(pulse) = pulse {
+            // Until it goes stale, or the next sample that is not one.
+            let none = first_after(false, pulse)?;
+            if none.is_none_or(|none| none > at) {
+                let stale = pulse + PPS_FRESH + 1;
+                return Ok((at, none.map_or(stale, |none| none.min(stale)), true));
             }
         }
-        if let Some(start) = open {
-            close(&mut spans, start, start + PPS_FRESH + 1);
-        }
-        Ok(spans)
+        // Until the next pulse, or as long again.
+        let next = first_after(true, at)?;
+        Ok((at, next.unwrap_or(at + PPS_FRESH + 1), false))
     }
 
     /// Why the daemon's last read of chronyd's configuration failed, if
@@ -2951,8 +2955,7 @@ mod tests {
             .expect("written");
         let reader = db.reader();
         let nanoseconds = |second: i64| (START + second) * SECOND;
-        let range = (nanoseconds(0), nanoseconds(1000));
-        let mut pulses = Pulses::new(true, range);
+        let mut pulses = Pulses::new(true);
         let pulsed =
             |pulses: &mut Pulses, at: i64| pulses.pulsed(&reader, "PPS", at).expect("read");
         assert!(!pulsed(&mut pulses, nanoseconds(-1)));
@@ -2964,8 +2967,17 @@ mod tests {
         assert!(pulsed(&mut pulses, nanoseconds(30) + PPS_FRESH));
         assert!(!pulsed(&mut pulses, nanoseconds(30) + PPS_FRESH + 1));
         assert!(!pulsed(&mut pulses, nanoseconds(40) + PPS_FRESH));
+        // Asked again earlier, and each asked afresh: the same.
+        assert!(pulsed(&mut pulses, nanoseconds(5)));
+        for (second, steering) in [(-1, false), (0, true), (15, true), (25, false), (35, true)] {
+            assert_eq!(
+                pulsed(&mut Pulses::new(true), nanoseconds(second)),
+                steering,
+                "{second}"
+            );
+        }
         assert!(
-            !Pulses::new(false, range)
+            !Pulses::new(false)
                 .pulsed(&reader, "PPS", nanoseconds(0))
                 .expect("read")
         );

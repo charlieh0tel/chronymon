@@ -14,7 +14,7 @@ use chronymon_control::report::ReferenceId;
 /// Bumped when the tables change shape, or what a column holds.  The
 /// daemon refuses a database of a later version rather than write into
 /// what it does not understand.
-pub const VERSION: i64 = 9;
+pub const VERSION: i64 = 10;
 
 /// The first schema with chronyd's log files' tables.  A database of
 /// schema 1 gains them, empty, on open: no migration but `TABLES`.
@@ -239,6 +239,12 @@ pub const POLL_INTERVAL: i64 = 8;
 /// start gets one: its first daemon start, when it first read
 /// chronyd's configuration.
 pub const TEMPCOMP_FROM_FIRST: i64 = 9;
+
+/// The first schema with `refclock_sample_pulse`, each refclock's
+/// pulses and not, by time: whether a PPS steered a clock update is a
+/// few lookups in it, not a read of every sample.  An older database
+/// gains it on open: no migration but `TABLES`.
+pub const PULSE_INDEX: i64 = 10;
 
 /// A `tempcomp_since` for an older database with a `tempcomp` line
 /// recorded and none: its first daemon start.
@@ -581,6 +587,7 @@ pub(crate) const TABLES: &str = r"
         IFNULL(driver_polls, '-'), leap, IFNULL(pulse, '-'), IFNULL(raw_offset, '-'),
         cooked_offset, dispersion);
     CREATE INDEX IF NOT EXISTS refclock_sample_reference ON refclock_sample(reference, at);
+    CREATE INDEX IF NOT EXISTS refclock_sample_pulse ON refclock_sample(reference, pulse, at);
 
     -- tempcomp.log.
     CREATE TABLE IF NOT EXISTS tempcomp_sample (

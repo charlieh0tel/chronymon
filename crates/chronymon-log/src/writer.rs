@@ -806,6 +806,7 @@ mod tests {
     use super::*;
     use crate::schema::GNSS;
     use crate::schema::POLL_INTERVAL;
+    use crate::schema::PULSE_INDEX;
 
     fn schema_version(log: &Log) -> i64 {
         log.connection
@@ -885,6 +886,38 @@ mod tests {
             assert_eq!(schema_version(&log), VERSION);
             assert_eq!(since(&log), expected);
         }
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn adds_the_pulse_index_to_schema_9() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-v9-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let log = Log::open(&path).expect("created");
+            log.connection
+                .execute_batch(
+                    "DROP INDEX refclock_sample_pulse;
+                     UPDATE meta SET value = '9' WHERE key = 'schema_version';",
+                )
+                .expect("downgraded");
+        }
+        let log = Log::open(&path).expect("migrated");
+        assert_eq!(schema_version(&log), VERSION);
+        const { assert!(VERSION >= PULSE_INDEX) };
+        let indexed: i64 = log
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'refclock_sample_pulse'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("a count");
+        assert_eq!(indexed, 1);
         let _ = std::fs::remove_dir_all(&directory);
     }
 

@@ -293,9 +293,12 @@ Journal, Distribution, Kiosk.
   not the page: tested as Rust, one copy, and quick, of every update,
   only the scatter's pairs thinned; `/api/tempcomp` stays, the raw
   readings, for tools of one's own.  Whether a PPS steered each update
-  is from one scan of each refclock's raw samples, not a query per
-  update: at 7.5 us each, that was 2.1 s of 2.2 to read a 2-week
-  range's every update.  No lag: a fit of
+  is a few lookups in `refclock_sample_pulse` (schema 10), each
+  answer held until the pulse goes stale or another kind of sample
+  comes: about two per 10 min, not a query per update (7.5 us each,
+  2.1 s of 2.2 for a 2-week range) nor a scan of every sample (2/3 of
+  apu-0's 10 s).  tracking.log is read once.  apu-0's 60 days, read
+  here: 0.61 s to 0.21.  No lag: a fit of
   the sensor's lag (none, 1 or 2 min, by blocked cross-validation) was
   tried and dropped.  chronyd compensates each raw reading, so the
   unlagged line is the one to paste; and the lag could not be told on
