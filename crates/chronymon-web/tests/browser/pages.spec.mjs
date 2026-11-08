@@ -870,6 +870,18 @@ const tempcompFit = (page, change) => page.route("**/api/tempcomp/fit?*", async 
   return route.fulfill({ response, json: got });
 });
 
+test("Temperature: a slow fit says it is fitting until it draws", async ({ page }) => {
+  await page.route("**/api/tempcomp/fit?*", async (route) => {
+    const response = await route.fetch();
+    await new Promise((resolve) => { setTimeout(resolve, 1500); });
+    return route.fulfill({ response });
+  });
+  await page.goto("/temperature?last=172800");
+  await expect(page.locator("#fitting")).toBeVisible();
+  await expect(page.locator("#scatter .uplot")).toBeVisible();
+  await expect(page.locator("#fitting")).toBeHidden();
+});
+
 test("Temperature: the readings themselves served, for a tool of one's own", async ({ request }) => {
   const got = await (await request.get("/api/tempcomp")).json();
   expect(got.temperature.at.length).toBeGreaterThan(MIN_FITTED);
