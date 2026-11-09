@@ -1,3 +1,11 @@
+chronymon (1.4.4-1) unstable; urgency=medium
+
+  * The Refclocks page waits as long for its refclocks' row counts as
+    for a history read: counting millions of samples took seconds on
+    a slow host, past the 5 s it allowed, and the page failed.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Mon, 09 Nov 2026 11:54:46 -0800
+
 chronymon (1.4.3-1) unstable; urgency=medium
 
   * On a change of range, the Temperature page dims the old scatter
