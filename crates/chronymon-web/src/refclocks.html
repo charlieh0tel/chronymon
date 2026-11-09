@@ -71,9 +71,11 @@ const stack = {
 };
 
 async function load(signal) {
+  // Each counts every row of its table, a scan as long as a history
+  // read's on a large one, so waits as long.
   const [refclocks, receivers] = await Promise.all([
-    ask(`/api/keys?table=${TABLE}`, signal),
-    ask(`/api/keys?table=${RECEIVERS}`, signal),
+    ask(`/api/keys?table=${TABLE}`, signal, HISTORY_TIMEOUT),
+    ask(`/api/keys?table=${RECEIVERS}`, signal, HISTORY_TIMEOUT),
   ]);
   const extent = (r, what) => `${r.name}: ${r.rows.toLocaleString()} ${what}, ` +
     `${new Date(r.first * 1000).toLocaleString()} to ${new Date(r.last * 1000).toLocaleString()}`;
