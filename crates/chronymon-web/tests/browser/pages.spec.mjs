@@ -647,6 +647,18 @@ test("Refclocks: each refclock's offsets", async ({ page }) => {
   await expect(charts(page).first()).toBeVisible();
 });
 
+test("Refclocks: a refclock count slower than the strip's timeout still draws", async ({ page }) => {
+  // Past QUICK_TIMEOUT, as a count of a large table on a slow host is.
+  await page.route("**/api/keys?*", async (route) => {
+    const response = await route.fetch();
+    await new Promise((resolve) => { setTimeout(resolve, 6000); });
+    return route.fulfill({ response });
+  });
+  await page.goto("/refclocks?last=86400");
+  await expect(page.locator("#refclocks")).toContainText("PPS", { timeout: 15000 });
+  await expect(charts(page).first()).toBeVisible();
+});
+
 test("Refclocks: a gpsd receiver's satellites and dilutions, its fix lost shaded", async ({ page }) => {
   // The whole range: the receiver's fix is lost early in it, before
   // the kiosk's day.
