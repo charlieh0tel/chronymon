@@ -304,7 +304,14 @@ fn time(date: &str, time: &str) -> Option<Timestamp> {
         .map(|zoned| zoned.timestamp())
 }
 
+/// A field's number, finite.  Rust reads `nan` and `inf`, and overflows
+/// `1e999` to infinity.  SQLite stores NaN as NULL, which every log
+/// column refuses, failing the whole file; an infinity is stored, but
+/// JSON has none to send the views.
 fn number<T: std::str::FromStr>(field: &str) -> Option<T> {
+    if field.parse::<f64>().is_ok_and(|value| !value.is_finite()) {
+        return None;
+    }
     field.parse().ok()
 }
 
@@ -652,5 +659,28 @@ mod tests {
             parse(LogKind::Tempcomp, "2026-10-25 05:39:33  4.1500e+04"),
             Err(ParseError::BadLine { .. })
         ));
+    }
+
+    #[test]
+    fn a_number_no_column_holds_is_a_bad_line() {
+        assert!(matches!(
+            parse(
+                LogKind::Tempcomp,
+                "2026-10-25 05:39:33  4.1500e+04  4.1459e+00"
+            ),
+            Ok(Some(_))
+        ));
+        for field in ["nan", "NaN", "-nan", "inf", "-inf", "infinity", "1e999"] {
+            assert!(
+                matches!(
+                    parse(
+                        LogKind::Tempcomp,
+                        &format!("2026-10-25 05:39:33  4.1500e+04  {field}")
+                    ),
+                    Err(ParseError::BadLine { .. })
+                ),
+                "{field}"
+            );
+        }
     }
 }
