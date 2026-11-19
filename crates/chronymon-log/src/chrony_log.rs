@@ -15,6 +15,8 @@ use jiff::Timestamp;
 use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 
+use crate::timestamp::to_stored;
+
 /// The logs chronymon reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogKind {
@@ -295,13 +297,15 @@ pub fn parse(kind: LogKind, line: &str) -> Result<Option<Line>, ParseError> {
 }
 
 /// A date and time as chronyd logs them, UTC: `2026-10-25 05:39:33`,
-/// with `.ffffff` in `refclocks.log`.
+/// with `.ffffff` in `refclocks.log`.  None outside the years the
+/// database's timestamps hold, which would fail the whole file.
 fn time(date: &str, time: &str) -> Option<Timestamp> {
     let civil: DateTime = format!("{date}T{time}").parse().ok()?;
     civil
         .to_zoned(TimeZone::UTC)
         .ok()
         .map(|zoned| zoned.timestamp())
+        .filter(|at| to_stored(*at).is_ok())
 }
 
 /// A field's number, finite.  Rust reads `nan` and `inf`, and overflows
@@ -680,6 +684,31 @@ mod tests {
                     Err(ParseError::BadLine { .. })
                 ),
                 "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_time_the_database_cannot_hold_is_a_bad_line() {
+        for date in ["2262-04-11", "1677-09-21"] {
+            assert!(matches!(
+                parse(
+                    LogKind::Tempcomp,
+                    &format!("{date} 23:47:16  4.1500e+04  4.1459e+00")
+                ),
+                Ok(Some(_))
+            ));
+        }
+        for date in ["2262-04-12", "1677-09-20", "9999-12-31"] {
+            assert!(
+                matches!(
+                    parse(
+                        LogKind::Tempcomp,
+                        &format!("{date} 00:00:00  4.1500e+04  4.1459e+00")
+                    ),
+                    Err(ParseError::BadLine { .. })
+                ),
+                "{date}"
             );
         }
     }
