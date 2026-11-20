@@ -45,9 +45,14 @@ pub enum Error {
     #[error("stored value {0} is negative")]
     Negative(i64),
 
-    /// Reading a file to be written into the database failed.
+    /// Reading a file failed: one to tell whether the database changed.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A write began with a transaction still open, one a write's
+    /// failed rollback left.
+    #[error("a transaction is still open")]
+    Unfinished,
 
     /// A statement failed.
     #[error("sqlite: {0}")]

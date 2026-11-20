@@ -48,6 +48,17 @@ pub(crate) struct Scan {
     pub(crate) failed: usize,
 }
 
+/// Why a file was not read.
+#[derive(Debug, thiserror::Error)]
+enum ReadError {
+    /// Reading the file failed.
+    #[error(transparent)]
+    File(#[from] io::Error),
+    /// Writing what was read failed.
+    #[error(transparent)]
+    Database(#[from] chronymon_log::error::Error),
+}
+
 /// chronyd's log directory, and what is wrong with the files in it that
 /// could not be read.
 #[derive(Debug)]
@@ -131,7 +142,7 @@ const FINGERPRINT_LENGTH: u64 = 512;
 
 /// Read what is new in one file.  An error leaves its checkpoint, and
 /// the database, as they were.
-fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> {
+fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> Result<Scan, ReadError> {
     // Opened first, then the open file examined: what is read is what
     // was examined, whatever logrotate renames meanwhile.
     let file = match File::open(path) {
@@ -171,14 +182,14 @@ fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> 
         Box::new(BufReader::new(&file))
     };
     let path_text = path.to_string_lossy();
-    log.write(|batch| {
+    log.write_with(|batch| {
         let mut scan = Scan::default();
         let mut read = start;
         let mut rejected = false;
         let mut line = Vec::new();
         loop {
             line.clear();
-            let count = reader.read_until(b'\n', &mut line).map_err(io_error)?;
+            let count = reader.read_until(b'\n', &mut line)?;
             // A line chronyd is still writing is left for next time.
             if count == 0 || (!compressed && line.last() != Some(&b'\n')) {
                 break;
@@ -210,13 +221,12 @@ fn read_file(log: &mut Log, kind: LogKind, path: &Path) -> anyhow::Result<Scan> 
         let checkpoint = LogFile {
             length: length.max(read),
             read,
-            fingerprint: fingerprint(&file, read).map_err(io_error)?,
+            fingerprint: fingerprint(&file, read)?,
             rejected,
         };
         batch.set_log_file(id, &path_text, &checkpoint)?;
         Ok(scan)
     })
-    .map_err(Into::into)
 }
 
 /// The bytes of `file` just before `end`, up to [`FINGERPRINT_LENGTH`].
@@ -225,10 +235,6 @@ fn fingerprint(file: &File, end: u64) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0; usize::try_from(end - start).unwrap_or(0)];
     file.read_exact_at(&mut bytes, start)?;
     Ok(bytes)
-}
-
-fn io_error(error: io::Error) -> chronymon_log::error::Error {
-    chronymon_log::error::Error::Io(error)
 }
 
 #[cfg(test)]

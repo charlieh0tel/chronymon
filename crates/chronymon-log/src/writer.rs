@@ -17,7 +17,6 @@ use chronymon_control::report::Tracking;
 use jiff::Timestamp;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension as _;
-use rusqlite::Transaction;
 use rusqlite::params;
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
@@ -250,11 +249,30 @@ impl Log {
     /// Write one poll's rows together, so a reader never sees half a
     /// poll.
     pub fn write<T>(&mut self, f: impl FnOnce(&Batch<'_>) -> Result<T>) -> Result<T> {
-        let transaction = self.connection.transaction()?;
+        self.write_with(f)
+    }
+
+    /// [`Log::write`], for a caller with its own error type: any error
+    /// rolls the rows back.
+    ///
+    /// A savepoint, which outside a transaction begins and commits one
+    /// as `BEGIN` and `COMMIT` would.
+    pub fn write_with<T, E: From<Error>>(
+        &mut self,
+        f: impl FnOnce(&Batch<'_>) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        // What `BEGIN` refuses, and a savepoint would nest inside: a
+        // transaction left open by a rollback that failed.
+        if !self.connection.is_autocommit() {
+            return Err(Error::Unfinished.into());
+        }
+        let savepoint = self.connection.savepoint().map_err(Error::from)?;
+        // An error rolls back as the savepoint drops.  A rollback that
+        // fails leaves the transaction open, which the next write refuses.
         let result = f(&Batch {
-            transaction: &transaction,
+            connection: &savepoint,
         })?;
-        transaction.commit()?;
+        savepoint.commit().map_err(Error::from)?;
         Ok(result)
     }
 }
@@ -262,7 +280,7 @@ impl Log {
 /// The rows of one poll, written in one transaction.
 #[derive(Debug)]
 pub struct Batch<'a> {
-    transaction: &'a Transaction<'a>,
+    connection: &'a Connection,
 }
 
 /// An inode or a file length, as SQLite's signed integers hold them.
@@ -292,7 +310,7 @@ impl Batch<'_> {
     /// A fact about the database or the daemon's last run, by key.
     pub fn meta(&self, key: &str) -> Result<Option<String>> {
         Ok(self
-            .transaction
+            .connection
             .query_row(
                 "SELECT value FROM meta WHERE key = ?1",
                 params![key],
@@ -303,7 +321,7 @@ impl Batch<'_> {
 
     /// Record a fact under `key`.
     pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO meta (key, value) VALUES (?1, ?2)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             params![key, value],
@@ -361,7 +379,7 @@ impl Batch<'_> {
 
     /// Record that the daemon, started at `at`, polls every `seconds`.
     pub fn poll_interval(&self, at: Timestamp, seconds: f64) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO poll_interval (at, seconds) VALUES (?1, ?2)",
             params![to_stored(at)?, seconds],
         )?;
@@ -372,7 +390,7 @@ impl Batch<'_> {
     /// that it has none, which would journal a change, but not known.
     /// The next one recorded is the first.
     pub fn forget_tempcomp(&self) -> Result<()> {
-        self.transaction
+        self.connection
             .execute("DELETE FROM meta WHERE key = ?1", params![TEMPCOMP])?;
         Ok(())
     }
@@ -386,7 +404,7 @@ impl Batch<'_> {
 
     /// Record what gpsd says of `device` as of `at`.
     pub fn gnss(&self, at: Timestamp, device: &str, gnss: &Gnss) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO gnss (at, device, mode, status, satellites_used, satellites_seen,
                  gdop, pdop, hdop, vdop, tdop)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -415,7 +433,7 @@ impl Batch<'_> {
         detail: Option<&str>,
         pid: Option<u32>,
     ) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO status (id, polled_at, state, detail, chronyd_pid)
              VALUES (1, ?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET polled_at = excluded.polled_at,
@@ -437,7 +455,7 @@ impl Batch<'_> {
         name: Option<&str>,
     ) -> Result<i64> {
         let at = to_stored(at)?;
-        Ok(self.transaction.query_row(
+        Ok(self.connection.query_row(
             "INSERT INTO source (address, reference_id, mode, name, first_seen, last_seen)
              VALUES (?1, ?2, ?3, ?4, ?5, ?5)
              ON CONFLICT (address) DO UPDATE SET reference_id = excluded.reference_id,
@@ -464,7 +482,7 @@ impl Batch<'_> {
         let values = tracking_values(at, t)?
             .into_iter()
             .chain([update, local].map(|b| Value::Integer(i64::from(b))));
-        self.transaction.execute(
+        self.connection.execute(
             &format!(
                 "INSERT INTO tracking ({TRACKING_COLUMNS})
                  SELECT {TRACKING_PARAMETERS}
@@ -480,7 +498,7 @@ impl Batch<'_> {
 
     /// What `tracking` now says, in place of what it said before.
     pub fn tracking_report(&self, at: Timestamp, t: &Tracking) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             &format!(
                 "INSERT OR REPLACE INTO tracking_report (id, {TRACKING_COLUMNS})
                  VALUES (1, {TRACKING_PARAMETERS})"
@@ -495,7 +513,7 @@ impl Batch<'_> {
     pub fn source_report(&self, at: Timestamp, source_id: i64, s: &SourceData) -> Result<()> {
         let sample = s.since_sample.is_some();
         let sample_time = sample_time(at, s)?.map(to_stored).transpose()?;
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO source_report (source_id, at, poll, stratum, state, reachability,
                  sample_time, latest_measurement, original_latest_measurement,
                  latest_measurement_error)
@@ -528,7 +546,7 @@ impl Batch<'_> {
         let Some(sample_time) = sample_time(at, s)? else {
             return Ok(());
         };
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO source_sample (at, source_id, sample_time, poll, stratum, state,
                  reachability, latest_measurement, original_latest_measurement,
                  latest_measurement_error)
@@ -551,7 +569,7 @@ impl Batch<'_> {
 
     /// A change in a source's regression, from `sourcestats`.
     pub fn source_stats(&self, at: Timestamp, source_id: i64, s: &SourceStats) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO source_stats (at, source_id, samples, runs, span, standard_deviation,
                  residual_frequency, skew, estimated_offset, estimated_offset_error)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -573,7 +591,7 @@ impl Batch<'_> {
 
     /// An NTP source's new valid packet, from `ntpdata`.
     pub fn ntp_sample(&self, at: Timestamp, source_id: i64, n: &NtpData) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO ntp_sample (at, source_id, offset, peer_delay, peer_dispersion,
                  response_time, jitter_asymmetry, root_delay, root_dispersion, stratum, poll,
                  precision, leap, reference_id, reference_time, tests, interleaved,
@@ -610,7 +628,7 @@ impl Batch<'_> {
 
     /// A change in how selection treats a source, from `selectdata`.
     pub fn selection(&self, at: Timestamp, source_id: i64, s: &SelectData) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO selection (at, source_id, state, authenticated, leap,
                  configured_options, effective_options, score, low_limit, high_limit)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -634,7 +652,7 @@ impl Batch<'_> {
     /// already read, from a file read again, is not.
     pub fn log_line(&self, line: &Line) -> Result<bool> {
         let inserted = match line {
-            Line::Tracking(t) => self.transaction.execute(
+            Line::Tracking(t) => self.connection.execute(
                 "INSERT OR IGNORE INTO log_tracking (at, reference, stratum, frequency, skew,
                      offset, leap, combined_sources, offset_sd, remaining_correction,
                      root_delay, root_dispersion, max_error)
@@ -655,7 +673,7 @@ impl Batch<'_> {
                     t.max_error,
                 ],
             )?,
-            Line::Measurement(m) => self.transaction.execute(
+            Line::Measurement(m) => self.connection.execute(
                 "INSERT OR IGNORE INTO log_measurement (at, source, leap, stratum, tests,
                      local_poll, remote_poll, score, offset, peer_delay, peer_dispersion,
                      root_delay, root_dispersion, reference_id, mode, interleaved,
@@ -683,7 +701,7 @@ impl Batch<'_> {
                     m.receive_timestamp_source.to_string(),
                 ],
             )?,
-            Line::Statistics(s) => self.transaction.execute(
+            Line::Statistics(s) => self.connection.execute(
                 "INSERT OR IGNORE INTO log_statistics (at, source, standard_deviation,
                      estimated_offset, offset_sd, residual_frequency, skew, stress, samples,
                      best_start, runs, asymmetry)
@@ -703,7 +721,7 @@ impl Batch<'_> {
                     s.asymmetry,
                 ],
             )?,
-            Line::Refclock(c) => self.transaction.execute(
+            Line::Refclock(c) => self.connection.execute(
                 "INSERT OR IGNORE INTO refclock_sample (at, reference, driver_polls, leap,
                      pulse, raw_offset, cooked_offset, dispersion)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -718,7 +736,7 @@ impl Batch<'_> {
                     c.dispersion,
                 ],
             )?,
-            Line::Tempcomp(t) => self.transaction.execute(
+            Line::Tempcomp(t) => self.connection.execute(
                 "INSERT OR IGNORE INTO tempcomp_sample (at, temperature, compensation)
                  VALUES (?1, ?2, ?3)",
                 params![to_stored(t.at)?, t.temperature, t.compensation],
@@ -730,7 +748,7 @@ impl Batch<'_> {
     /// How far the log file `id` was read.
     pub fn log_file(&self, id: FileId) -> Result<Option<LogFile>> {
         let found: Option<(i64, i64, Vec<u8>, bool)> = self
-            .transaction
+            .connection
             .query_row(
                 "SELECT length, read, fingerprint, rejected FROM log_file WHERE inode = ?1",
                 params![stored_u64(id.inode)?],
@@ -751,7 +769,7 @@ impl Batch<'_> {
 
     /// Record how far the log file `id`, now at `path`, was read.
     pub fn set_log_file(&self, id: FileId, path: &str, file: &LogFile) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO log_file (inode, path, length, read, fingerprint, rejected)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (inode) DO UPDATE SET path = excluded.path,
@@ -777,7 +795,7 @@ impl Batch<'_> {
         source_id: Option<i64>,
         detail: Option<&str>,
     ) -> Result<()> {
-        self.transaction.execute(
+        self.connection.execute(
             "INSERT INTO event (at, kind, source_id, detail) VALUES (?1, ?2, ?3, ?4)",
             params![to_stored(at)?, kind.name(), source_id, detail],
         )?;
@@ -816,6 +834,37 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("a version")
+    }
+
+    #[test]
+    fn a_failed_write_leaves_nothing_and_the_next_commits() {
+        let mut log = Log::in_memory().expect("opened");
+        let events = |log: &Log| -> i64 {
+            log.connection
+                .query_row("SELECT COUNT(*) FROM event", [], |row| row.get(0))
+                .expect("a count")
+        };
+        let failed = log.write(|batch| {
+            batch.event(Timestamp::UNIX_EPOCH, EventKind::DaemonStart, None, None)?;
+            Err::<(), _>(Error::Timestamp)
+        });
+        assert!(matches!(failed, Err(Error::Timestamp)));
+        assert_eq!(events(&log), 0);
+        assert!(log.connection.is_autocommit());
+        log.write(|batch| batch.event(Timestamp::UNIX_EPOCH, EventKind::DaemonStart, None, None))
+            .expect("written");
+        assert_eq!(events(&log), 1);
+        assert!(log.connection.is_autocommit());
+    }
+
+    #[test]
+    fn refuses_to_write_inside_an_open_transaction() {
+        let mut log = Log::in_memory().expect("opened");
+        log.connection.execute_batch("BEGIN").expect("begun");
+        assert!(matches!(
+            log.write(|batch| batch.poll_interval(Timestamp::UNIX_EPOCH, 1.0)),
+            Err(Error::Unfinished)
+        ));
     }
 
     #[test]
