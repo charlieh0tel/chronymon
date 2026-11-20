@@ -51,13 +51,15 @@ const HISTORY_TIMEOUT = 60000;
 // How often the strip polls: the daemon writes its status every second.
 const STRIP_EVERY = 1000;
 // How old the daemon's last poll may be, in seconds, before the feed is
-// called stale.  It polls every second by default; a few missed polls
-// are a busy host, more are a daemon that has stopped.
+// called stale, where the server does not say: as it says for a daemon
+// polling every second, the default.
 const STALE_AFTER = 10;
 
-// How old the status `s` may be, in seconds, before the feed is stale.
+// How old the status `s` may be, in seconds, before the feed is stale:
+// the server's `stale_after`, from the daemon's poll interval.  A status
+// kept from an older server has none.
 function staleAfter(s) {
-  return STALE_AFTER;
+  return s.stale_after ?? STALE_AFTER;
 }
 
 // ------------------------------------------------------------- fetching

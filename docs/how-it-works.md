@@ -126,6 +126,8 @@ too, as pills after LIVE, worst first, on a line of their own above
 the readings, which sit on a grid, each column lined up from row to
 row, and keep their places as the pills come and go.  The strip is
 edged in the worst one's color, red or amber, as the kiosk's panel is.
+LIVE turns STALE once the daemon's last poll is older than two of its
+poll intervals, and 10 s at least (`/api/status`'s `stale_after`).
 
 | Parameter | |
 | - | - |

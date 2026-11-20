@@ -455,6 +455,22 @@ pub(crate) fn tempcomp_fit(path: &Path, query: &str) -> Result<Value> {
     ))
 }
 
+/// How old the daemon's last poll may be, in seconds, before the feed
+/// is stale, at the least: a few missed polls are a busy host, more are
+/// a daemon that has stopped.
+const STALE_AFTER: f64 = 10.0;
+
+/// How many of the daemon's polls may be missed, at the least, before
+/// the feed is stale: a daemon polling less often than every
+/// [`STALE_AFTER`] seconds is not stale between its polls.
+const STALE_POLLS: f64 = 2.0;
+
+/// How old the daemon's last poll may be, in seconds, before the feed is
+/// stale, for a daemon polling every `poll_interval` seconds.
+fn stale_after(poll_interval: Option<f64>) -> f64 {
+    STALE_AFTER.max(STALE_POLLS * poll_interval.unwrap_or(0.0))
+}
+
 /// `/api/status`: the daemon's last poll and the newest clock update,
 /// with the reference's name.
 pub(crate) fn status(path: &Path) -> Result<Value> {
@@ -504,6 +520,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "now": now,
             "host": host(),
             "status": status,
+            "stale_after": stale_after(reader.poll_interval()?),
             "tracking": tracking,
             "reference_name": reference_name,
             "on_backups": on_backups(&sources, &paired),
@@ -1131,5 +1148,13 @@ mod tests {
         ] {
             assert!(refusal(answer).is_some());
         }
+    }
+
+    #[test]
+    fn stale_after_two_missed_polls_and_ten_seconds_at_least() {
+        assert_eq!(stale_after(None), 10.0);
+        assert_eq!(stale_after(Some(1.0)), 10.0);
+        assert_eq!(stale_after(Some(5.0)), 10.0);
+        assert_eq!(stale_after(Some(20.0)), 40.0);
     }
 }

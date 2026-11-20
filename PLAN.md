@@ -209,6 +209,10 @@ long range Auto waits half an hour, and the events listed fell behind
 the strip.
 One bucketed query, live or zoomed, is one path to get right; nothing
 arrives faster than chronyd updates, so no push channel.
+The feed is stale once the last poll is older than the server says:
+two poll intervals, 10 s at least.  The pages once had 10 s alone,
+which a daemon polling less often than that crossed between every two
+polls, and each crossing reread every chart.
 
 A page reloads itself when the server it was loaded from restarts:
 `/api/status` names the server's run, a random id made at start, in
