@@ -846,6 +846,18 @@ impl Reader {
             .is_some())
     }
 
+    /// The fact stored under `key`, if any.
+    fn meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// The daemon's last poll, if it has polled.
     pub fn status(&self) -> Result<Option<Status>> {
         Ok(self
@@ -869,14 +881,7 @@ impl Reader {
     /// configuration; none before a daemon did.  A line not understood
     /// is left out.
     pub fn refclock_locks(&self) -> Result<Vec<RefclockLock>> {
-        let stored: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                params![REFCLOCK_LOCKS],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let stored = self.meta(REFCLOCK_LOCKS)?;
         Ok(stored
             .unwrap_or_default()
             .lines()
@@ -1142,12 +1147,7 @@ impl Reader {
     /// nanoseconds and seconds, oldest first: none where its database
     /// is older than the table.
     fn poll_intervals(&self) -> Result<Vec<(i64, f64)>> {
-        let known: bool = self.connection.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'poll_interval')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !known {
+        if !self.has_table("poll_interval")? {
             return Ok(Vec::new());
         }
         let mut statement = self
@@ -1198,28 +1198,14 @@ impl Reader {
     /// Why the daemon's last read of chronyd's configuration failed, if
     /// it did.
     pub fn chrony_config_error(&self) -> Result<Option<String>> {
-        let stored: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                params![CHRONY_CONFIG_ERROR],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let stored = self.meta(CHRONY_CONFIG_ERROR)?;
         Ok(stored.filter(|error| !error.is_empty()))
     }
 
     /// chronyd's `tempcomp` sensor, as the daemon last read its
     /// configuration, if it has one.
     pub fn tempcomp(&self) -> Result<Option<Tempcomp>> {
-        let stored: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                params![TEMPCOMP],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let stored = self.meta(TEMPCOMP)?;
         Ok(stored.as_deref().and_then(Tempcomp::parse))
     }
 
@@ -1234,27 +1220,13 @@ impl Reader {
     /// When chronyd's `tempcomp` sensor last changed, if one was seen to:
     /// readings before it are another sensor's.
     pub fn tempcomp_since(&self) -> Result<Option<i64>> {
-        let stored: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                params![TEMPCOMP_SINCE],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let stored = self.meta(TEMPCOMP_SINCE)?;
         Ok(stored.and_then(|s| s.parse().ok()))
     }
 
     /// What the daemon's watchers last found wrong.
     pub fn troubles(&self) -> Result<Vec<Trouble>> {
-        let stored: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                params![TROUBLES],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let stored = self.meta(TROUBLES)?;
         Ok(stored
             .unwrap_or_default()
             .lines()

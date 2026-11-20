@@ -125,7 +125,7 @@ fn json(result: Result<Value>) -> Response {
     match result {
         Ok(value) => Response::ok(JSON, value.to_string()),
         Err(e) => {
-            let body = json!({ "error": format!("{e:#}") }).to_string();
+            let body = failure(&e).to_string();
             if e.downcast_ref::<api::Refused>().is_some() {
                 Response::bad_request(JSON, body)
             } else {
@@ -133,6 +133,11 @@ fn json(result: Result<Value>) -> Response {
             }
         }
     }
+}
+
+/// A failure as [`json`] says it.
+fn failure(e: &anyhow::Error) -> Value {
+    json!({ "error": format!("{e:#}") })
 }
 
 fn main() -> Result<()> {
