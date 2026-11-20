@@ -224,6 +224,24 @@ for (const path of ["/journal", "/kiosk"]) {
   });
 }
 
+// The feed is stale past the server's `stale_after`, from the daemon's
+// poll interval; past 10 s where a status has none.
+test("Live: stale past the server's threshold, else 10 s", async ({ page }) => {
+  let staleAfter = 40;
+  await page.route("**/api/status", async (route) => {
+    const response = await route.fetch();
+    const { stale_after, ...status } = await response.json();
+    status.status.state = "up";
+    status.status.age = 30;
+    return route.fulfill({ response, json: staleAfter === undefined ? status : { ...status, stale_after: staleAfter } });
+  });
+  await page.goto("/");
+  const pill = page.locator("#status .pill").first();
+  await expect(pill).toHaveText("LIVE");
+  staleAfter = undefined;
+  await expect(pill).toHaveText("STALE");
+});
+
 test("Live: the strip reads the clock", async ({ page }) => {
   await page.goto("/");
   const strip = page.locator("#status");

@@ -1209,6 +1209,23 @@ impl Reader {
         Ok(stored.as_deref().and_then(Tempcomp::parse))
     }
 
+    /// The poll interval of the daemon's latest run, seconds: none
+    /// before a daemon ran, or where its database is older than the
+    /// table.
+    pub fn poll_interval(&self) -> Result<Option<f64>> {
+        if !self.has_table("poll_interval")? {
+            return Ok(None);
+        }
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT seconds FROM poll_interval ORDER BY at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// When the newest event happened, stored, if there is one: a page
     /// seeing it change reads its range again.
     pub fn latest_event_at(&self) -> Result<Option<i64>> {
@@ -3413,6 +3430,20 @@ mod tests {
             .write(|batch| batch.chrony_config_error(None))
             .expect("written");
         assert_eq!(db.reader().chrony_config_error().expect("read"), None);
+    }
+
+    #[test]
+    fn reads_the_latest_runs_poll_interval() {
+        let mut db = Database::new("poll-interval");
+        assert_eq!(db.reader().poll_interval().expect("read"), None);
+        let at = |second: i64| Timestamp::new(1_800_000_000 + second, 0).expect("in range");
+        db.log
+            .write(|batch| {
+                batch.poll_interval(at(0), 1.0)?;
+                batch.poll_interval(at(10), 20.0)
+            })
+            .expect("written");
+        assert_eq!(db.reader().poll_interval().expect("read"), Some(20.0));
     }
 
     #[test]
