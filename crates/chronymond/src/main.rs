@@ -176,12 +176,17 @@ fn bad_lines(count: usize) -> String {
 /// What one run of the daemon carries from poll to poll, but its
 /// database, which each poll's write borrows beside it.
 struct Daemon<'a> {
+    /// The options it was started with.
     cli: &'a Cli,
     /// chronyd's socket, as last connected; none after any failure.
     client: Option<Client>,
+    /// chronyd's reports, read and recorded as they change.
     collector: Collector,
+    /// The PPS devices watched for missed edges.
     pps: Pps,
+    /// gpsd's receivers, if watched.
     gpsd: Option<Gpsd>,
+    /// The clock's steps, told from its readings poll to poll.
     steps: Steps,
     /// chronyd's state as last told in the daemon's log; none before
     /// the first poll.
@@ -189,7 +194,11 @@ struct Daemon<'a> {
     /// What the watchers found wrong, as last recorded; none before the
     /// first poll, which records it whatever an earlier run left.
     troubles: Option<Vec<Trouble>>,
+    /// chronyd's log files, each read as far as it was.
     ingest: Ingest,
+    /// Time between polls.
+    interval: Duration,
+    /// Time between reads of chronyd's logs.
     log_interval: Duration,
     /// When chronyd's logs were last read.
     logs_read: Instant,
@@ -205,21 +214,16 @@ enum Stop {
 }
 
 impl Daemon<'_> {
-    /// Poll every `interval` until a signal on `stopped` or a fault.  A
+    /// Poll until a signal on `stopped` or a fault.  A
     /// failed write is returned at once, with no stop recorded, so the
     /// next start records a crash.
-    fn poll_until_stopped(
-        &mut self,
-        log: &mut Log,
-        interval: Duration,
-        stopped: &mpsc::Receiver<()>,
-    ) -> Result<Stop> {
+    fn poll_until_stopped(&mut self, log: &mut Log, stopped: &mpsc::Receiver<()>) -> Result<Stop> {
         let mut next = Instant::now();
         loop {
             if let Some(stop) = self.poll(log)? {
                 return Ok(stop);
             }
-            next += interval;
+            next += self.interval;
             let now = Instant::now();
             if next < now {
                 // Fell behind (a suspend, a slow disk): start again from
@@ -398,15 +402,16 @@ fn run(cli: &Cli) -> Result<()> {
         state: None,
         troubles: None,
         ingest,
+        interval,
         log_interval,
         logs_read: Instant::now(),
     };
-    let stop = daemon.poll_until_stopped(&mut log, interval, &stopped)?;
+    let ending = daemon.poll_until_stopped(&mut log, &stopped)?;
     // What chronyd logged since the last read.
     daemon.ingest.scan(&mut log);
     let system_stopping = host::system_stopping();
     log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
-    if let Stop::Failed(e) = stop {
+    if let Stop::Failed(e) = ending {
         anyhow::bail!(e);
     }
     eprintln!("chronymond: stopped");
