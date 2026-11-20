@@ -173,13 +173,155 @@ fn bad_lines(count: usize) -> String {
     }
 }
 
+/// What one run of the daemon carries from poll to poll, but its
+/// database, which each poll's write borrows beside it.
+struct Daemon<'a> {
+    cli: &'a Cli,
+    /// chronyd's socket, as last connected; none after any failure.
+    client: Option<Client>,
+    collector: Collector,
+    pps: Pps,
+    gpsd: Option<Gpsd>,
+    steps: Steps,
+    /// chronyd's state as last told in the daemon's log; none before
+    /// the first poll.
+    state: Option<ChronydState>,
+    /// What the watchers found wrong, as last recorded; none before the
+    /// first poll, which records it whatever an earlier run left.
+    troubles: Option<Vec<Trouble>>,
+    ingest: Ingest,
+    log_interval: Duration,
+    /// When chronyd's logs were last read.
+    logs_read: Instant,
+}
+
+/// Why the polling stopped, short of a failed write.
+enum Stop {
+    /// A signal.
+    Signal,
+    /// A fault only a restart, or a change to chronyd's configuration,
+    /// fixes: the daemon stops as for a signal, then fails with this.
+    Failed(String),
+}
+
+impl Daemon<'_> {
+    /// Poll every `interval` until a signal on `stopped` or a fault.  A
+    /// failed write is returned at once, with no stop recorded, so the
+    /// next start records a crash.
+    fn poll_until_stopped(
+        &mut self,
+        log: &mut Log,
+        interval: Duration,
+        stopped: &mpsc::Receiver<()>,
+    ) -> Result<Stop> {
+        let mut next = Instant::now();
+        loop {
+            if let Some(stop) = self.poll(log)? {
+                return Ok(stop);
+            }
+            next += interval;
+            let now = Instant::now();
+            if next < now {
+                // Fell behind (a suspend, a slow disk): start again from
+                // now rather than poll in a burst to catch up.
+                next = now;
+            }
+            match stopped.recv_timeout(next - now) {
+                Err(RecvTimeoutError::Timeout) => {}
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => return Ok(Stop::Signal),
+            }
+        }
+    }
+
+    /// One poll: read chronyd, record it and what the watchers saw, and
+    /// chronyd's logs when due.  A fault that stops the daemon, if any.
+    fn poll(&mut self, log: &mut Log) -> Result<Option<Stop>> {
+        let at = Timestamp::now();
+        let clocks = Reading::now();
+        // A fresh socket after any failure: chronyd may have restarted.
+        let read = match self
+            .client
+            .take()
+            .map_or_else(|| Client::connect(&self.cli.socket), Ok)
+        {
+            Ok(mut connected) => {
+                let read = self.collector.read(&mut connected);
+                if read.is_ok() {
+                    self.client = Some(connected);
+                }
+                read
+            }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = &read
+            && read_only(e)
+        {
+            return Ok(Some(Stop::Failed(format!(
+                "{e}: exiting, for a restart to find its directory writable"
+            ))));
+        }
+        // Like refused permission, fatal: chronyd's configuration must
+        // change.
+        if let Err(e) = &read
+            && unauthorized(e)
+        {
+            return Ok(Some(Stop::Failed(format!(
+                "{e}: chronyd must open, in chrony.conf, `opencommands {OPEN_COMMANDS}` (chrony 4.7 on)"
+            ))));
+        }
+        if let Err(e) = &read {
+            let now = collect::state_of(e);
+            if self.state != Some(now) {
+                eprintln!("chronymond: chronyd {}: {e}", now.name());
+            }
+            self.state = Some(now);
+        } else {
+            if self.state.is_some_and(|state| state != ChronydState::Up) {
+                eprintln!("chronymond: chronyd up");
+            }
+            self.state = Some(ChronydState::Up);
+        }
+        let process = host::chronyd(&self.cli.pid_file);
+        let recorded = log.write(|batch| {
+            self.collector.record(batch, at, read, process)?;
+            for (when, kind, detail) in self.steps.observe(at, clocks, self.collector.take_step()) {
+                eprintln!("chronymond: {}: {detail}", kind.name());
+                batch.event(when, kind, None, Some(&detail))?;
+            }
+            self.pps.poll(batch, at)?;
+            if let Some(gpsd) = self.gpsd.as_mut() {
+                gpsd.poll(batch, at)?;
+            }
+            let now: Vec<Trouble> = self
+                .pps
+                .troubles()
+                .into_iter()
+                .chain(self.gpsd.as_ref().map(Gpsd::troubles).unwrap_or_default())
+                .collect();
+            if self.troubles.as_ref() != Some(&now) {
+                batch.troubles(&now)?;
+            }
+            Ok(now)
+        })?;
+        self.troubles = Some(recorded);
+        if self.logs_read.elapsed() >= self.log_interval {
+            let scan = self.ingest.scan(log);
+            if scan.bad_lines > 0 {
+                eprintln!("chronymond: logs:{}", bad_lines(scan.bad_lines));
+            }
+            self.logs_read = Instant::now();
+        }
+        Ok(None)
+    }
+}
+
 fn run(cli: &Cli) -> Result<()> {
     let interval = seconds(cli.interval, "--interval")?;
     let log_interval = seconds(cli.log_interval, "--log-interval")?;
     // Refused permission is fatal: no retry fixes the user the daemon
     // runs as.  Anything else -- chronyd not running yet -- is recorded
     // as chronyd down, and retried.
-    let mut client = match Client::connect(&cli.socket) {
+    let client = match Client::connect(&cli.socket) {
         Ok(client) => Some(client),
         Err(e) if refused(&e) => anyhow::bail!(
             "{e}: the daemon must run as chronyd's user (_chrony on Debian and Ubuntu) or root"
@@ -188,14 +330,14 @@ fn run(cli: &Cli) -> Result<()> {
     };
     let mut log =
         Log::open(&cli.database).with_context(|| format!("opening {}", cli.database.display()))?;
-    let mut collector = Collector::new(cli.chrony_config.clone());
+    let collector = Collector::new(cli.chrony_config.clone());
     eprintln!(
         "chronymond: version {}, {} every {interval:?}, {}",
         env!("CARGO_PKG_VERSION"),
         cli.socket,
         collector.config()
     );
-    let (mut pps, refused) = Pps::new(&cli.pps);
+    let (pps, refused) = Pps::new(&cli.pps);
     for refusal in &refused {
         eprintln!("chronymond: {refusal}");
     }
@@ -203,7 +345,7 @@ fn run(cli: &Cli) -> Result<()> {
         let names: Vec<String> = cli.pps.iter().map(ToString::to_string).collect();
         eprintln!("chronymond: watching PPS {}", names.join(", "));
     }
-    let mut gpsd = match &cli.gpsd {
+    let gpsd = match &cli.gpsd {
         Some(address) => {
             eprintln!("chronymond: watching gpsd at {address}");
             Some(Gpsd::start(address).context("starting the gpsd thread")?)
@@ -245,110 +387,26 @@ fn run(cli: &Cli) -> Result<()> {
         cli.chrony_logs.display(),
         bad_lines(backfill.bad_lines)
     );
-    let mut logs_read = Instant::now();
 
-    let mut state = None;
-    let mut steps = Steps::default();
-    // What the watchers found wrong, as last recorded; none before the
-    // first poll, which records it whatever an earlier run left.
-    let mut troubles: Option<Vec<Trouble>> = None;
-    let mut next = Instant::now();
-    // Why the loop stopped, if not for a signal.
-    let mut failed = None;
-    loop {
-        let at = Timestamp::now();
-        let clocks = Reading::now();
-        // A fresh socket after any failure: chronyd may have restarted.
-        let read = match client
-            .take()
-            .map_or_else(|| Client::connect(&cli.socket), Ok)
-        {
-            Ok(mut connected) => {
-                let read = collector.read(&mut connected);
-                if read.is_ok() {
-                    client = Some(connected);
-                }
-                read
-            }
-            Err(e) => Err(e),
-        };
-        if let Err(e) = &read
-            && read_only(e)
-        {
-            failed = Some(format!(
-                "{e}: exiting, for a restart to find its directory writable"
-            ));
-            break;
-        }
-        // Like refused permission, fatal: chronyd's configuration must
-        // change.
-        if let Err(e) = &read
-            && unauthorized(e)
-        {
-            failed = Some(format!(
-                "{e}: chronyd must open, in chrony.conf, `opencommands {OPEN_COMMANDS}` (chrony 4.7 on)"
-            ));
-            break;
-        }
-        if let Err(e) = &read {
-            let now = collect::state_of(e);
-            if state != Some(now) {
-                eprintln!("chronymond: chronyd {}: {e}", now.name());
-            }
-            state = Some(now);
-        } else {
-            if state.is_some_and(|state| state != ChronydState::Up) {
-                eprintln!("chronymond: chronyd up");
-            }
-            state = Some(ChronydState::Up);
-        }
-        let process = host::chronyd(&cli.pid_file);
-        let recorded = log.write(|batch| {
-            collector.record(batch, at, read, process)?;
-            for (when, kind, detail) in steps.observe(at, clocks, collector.take_step()) {
-                eprintln!("chronymond: {}: {detail}", kind.name());
-                batch.event(when, kind, None, Some(&detail))?;
-            }
-            pps.poll(batch, at)?;
-            if let Some(gpsd) = gpsd.as_mut() {
-                gpsd.poll(batch, at)?;
-            }
-            let now: Vec<Trouble> = pps
-                .troubles()
-                .into_iter()
-                .chain(gpsd.as_ref().map(Gpsd::troubles).unwrap_or_default())
-                .collect();
-            if troubles.as_ref() != Some(&now) {
-                batch.troubles(&now)?;
-            }
-            Ok(now)
-        })?;
-        troubles = Some(recorded);
-        if logs_read.elapsed() >= log_interval {
-            let scan = ingest.scan(&mut log);
-            if scan.bad_lines > 0 {
-                eprintln!("chronymond: logs:{}", bad_lines(scan.bad_lines));
-            }
-            logs_read = Instant::now();
-        }
-
-        next += interval;
-        let now = Instant::now();
-        if next < now {
-            // Fell behind (a suspend, a slow disk): start again from now
-            // rather than poll in a burst to catch up.
-            next = now;
-        }
-        match stopped.recv_timeout(next - now) {
-            Err(RecvTimeoutError::Timeout) => {}
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
+    let mut daemon = Daemon {
+        cli,
+        client,
+        collector,
+        pps,
+        gpsd,
+        steps: Steps::default(),
+        state: None,
+        troubles: None,
+        ingest,
+        log_interval,
+        logs_read: Instant::now(),
+    };
+    let stop = daemon.poll_until_stopped(&mut log, interval, &stopped)?;
     // What chronyd logged since the last read.
-    ingest.scan(&mut log);
+    daemon.ingest.scan(&mut log);
     let system_stopping = host::system_stopping();
     log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
-    if let Some(e) = failed {
+    if let Stop::Failed(e) = stop {
         anyhow::bail!(e);
     }
     eprintln!("chronymond: stopped");

@@ -55,6 +55,11 @@ const STRIP_EVERY = 1000;
 // are a busy host, more are a daemon that has stopped.
 const STALE_AFTER = 10;
 
+// How old the status `s` may be, in seconds, before the feed is stale.
+function staleAfter(s) {
+  return STALE_AFTER;
+}
+
 // ------------------------------------------------------------- fetching
 
 // Total: never rejects, never hangs.  A rejected fetch anywhere in the
@@ -267,7 +272,7 @@ async function tick() {
 // writing, and what it last found of chronyd.
 function feedState(s) {
   if (!s.status) return ["down", "NO POLL YET"];
-  if (s.status.age > STALE_AFTER) return ["stale", "STALE"];
+  if (s.status.age > staleAfter(s)) return ["stale", "STALE"];
   if (s.status.state === "up") return ["live", "LIVE"];
   if (s.status.state === "unsupported") return ["down", "UNSUPPORTED"];
   return ["down", "CHRONYD DOWN"];
@@ -292,7 +297,7 @@ const TROUBLES = {
 // the daemon is writing; none when it is not, as then nothing it last
 // said is current.
 function troublesOf(s) {
-  if (!s.status || s.status.age > STALE_AFTER) return [];
+  if (!s.status || s.status.age > staleAfter(s)) return [];
   const watched = (s.troubles ?? []).map(({ kind, owner }) => {
     const [words, tone] = TROUBLES[kind] ?? [kind, "bad"];
     return { words, owner: owner === "gpsd" ? "" : owner, tone };
