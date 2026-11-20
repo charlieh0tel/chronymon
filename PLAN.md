@@ -210,6 +210,16 @@ the strip.
 One bucketed query, live or zoomed, is one path to get right; nothing
 arrives faster than chronyd updates, so no push channel.
 
+A page reloads itself when the server it was loaded from restarts:
+`/api/status` names the server's run, a random id made at start, in
+every answer, a failed one too.  A run, not a version: any new build
+reloads pages, a rebuild of the same version or a dev build included,
+and a plain restart costs one harmless reload.  The daemon's version
+plays no part, as no page comes from it.  A page reloads only once open
+a minute, so a server restarting over and over cannot reload it over
+and over, and only once the page itself answers, never into an error
+page an unattended display cannot leave.
+
 A request is checked before the database is opened, and refused with
 a 400 saying why: a name not served, a number that does not parse,
 a column listed twice, more than 5000 points, 5000 events, or 80,000

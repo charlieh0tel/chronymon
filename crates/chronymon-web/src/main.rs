@@ -6,6 +6,10 @@
 //! to send it a command from here, which is deliberate.  A page on a
 //! TCP port has none of the authorization chronyd's socket does.
 
+use std::hash::BuildHasher as _;
+use std::hash::Hasher as _;
+use std::hash::RandomState;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -140,6 +144,19 @@ fn failure(e: &anyhow::Error) -> Value {
     json!({ "error": format!("{e:#}") })
 }
 
+/// This run of the server, random.  Every status answer names it: a page
+/// that sees another reloads, as the server it was loaded from, and so
+/// perhaps the page itself, has been replaced.
+static INSTANCE: LazyLock<String> =
+    LazyLock::new(|| format!("{:016x}", RandomState::new().build_hasher().finish()));
+
+/// `/api/status`, answered or failed, with [`INSTANCE`].
+fn status(database: &Path) -> Response {
+    let mut body = api::status(database).unwrap_or_else(|e| failure(&e));
+    body["instance"] = json!(*INSTANCE);
+    Response::ok(JSON, body.to_string())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     eprintln!(
@@ -165,7 +182,7 @@ fn main() -> Result<()> {
             "/common.js" => Response::ok(JAVASCRIPT, COMMON.to_owned()),
             "/charts.js" => Response::ok(JAVASCRIPT, CHARTS.to_owned()),
             "/api/about" => json(Ok(about(&cli))),
-            "/api/status" => json(api::status(database)),
+            "/api/status" => status(database),
             "/api/history" => json(api::history(database, query)),
             "/api/tempcomp" => json(api::tempcomp(database, query)),
             "/api/tempcomp/fit" => json(api::tempcomp_fit(database, query)),
@@ -190,6 +207,7 @@ mod tests {
     use super::api;
     use super::inlined;
     use super::json;
+    use super::status;
     use std::path::Path;
 
     /// The kiosk is served whole: every file it would ask this server
@@ -219,5 +237,21 @@ mod tests {
         let missing = json(api::history(nowhere, "columns=skew"));
         assert_eq!(missing.status, "200 OK");
         assert!(missing.body.contains("no database"));
+    }
+
+    /// Every status answer names this run of the server, a failed one
+    /// too, the same each time.
+    #[test]
+    fn a_status_answer_names_the_server_run() {
+        let nowhere = Path::new("/nonexistent/chronymon.sqlite");
+        let instance = |body: &str| -> String {
+            let value: serde_json::Value = serde_json::from_str(body).expect("JSON");
+            value["instance"].as_str().expect("an instance").to_owned()
+        };
+        let first = status(nowhere);
+        assert_eq!(first.status, "200 OK");
+        assert!(first.body.contains("no database"));
+        assert_eq!(instance(&first.body).len(), 16);
+        assert_eq!(instance(&status(nowhere).body), instance(&first.body));
     }
 }
