@@ -246,14 +246,13 @@ impl Log {
         Ok(())
     }
 
-    /// Write one poll's rows together, so a reader never sees half a
-    /// poll.
+    /// [`Log::write_with`], with this crate's errors.
     pub fn write<T>(&mut self, f: impl FnOnce(&Batch<'_>) -> Result<T>) -> Result<T> {
         self.write_with(f)
     }
 
-    /// [`Log::write`], for a caller with its own error type: any error
-    /// rolls the rows back.
+    /// Write one poll's rows together, so a reader never sees half a
+    /// poll: any error, `f`'s or the commit's, rolls them all back.
     ///
     /// A savepoint, which outside a transaction begins and commits one
     /// as `BEGIN` and `COMMIT` would.
@@ -262,18 +261,39 @@ impl Log {
         f: impl FnOnce(&Batch<'_>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
         // What `BEGIN` refuses, and a savepoint would nest inside: a
-        // transaction left open by a rollback that failed.
+        // transaction that even `end_failed` could not end.
         if !self.connection.is_autocommit() {
             return Err(Error::Unfinished.into());
         }
         let savepoint = self.connection.savepoint().map_err(Error::from)?;
-        // An error rolls back as the savepoint drops.  A rollback that
-        // fails leaves the transaction open, which the next write refuses.
-        let result = f(&Batch {
+        let outcome = f(&Batch {
             connection: &savepoint,
-        })?;
-        savepoint.commit().map_err(Error::from)?;
-        Ok(result)
+        });
+        // An error rolls back as the savepoint drops.
+        let written = match outcome {
+            Ok(result) => savepoint
+                .commit()
+                .map(|()| result)
+                .map_err(|e| Error::from(e).into()),
+            Err(e) => {
+                drop(savepoint);
+                Err(e)
+            }
+        };
+        if written.is_err() {
+            self.end_failed();
+        }
+        written
+    }
+
+    /// End a transaction that a failed write's savepoint, as it dropped,
+    /// left open: its `ROLLBACK TO` and `RELEASE` can fail where a plain
+    /// `ROLLBACK`, which rusqlite's transaction ends with, still works.
+    fn end_failed(&self) {
+        if !self.connection.is_autocommit() {
+            // A failure leaves it to the next write to refuse.
+            let _ignored = self.connection.execute_batch("ROLLBACK");
+        }
     }
 }
 
