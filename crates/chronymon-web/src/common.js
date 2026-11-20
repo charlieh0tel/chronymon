@@ -229,6 +229,56 @@ const SOURCE_STATES = {
 // when it has none of its own.
 const sourceName = (s) => (s.name && s.name !== s.address ? s.name : s.address);
 
+// -------------------------------------------------------------- reload
+//
+// A page reloads itself when the server it was loaded from has been
+// replaced -- an upgrade, perhaps with new pages -- so an unattended
+// kiosk does not run old code against a new server.  Every status
+// answer names the server's run; the first one seen is this page's.
+
+// How old a page must be, in ms since it loaded, before it reloads: a
+// server restarting over and over cannot make the page reload over and
+// over.
+const RELOAD_AFTER = 60000;
+// How long to wait, in ms, to try again when the page could not be
+// fetched: never reload into an error page that no one is there to leave.
+const RELOAD_RETRY = 30000;
+
+// The run of the server this page was loaded from, as its first status
+// answer named it; undefined until then.
+let servedBy;
+// Whether a reload is on its way.
+let reloading = false;
+
+// Note the run of the server that answered `s`, and reload if it is
+// not the one this page came from.  An answer with no run, a network
+// failure or the server busy, says nothing either way.
+function servedFrom(s) {
+  if (s.instance === undefined) return;
+  servedBy ??= s.instance;
+  if (s.instance !== servedBy && !reloading) {
+    reloading = true;
+    setTimeout(reloadWhenServed, Math.max(0, RELOAD_AFTER - performance.now()));
+  }
+}
+
+// Reload once the page itself is served, else try again later.
+async function reloadWhenServed() {
+  try {
+    const r = await fetch(location.href, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(QUICK_TIMEOUT),
+    });
+    if (r.ok) {
+      location.reload();
+      return;
+    }
+  } catch {
+    // Not served yet.
+  }
+  setTimeout(reloadWhenServed, RELOAD_RETRY);
+}
+
 // ---------------------------------------------------------------- strip
 
 // Whether the last poll found the daemon writing and chronyd up.  Null
@@ -254,6 +304,7 @@ async function tick() {
   try {
     const s = await getJson("/api/status");
     lastStatus = s;
+    servedFrom(s);
     titled(s.host);
     if (s.error) {
       paintLost("no data", s.error);

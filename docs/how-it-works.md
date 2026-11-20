@@ -13,6 +13,13 @@ carries both programs and starts both:
 Each reads its settings from `/etc/default/<program>`; every setting
 there is commented out and shows its default.
 
+An open page reloads itself when `chronymon-web` restarts, as an
+upgrade does, so a display left running picks up the new pages: every
+`/api/status` answer names the server's run, and a page that sees
+another reloads, once it has been open a minute and the page itself
+answers.  A page from a server older than this has no such code, and
+is reloaded once by hand.
+
 ## Why `_chrony`
 
 chronyd's control socket admits only its own user and root:
@@ -91,7 +98,8 @@ above the axis").  Nothing past it, nothing is clipped.  The other
 pages always show the whole range.  No nav, controls,
 colophon or pointer, and it never scrolls: full size from 1440x1080
 CSS pixels, scaled down to fit a smaller screen.  It never changes its
-address.  A reload paints the last status, sources and
+address.  It reloads itself when the server restarts, as every page does
+(see "Programs").  A reload paints the last status, sources and
 events, kept in the browser's local storage and marked LAST SEEN,
 before the first poll answers; without storage it starts empty.
 

@@ -22,6 +22,11 @@ const SOURCES = [
   "time-a.long-hostname.example.org", "b.ntp.example.com", "clock.example.edu", "ntp3.example.com",
 ];
 
+// How old a page must be to reload, and how long it waits to try again,
+// in ms, as common.js has them.
+const RELOAD_AFTER = 60000;
+const RELOAD_RETRY = 30000;
+
 // Each test's page errors, collected while it runs: uncaught
 // exceptions, console errors, and requests that failed.
 const pageErrors = new Map();
@@ -153,6 +158,71 @@ test("Colophon: links to the repository and its issues", async ({ page }) => {
   await expect(colophon.locator("a", { hasText: "github" })).toHaveAttribute("href", /github\.com\/[^/]+\/chronymon$/);
   await expect(colophon.locator("a", { hasText: "issues" })).toHaveAttribute("href", /github\.com\/[^/]+\/chronymon\/issues$/);
 });
+
+// A page reloads itself once the server it came from is replaced: only
+// once it is old enough, and the page itself can be fetched.  An answer
+// naming no run of the server says nothing.  The kiosk, its script
+// inlined, the same.
+for (const path of ["/journal", "/kiosk"]) {
+  // Load `path` with the status answers naming `run()`'s run of the
+  // server, none for undefined, and the page fetched for a reload only
+  // while `served()`.  Whether it has reloaded since, as a function.
+  const load = async (page, run, served) => {
+    await page.route("**/api/status", async (route) => {
+      const response = await route.fetch();
+      const { instance, ...status } = await response.json();
+      return route.fulfill({ response, json: run() === undefined ? status : { ...status, instance: run() } });
+    });
+    // The page by its path, whatever the query its address has since.
+    await page.route((url) => url.pathname === path, (route) =>
+      route.request().resourceType() === "fetch" && !served()
+        ? route.fulfill({ status: 503, body: "busy\n" })
+        : route.fallback());
+    if (path === "/kiosk") await page.setViewportSize(KIOSK_VIEWPORT);
+    await page.clock.install();
+    await page.goto(path);
+    await expect.poll(() => page.evaluate(() => servedBy)).toBe(run());
+    await page.evaluate(() => (window.loaded = true));
+    // A page torn down mid-question is one reloading.
+    return () => page.evaluate(() => window.loaded === undefined).catch(() => true);
+  };
+
+  // The page's polls a reload cut short, and the page refused while
+  // it is not served, are no error of its.
+  const forgiveAborted = () => {
+    const errors = pageErrors.get(test.info().testId);
+    errors.splice(0, errors.length, ...errors.filter((e) =>
+      !/ net::ERR_ABORTED$/.test(e) && !/status of 503 \(Service Unavailable\)$/.test(e)));
+  };
+
+  test(`${path}: reloads itself when the server is replaced, once it can be fetched`, async ({ page }) => {
+    let run = "first";
+    let served = false;
+    const reloaded = await load(page, () => run, () => served);
+    run = undefined;
+    await page.clock.fastForward(RELOAD_AFTER);
+    await page.waitForTimeout(1500);
+    expect(await reloaded()).toBe(false);
+    run = "second";
+    await page.waitForTimeout(1500);
+    expect(await reloaded()).toBe(false);
+    served = true;
+    await page.clock.fastForward(RELOAD_RETRY);
+    await expect.poll(reloaded).toBe(true);
+    forgiveAborted();
+  });
+
+  test(`${path}: does not reload until it is old enough`, async ({ page }) => {
+    let run = "first";
+    const reloaded = await load(page, () => run, () => true);
+    run = "second";
+    await page.waitForTimeout(2000);
+    expect(await reloaded()).toBe(false);
+    await page.clock.fastForward(RELOAD_AFTER);
+    await expect.poll(reloaded).toBe(true);
+    forgiveAborted();
+  });
+}
 
 test("Live: the strip reads the clock", async ({ page }) => {
   await page.goto("/");
