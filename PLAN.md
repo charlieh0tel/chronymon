@@ -173,6 +173,15 @@ The host's:
   over and over (`status`, `tracking_report`, `source`, index leaves);
   committed every 30 s, 34% of that, every 60 s 21%.  On another,
   9 days of `/proc/<pid>/io`: 2.94 GB a day, 87% of its card's writes.
+  Batched, on the 3B+ (30 min each, 1.4.4 then 1.4.5-dev1):
+  `write_bytes` 3.54 GB a day to 1.27, 36%.  The card's own count
+  fell much less, roughly 0.4 GB a day of 5.4: writeback had already
+  merged many rewrites of the same pages, so `write_bytes` overstates
+  what per-poll commits cost a card, and the 87% with it.  What is
+  left is per commit: 82 pages each, a leaf or more of every table and
+  index written, one per source in a per-source index, against a
+  database growing ~30 MB a day.  The writes follow the commits, not
+  the data.
   30 s rather than 60: the strip's lag and a crash's loss stay short.
   An event commits sooner, at most every 5 s, for the journal and the
   pages' event-driven rereads.  A poll's failed write still stops the
@@ -607,6 +616,12 @@ the test host.
   the local reference are?
 - The log tables' unique keys cover every column, about doubling their
   indexes, `refclock_sample` at 1 Hz most.  Key on a hash of the line?
+- Each index costs a card a leaf or more a commit (batched on the 3B+,
+  of the WAL's frames: per-source indexes 32%, `refclock_sample` and
+  its three indexes 30%, by-time indexes and the unique keys 17%).
+  Drop what no query needs: `refclock_sample_reference` beside
+  `refclock_sample_pulse`, the unique keys above?  The per-source ones
+  serve the charts.
 - `log_file` rows for files long gone are never pruned.
 - chronyd's `-R` disables makestep's limit, unseen by the rule, so its
   steps are `clock_step`s.  Read `-R` from `/proc/<pid>/cmdline` to

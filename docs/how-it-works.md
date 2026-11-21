@@ -16,8 +16,8 @@ there is commented out and shows its default.
 chronymond commits what it writes every 30 s
 (`CHRONYMOND_COMMIT_INTERVAL`, rounded up to whole polls), not every
 poll: a commit rewrites the same few pages of the database whatever it
-holds, and on a Raspberry Pi's SD card per-poll commits were most of
-the host's writes, about 3 GB a day.  The cost: the pages lag by up to
+holds: on a Raspberry Pi, per-poll commits wrote about 3.5 GB a day,
+and commits every 30 s a third.  The cost: the pages lag by up to
 an interval (the strip's "polled N s ago" counts up to it and drops),
 and a crash or a kill loses up to an interval of polls, journaled as a
 crash at the next start; a power cut, as before, also what the kernel
