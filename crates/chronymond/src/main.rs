@@ -68,8 +68,13 @@ struct Cli {
     database: PathBuf,
 
     /// Seconds between polls.
-    #[arg(long, env = "CHRONYMOND_INTERVAL", default_value_t = 1.0)]
-    interval: f64,
+    #[arg(
+        long,
+        env = "CHRONYMOND_INTERVAL",
+        default_value = "1",
+        value_parser = positive_seconds
+    )]
+    interval: Duration,
 
     /// Seconds between commits of what the polls write: one write to the
     /// disk for many, sparing an SD card, but the view lags by as much,
@@ -79,7 +84,7 @@ struct Cli {
         long,
         env = "CHRONYMOND_COMMIT_INTERVAL",
         default_value = "30",
-        value_parser = commit_seconds
+        value_parser = seconds
     )]
     commit_interval: Duration,
 
@@ -104,8 +109,13 @@ struct Cli {
     chrony_logs: PathBuf,
 
     /// Seconds between reads of chronyd's logs.
-    #[arg(long, env = "CHRONYMOND_LOG_INTERVAL", default_value_t = 10.0)]
-    log_interval: f64,
+    #[arg(
+        long,
+        env = "CHRONYMOND_LOG_INTERVAL",
+        default_value = "10",
+        value_parser = positive_seconds
+    )]
+    log_interval: Duration,
 
     /// PPS devices to watch for missed edges, comma-separated:
     /// `/dev/ppsN`, or `/dev/ptpN[:channel]`, a clock timestamping the
@@ -170,21 +180,22 @@ fn unauthorized(error: &ControlError) -> bool {
     matches!(error, ControlError::Status(Status::Unauthorized))
 }
 
-fn seconds(value: f64, option: &str) -> Result<Duration> {
-    Duration::try_from_secs_f64(value)
-        .ok()
-        .filter(|interval| !interval.is_zero())
-        .with_context(|| format!("{option} must be a positive number of seconds"))
-}
-
-/// `--commit-interval`'s seconds, 0 or more: refused as clap refuses a
-/// malformed option, with exit status 2, which systemd does not restart.
-fn commit_seconds(value: &str) -> Result<Duration, String> {
+/// An option's seconds, 0 or more: refused as clap refuses a malformed
+/// option, with exit status 2, which systemd does not restart.
+fn seconds(value: &str) -> Result<Duration, String> {
     value
         .parse()
         .ok()
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .ok_or_else(|| "must be 0 or a positive number of seconds".to_owned())
+}
+
+/// An option's seconds, more than 0, refused as [`seconds`] are.
+fn positive_seconds(value: &str) -> Result<Duration, String> {
+    seconds(value)
+        .ok()
+        .filter(|seconds| !seconds.is_zero())
+        .ok_or_else(|| "must be a positive number of seconds".to_owned())
 }
 
 /// The least time between commits that events hasten, so that the pages
@@ -417,8 +428,8 @@ impl Daemon<'_> {
 }
 
 fn run(cli: &Cli) -> Result<()> {
-    let interval = seconds(cli.interval, "--interval")?;
-    let log_interval = seconds(cli.log_interval, "--log-interval")?;
+    let interval = cli.interval;
+    let log_interval = cli.log_interval;
     let commits = Commits::new(interval, cli.commit_interval);
     // Refused permission is fatal: no retry fixes the user the daemon
     // runs as.  Anything else -- chronyd not running yet -- is recorded
@@ -592,11 +603,14 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_negative_commit_interval() {
-        assert_eq!(commit_seconds("0"), Ok(Duration::ZERO));
-        assert_eq!(commit_seconds("2.5"), Ok(Duration::from_millis(2500)));
+    fn refuses_negative_seconds_and_zero_where_it_means_nothing() {
+        assert_eq!(seconds("0"), Ok(Duration::ZERO));
+        assert_eq!(seconds("2.5"), Ok(Duration::from_millis(2500)));
+        assert_eq!(positive_seconds("0.5"), Ok(Duration::from_millis(500)));
         for refused in ["-1", "nan", "inf", "soon"] {
-            assert!(commit_seconds(refused).is_err(), "{refused}");
+            assert!(seconds(refused).is_err(), "{refused}");
+            assert!(positive_seconds(refused).is_err(), "{refused}");
         }
+        assert!(positive_seconds("0").is_err());
     }
 }
