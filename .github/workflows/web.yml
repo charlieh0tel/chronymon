@@ -6,8 +6,9 @@ name: web
 # Separate from ci.yml because that one is the shared definition every
 # repository calls, and this needs Node and a browser the others do not.
 # Narrowed to the files that can change what it tests: on a push by
-# `paths`, on a pull request by its first step, since main's ruleset
-# requires `pages` and a job filtered out never reports.
+# `paths`, on a pull request by the `changed` job, since main's ruleset
+# requires `pages` and a workflow filtered out never reports.  A job
+# skipped by its `if` passes a required check.
 on:
   push:
     branches: [main]
@@ -20,19 +21,20 @@ on:
   pull_request:
 
 jobs:
-  pages:
+  # Whether anything the push's `paths` name changed: always on a push,
+  # and on a pull request if its merge commit differs from main there.
+  changed:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      test: ${{ steps.diff.outputs.test }}
     steps:
-      # The pins audit.yml and smartclock's web.yml carry; moved by hand.
-      # Two commits deep: a pull request's merge commit and main.
+      # The pin below; two commits deep, the merge commit and main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
-      # The push's `paths` as a pattern: a pull request's changes are its
-      # merge commit's against main.
-      - id: changed
+      - id: diff
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ] ||
             git diff --name-only HEAD^1 HEAD |
@@ -40,8 +42,17 @@ jobs:
           then
             echo test=true >> "$GITHUB_OUTPUT"
           fi
-      - if: steps.changed.outputs.test
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+
+  pages:
+    needs: changed
+    if: needs.changed.outputs.test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # The pins audit.yml and smartclock's web.yml carry; moved by hand.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -50,15 +61,11 @@ jobs:
       # does, with the system libraries it needs on a bare runner.  The
       # compiler is the one rust-toolchain.toml names, which rustup
       # installs on the first cargo call.
-      - if: steps.changed.outputs.test
-        run: npm ci --no-fund --no-audit
+      - run: npm ci --no-fund --no-audit
         working-directory: crates/chronymon-web/tests/browser
-      - if: steps.changed.outputs.test
-        run: PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install --with-deps chromium
+      - run: PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install --with-deps chromium
         working-directory: crates/chronymon-web/tests/browser
       # The server and the synthetic data's dependencies, built once, as
       # deb-workflows' rust-ci.yml caches its jobs' (its pin).
-      - if: steps.changed.outputs.test
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: steps.changed.outputs.test
-        run: make test-web
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: make test-web
