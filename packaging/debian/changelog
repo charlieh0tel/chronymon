@@ -1,3 +1,26 @@
+chronymon (1.5.0-1) unstable; urgency=medium
+
+  * chronymond commits what it writes every 30 s, not every poll
+    (CHRONYMOND_COMMIT_INTERVAL; 0 commits every poll, as before).  On
+    a Raspberry Pi it now writes a third as much; 120 s, an eighth,
+    suits an SD card.  The pages lag by up to an interval, a crash
+    loses up to an interval of polls, and an event commits within 5 s.
+    Stop chronymond before writing to the database by hand (VACUUM).
+  * An open page reloads itself when chronymon-web restarts, as an
+    upgrade does, so a display left running picks up new pages.  A
+    page open across this upgrade needs one reload by hand.
+  * LIVE turns to STALE after two missed polls and 10 s at least, plus
+    what a batch holds back: 39 s at the defaults.  A host polling
+    every 20 s no longer flips to STALE between polls.
+  * A negative --interval, --log-interval or --commit-interval, or a
+    zero one where it means nothing, is refused at start as any bad
+    option is, and systemd does not restart it over and over.
+  * A line in chronyd's logs with a non-finite number or a time the
+    database cannot hold is counted as a bad line, and the rest of its
+    file is recorded; the whole file was skipped on every scan.
+
+ -- Christopher Hoover <ch@murgatroid.com>  Sat, 21 Nov 2026 14:44:38 -0800
+
 chronymon (1.4.4-1) unstable; urgency=medium
 
   * The Refclocks page waits as long for its refclocks' row counts as
