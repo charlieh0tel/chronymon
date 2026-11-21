@@ -29,6 +29,7 @@ use chronymon::event::EventKind;
 use chronymon_log::chrony_log::LogKind;
 use chronymon_log::chrony_log::ParseError;
 use chronymon_log::chrony_log::parse;
+use chronymon_log::error::Error;
 use chronymon_log::writer::FileId;
 use chronymon_log::writer::Log;
 use chronymon_log::writer::LogFile;
@@ -56,7 +57,7 @@ enum ReadError {
     File(#[from] io::Error),
     /// Writing what was read failed.
     #[error(transparent)]
-    Database(#[from] chronymon_log::error::Error),
+    Database(#[from] Error),
 }
 
 /// chronyd's log directory, and what is wrong with the files in it that
@@ -80,11 +81,13 @@ impl Ingest {
     /// Read what is new in every log file.  A directory that cannot be
     /// read -- chronyd keeps no logs here -- is no error, and a file
     /// that cannot be read is reported, not read past, and tried again
-    /// next scan: one damaged rotation stops nothing else.
-    pub(crate) fn scan(&mut self, log: &mut Log) -> Scan {
+    /// next scan: one damaged rotation stops nothing else.  A batch lost
+    /// in the attempt, though, is returned: the daemon must stop, its
+    /// polls' rows gone.
+    pub(crate) fn scan(&mut self, log: &mut Log) -> Result<Scan, Error> {
         let mut total = Scan::default();
         let Ok(entries) = fs::read_dir(&self.directory) else {
-            return total;
+            return Ok(total);
         };
         let mut files: Vec<_> = entries
             .filter_map(Result::ok)
@@ -106,6 +109,7 @@ impl Ingest {
                     total.lines += scanned.lines;
                     total.bad_lines += scanned.bad_lines;
                 }
+                Err(ReadError::Database(e @ Error::BatchLost(_))) => return Err(e),
                 Err(e) => {
                     total.failed += 1;
                     let error = e.to_string();
@@ -115,7 +119,7 @@ impl Ingest {
                 }
             }
         }
-        total
+        Ok(total)
     }
 
     /// Note `path` failing with `error`.  Whether that is news.
@@ -269,7 +273,7 @@ mod tests {
 
         // Part of a file, the last line unfinished.
         fs::write(&live, format!("{}\n2026-10-25 05:39", first.join("\n"))).expect("written");
-        let partial = ingest.scan(&mut db.log);
+        let partial = ingest.scan(&mut db.log).expect("scanned");
         assert_eq!(partial.lines, 7, "{partial:?}");
         assert_eq!(db.count("log_tracking"), 7);
 
@@ -279,9 +283,9 @@ mod tests {
             format!("{}\n{}\n", first.join("\n"), rest.join("\n")),
         )
         .expect("written");
-        assert_eq!(ingest.scan(&mut db.log).lines, 11);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 11);
         fs::rename(&live, logs.join("tracking.log.1")).expect("renamed");
-        assert_eq!(ingest.scan(&mut db.log).lines, 0);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 0);
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
         gz.write_all(tracking.as_bytes()).expect("compressed");
         fs::write(
@@ -289,7 +293,7 @@ mod tests {
             gz.finish().expect("finished"),
         )
         .expect("written");
-        assert_eq!(ingest.scan(&mut db.log).lines, 0);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 0);
         assert_eq!(db.count("log_tracking"), 18);
     }
 
@@ -304,17 +308,17 @@ mod tests {
             "   Date (UTC) Time        Temp.       Comp.   New\n2026-10-25 05:39:33  4.1e+01  4.1e+00  1\n",
         )
         .expect("written");
-        assert_eq!(ingest.scan(&mut db.log).lines, 0);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 0);
         assert_eq!(db.events(), ["unsupported"]);
         // And it is not reported again, nor read when it grows.
-        ingest.scan(&mut db.log);
+        ingest.scan(&mut db.log).expect("scanned");
         let mut file = fs::OpenOptions::new()
             .append(true)
             .open(logs.join("tempcomp.log"))
             .expect("opened");
         file.write_all(b"2026-10-25 05:39:34  4.1e+01  4.1e+00\n")
             .expect("appended");
-        assert_eq!(ingest.scan(&mut db.log).lines, 0);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 0);
         assert_eq!(db.count("tempcomp_sample"), 0);
         assert_eq!(db.events(), ["unsupported"]);
     }
@@ -335,14 +339,14 @@ mod tests {
         let mut ingest = Ingest::new(logs.clone());
         let live = logs.join("tempcomp.log");
         fs::write(&live, tempcomp(0..10)).expect("written");
-        assert_eq!(ingest.scan(&mut db.log).lines, 10);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 10);
         // Truncated, then grown past where it was read to: the same
         // inode, other lines.
         fs::write(&live, tempcomp(20..32)).expect("written");
-        assert_eq!(ingest.scan(&mut db.log).lines, 12);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 12);
         // Rewritten to the same length.
         fs::write(&live, tempcomp(40..52)).expect("written");
-        assert_eq!(ingest.scan(&mut db.log).lines, 12);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").lines, 12);
         assert_eq!(db.count("tempcomp_sample"), 34);
     }
 
@@ -359,7 +363,7 @@ mod tests {
         // Listed, but gone by the time it is opened.
         std::os::unix::fs::symlink(logs.join("gone"), logs.join("tracking.log.1")).expect("linked");
 
-        let scanned = ingest.scan(&mut db.log);
+        let scanned = ingest.scan(&mut db.log).expect("scanned");
         assert_eq!((scanned.lines, scanned.failed), (18, 1), "{scanned:?}");
         // Reported once, not every scan.
         assert!(!ingest.report(&damaged, &ingest.failing[&damaged].clone()));
@@ -368,7 +372,7 @@ mod tests {
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
         gz.write_all(tracking.as_bytes()).expect("compressed");
         fs::write(&damaged, gz.finish().expect("finished")).expect("written");
-        assert_eq!(ingest.scan(&mut db.log).failed, 0);
+        assert_eq!(ingest.scan(&mut db.log).expect("scanned").failed, 0);
         assert!(ingest.failing.is_empty());
     }
 }

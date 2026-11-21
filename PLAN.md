@@ -164,8 +164,28 @@ The host's:
 | `chronymon-web` | bin | browser view, reading the database directly |
 
 - One writer, any number of readers.  The web view reads live state
-  from the `status` row, written every poll; the daemon serves
-  nothing.
+  from the `status` row, written every poll and committed every
+  commit interval; the daemon serves nothing.
+- The daemon commits in batches, every 30 s by default
+  (`--commit-interval`), each poll's write a savepoint in the batch.
+  Measured on a Raspberry Pi 3B+ (1.4.4, 1 s polls, PPS and gpsd): per
+  poll commits wrote 2.7 GB a day of WAL frames, the same ~130 pages
+  over and over (`status`, `tracking_report`, `source`, index leaves);
+  committed every 30 s, 34% of that, every 60 s 21%.  On another,
+  9 days of `/proc/<pid>/io`: 2.94 GB a day, 87% of its card's writes.
+  30 s rather than 60: the strip's lag and a crash's loss stay short.
+  An event commits sooner, at most every 5 s, for the journal and the
+  pages' event-driven rereads.  A poll's failed write still stops the
+  daemon, after committing the polls before it: the collector's state
+  in memory follows what it wrote.  A failed read of chronyd's logs
+  stops it only when it lost the batch (SQLite rolls one back itself
+  on a full disk or an I/O error); otherwise the file is skipped, as
+  before, so a damaged log table cannot crash-loop the daemon.  A lost
+  batch is never retried.  A batch closes on its count of polls or on
+  time, whichever comes first: chronyd not answering makes each poll
+  3 s of timeouts.  The write lock is held nearly always: another
+  writer, a `VACUUM` or a truncating checkpoint by hand needs the
+  daemon stopped.
 - Threads, no async runtime.
 - Raw rows kept forever; charts get one min/mean/max bucket per pixel
   column at query time, all of a table's columns on one grid.  The
@@ -210,7 +230,8 @@ the strip.
 One bucketed query, live or zoomed, is one path to get right; nothing
 arrives faster than chronyd updates, so no push channel.
 The feed is stale once the last poll is older than the server says:
-two poll intervals, 10 s at least.  The pages once had 10 s alone,
+two poll intervals, 10 s at least, plus the commit interval less one
+poll, the polls a batch holds back.  The pages once had 10 s alone,
 which a daemon polling less often than that crossed between every two
 polls, and each crossing reread every chart.
 

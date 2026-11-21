@@ -49,10 +49,15 @@ pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A write began with a transaction still open, one a write's
-    /// failed rollback left.
+    /// A write, outside a batch, or a batch began with a transaction
+    /// still open: one a write's failed rollback left, or a batch.
     #[error("a transaction is still open")]
     Unfinished,
+
+    /// A batch's writes were rolled back, all of them, and are lost: by
+    /// SQLite after an error such as a full disk, or for a failed commit.
+    #[error("uncommitted writes lost: {0}")]
+    BatchLost(String),
 
     /// A statement failed.
     #[error("sqlite: {0}")]

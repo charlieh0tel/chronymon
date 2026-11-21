@@ -7,11 +7,25 @@ carries both programs and starts both:
 
 | Program | Runs as | Does |
 | - | - | - |
-| `chronymond` | `_chrony`, group `chronymon` | polls chronyd every second, reads its logs, writes `/var/lib/chronymon/chronymon.sqlite` |
+| `chronymond` | `_chrony`, group `chronymon` | polls chronyd every second, reads its logs, writes `/var/lib/chronymon/chronymon.sqlite`, committing every 30 s |
 | `chronymon-web` | `chronymon` | serves the charts on 127.0.0.1:8323 |
 
 Each reads its settings from `/etc/default/<program>`; every setting
 there is commented out and shows its default.
+
+chronymond commits what it writes every 30 s
+(`CHRONYMOND_COMMIT_INTERVAL`, rounded up to whole polls), not every
+poll: a commit rewrites the same few pages of the database whatever it
+holds, and on a Raspberry Pi's SD card per-poll commits were most of
+the host's writes, about 3 GB a day.  The cost: the pages lag by up to
+an interval (the strip's "polled N s ago" counts up to it and drops),
+and a crash or a kill loses up to an interval of polls, journaled as a
+crash at the next start; a power cut, as before, also what the kernel
+had not yet written out.  What it read of chronyd's logs is read
+again.  The daemon holds the database's write lock nearly always, so
+stop it before writing to the database by hand (`VACUUM`, say).
+An event commits sooner, at most once every 5 s, so the journal and
+the charts' event marks keep up.  `0` commits every poll.
 
 An open page reloads itself when `chronymon-web` restarts, as an
 upgrade does, so a display left running picks up the new pages: every
@@ -127,7 +141,8 @@ the readings, which sit on a grid, each column lined up from row to
 row, and keep their places as the pills come and go.  The strip is
 edged in the worst one's color, red or amber, as the kiosk's panel is.
 LIVE turns STALE once the daemon's last poll is older than two of its
-poll intervals, and 10 s at least (`/api/status`'s `stale_after`).
+poll intervals, and 10 s at least, plus the polls a commit holds back:
+39 s at the defaults (`/api/status`'s `stale_after`).
 
 | Parameter | |
 | - | - |
