@@ -105,6 +105,11 @@ pub(crate) const TEMPCOMP: &str = "tempcomp";
 /// before a change was seen.
 pub(crate) const TEMPCOMP_SINCE: &str = "tempcomp_since";
 
+/// The `meta` key of how often the daemon's latest run commits what it
+/// polls, in seconds: a whole number of its polls, one when it commits
+/// every poll.  None before a daemon that batches its commits ran.
+pub(crate) const COMMIT_INTERVAL: &str = "commit_interval";
+
 /// A `tempcomp` directive's sensor, the file chronyd reads the
 /// temperature from, and how often, in seconds, as written: what a
 /// line with new coefficients keeps; and the rest of it, the

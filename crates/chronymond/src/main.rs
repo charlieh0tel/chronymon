@@ -71,6 +71,18 @@ struct Cli {
     #[arg(long, env = "CHRONYMOND_INTERVAL", default_value_t = 1.0)]
     interval: f64,
 
+    /// Seconds between commits of what the polls write: one write to the
+    /// disk for many, sparing an SD card, but the view lags by as much,
+    /// and a crash loses as much.  Rounded up to whole polls; 0 commits
+    /// every poll.
+    #[arg(
+        long,
+        env = "CHRONYMOND_COMMIT_INTERVAL",
+        default_value = "30",
+        value_parser = commit_seconds
+    )]
+    commit_interval: Duration,
+
     /// chronyd's configuration, for its `makestep` and its refclocks'
     /// locks; read again whenever chronyd restarts.  `none` for a
     /// chronyd configured on its command line or on another host.
@@ -165,6 +177,78 @@ fn seconds(value: f64, option: &str) -> Result<Duration> {
         .with_context(|| format!("{option} must be a positive number of seconds"))
 }
 
+/// `--commit-interval`'s seconds, 0 or more: refused as clap refuses a
+/// malformed option, with exit status 2, which systemd does not restart.
+fn commit_seconds(value: &str) -> Result<Duration, String> {
+    value
+        .parse()
+        .ok()
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .ok_or_else(|| "must be 0 or a positive number of seconds".to_owned())
+}
+
+/// The least time between commits that events hasten, so that the pages
+/// see them: those of a burst wait for the next commit.
+const EVENT_COMMIT_SPACING: Duration = Duration::from_secs(5);
+
+/// When the daemon commits the polls it writes.
+#[derive(Debug)]
+struct Commits {
+    /// Polls per commit: 1 commits each as it is written, with no batch.
+    every: u32,
+    /// How long a batch may stay open, polls slow or not: chronyd not
+    /// answering makes each poll its timeouts long.
+    interval: Duration,
+    /// Polls written since the last commit.
+    polls: u32,
+    /// Whether one of those wrote an event.
+    event: bool,
+    /// When the last commit was; none before the first, which is at once,
+    /// so that a start shows at once.
+    last: Option<Instant>,
+}
+
+impl Commits {
+    /// Commits every `commit`, as whole polls of `poll`, rounded up.
+    fn new(poll: Duration, commit: Duration) -> Self {
+        // Saturating: so long an interval is never reached.
+        let every = u32::try_from(commit.as_nanos().div_ceil(poll.as_nanos().max(1)))
+            .unwrap_or(u32::MAX)
+            .max(1);
+        Self {
+            every,
+            interval: poll.saturating_mul(every),
+            polls: 0,
+            event: false,
+            last: None,
+        }
+    }
+
+    /// Whether polls are written in batches, not committed one by one.
+    const fn batching(&self) -> bool {
+        self.every > 1
+    }
+
+    /// Note a poll written at `now`, which wrote an event or not: whether
+    /// to commit now.
+    fn due(&mut self, event: bool, now: Instant) -> bool {
+        self.polls += 1;
+        self.event |= event;
+        let due = self.last.is_none_or(|last| {
+            let open = now.duration_since(last);
+            self.polls >= self.every
+                || open >= self.interval
+                || (self.event && open >= EVENT_COMMIT_SPACING)
+        });
+        if due {
+            self.polls = 0;
+            self.event = false;
+            self.last = Some(now);
+        }
+        due
+    }
+}
+
 fn bad_lines(count: usize) -> String {
     if count == 0 {
         String::new()
@@ -198,6 +282,8 @@ struct Daemon<'a> {
     ingest: Ingest,
     /// Time between polls.
     interval: Duration,
+    /// When the polls are committed.
+    commits: Commits,
     /// Time between reads of chronyd's logs.
     log_interval: Duration,
     /// When chronyd's logs were last read.
@@ -214,13 +300,24 @@ enum Stop {
 }
 
 impl Daemon<'_> {
-    /// Poll until a signal on `stopped` or a fault.  A
-    /// failed write is returned at once, with no stop recorded, so the
-    /// next start records a crash.
+    /// Poll until a signal on `stopped` or a fault, writing the polls in
+    /// batches if they are committed less often than made: the caller
+    /// commits the one left open, if any.  A failed write is
+    /// returned at once, with no stop recorded, so the next start
+    /// records a crash.
     fn poll_until_stopped(&mut self, log: &mut Log, stopped: &mpsc::Receiver<()>) -> Result<Stop> {
+        let batching = self.commits.batching();
+        if batching {
+            log.begin()?;
+        }
         let mut next = Instant::now();
         loop {
-            if let Some(stop) = self.poll(log)? {
+            let stop = self.poll(log)?;
+            if batching && self.commits.due(log.take_event(), Instant::now()) {
+                log.commit()?;
+                log.begin()?;
+            }
+            if let Some(stop) = stop {
                 return Ok(stop);
             }
             next += self.interval;
@@ -309,7 +406,7 @@ impl Daemon<'_> {
         })?;
         self.troubles = Some(recorded);
         if self.logs_read.elapsed() >= self.log_interval {
-            let scan = self.ingest.scan(log);
+            let scan = self.ingest.scan(log)?;
             if scan.bad_lines > 0 {
                 eprintln!("chronymond: logs:{}", bad_lines(scan.bad_lines));
             }
@@ -322,6 +419,7 @@ impl Daemon<'_> {
 fn run(cli: &Cli) -> Result<()> {
     let interval = seconds(cli.interval, "--interval")?;
     let log_interval = seconds(cli.log_interval, "--log-interval")?;
+    let commits = Commits::new(interval, cli.commit_interval);
     // Refused permission is fatal: no retry fixes the user the daemon
     // runs as.  Anything else -- chronyd not running yet -- is recorded
     // as chronyd down, and retried.
@@ -336,9 +434,10 @@ fn run(cli: &Cli) -> Result<()> {
         Log::open(&cli.database).with_context(|| format!("opening {}", cli.database.display()))?;
     let collector = Collector::new(cli.chrony_config.clone());
     eprintln!(
-        "chronymond: version {}, {} every {interval:?}, {}",
+        "chronymond: version {}, {} every {interval:?}, committed every {:?}, {}",
         env!("CARGO_PKG_VERSION"),
         cli.socket,
+        commits.interval,
         collector.config()
     );
     let (pps, refused) = Pps::new(&cli.pps);
@@ -378,12 +477,13 @@ fn run(cli: &Cli) -> Result<()> {
     log.write(|batch| {
         let at = Timestamp::now();
         lifecycle::start(batch, at, &host)?;
-        batch.poll_interval(at, interval.as_secs_f64())
+        batch.poll_interval(at, interval.as_secs_f64())?;
+        batch.commit_interval(commits.interval.as_secs_f64())
     })?;
 
     // The backfill: everything in chronyd's logs not yet recorded.
     let mut ingest = Ingest::new(cli.chrony_logs.clone());
-    let backfill = ingest.scan(&mut log);
+    let backfill = ingest.scan(&mut log)?;
     eprintln!(
         "chronymond: {} lines from {} log files in {}{}",
         backfill.lines,
@@ -403,17 +503,100 @@ fn run(cli: &Cli) -> Result<()> {
         troubles: None,
         ingest,
         interval,
+        commits,
         log_interval,
         logs_read: Instant::now(),
     };
-    let ending = daemon.poll_until_stopped(&mut log, &stopped)?;
-    // What chronyd logged since the last read.
-    daemon.ingest.scan(&mut log);
-    let system_stopping = host::system_stopping();
-    log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
+    let ended = daemon
+        .poll_until_stopped(&mut log, &stopped)
+        .and_then(|ending| {
+            // What chronyd logged since the last read.
+            daemon.ingest.scan(&mut log)?;
+            let system_stopping = host::system_stopping();
+            log.write(|batch| lifecycle::stop(batch, Timestamp::now(), system_stopping))?;
+            Ok(ending)
+        });
+    // Every way out commits the batch: after a failed write, the polls
+    // before it.
+    let committed = log.commit();
+    let ending = match ended {
+        Ok(ending) => {
+            committed?;
+            ending
+        }
+        Err(e) => {
+            if let Err(lost) = committed {
+                eprintln!("chronymond: {lost}");
+            }
+            return Err(e);
+        }
+    };
     if let Stop::Failed(e) = ending {
         anyhow::bail!(e);
     }
     eprintln!("chronymond: stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commits_every_so_many_polls_the_first_at_once() {
+        let second = Duration::from_secs(1);
+        let start = Instant::now();
+        let mut commits = Commits::new(second, Duration::from_millis(2500));
+        assert!(commits.batching());
+        assert_eq!(commits.interval, Duration::from_secs(3));
+        let due: Vec<bool> = (0..7)
+            .map(|poll| commits.due(false, start + second * poll))
+            .collect();
+        assert_eq!(due, [true, false, false, true, false, false, true]);
+        assert!(!Commits::new(second, Duration::ZERO).batching());
+        assert!(!Commits::new(second, Duration::from_millis(500)).batching());
+        // Not 7.000000000000001 polls, as in floating point.
+        assert_eq!(
+            Commits::new(Duration::from_millis(300), Duration::from_millis(2100)).every,
+            7
+        );
+    }
+
+    #[test]
+    fn commits_on_time_however_slow_the_polls() {
+        let second = Duration::from_secs(1);
+        let start = Instant::now();
+        let mut commits = Commits::new(second, Duration::from_secs(30));
+        assert!(commits.due(false, start));
+        // chronyd not answering: each poll takes its 3 s of timeouts.
+        let due: Vec<bool> = (1..=10)
+            .map(|poll| commits.due(false, start + second * 3 * poll))
+            .collect();
+        assert_eq!(due.iter().position(|&due| due), Some(9));
+    }
+
+    #[test]
+    fn an_event_hastens_a_commit_but_not_too_soon() {
+        let second = Duration::from_secs(1);
+        let start = Instant::now();
+        let mut commits = Commits::new(second, Duration::from_secs(30));
+        let mut due = |poll: u32, event: bool| commits.due(event, start + second * poll);
+        assert!(due(0, false));
+        // An event 2 s after a commit waits for 5 s to have passed.
+        assert!(!due(1, false));
+        assert!(!due(2, true));
+        assert!(!due(4, false));
+        assert!(due(5, false));
+        assert!(!due(6, false));
+        assert!(due(10, true));
+    }
+
+    #[test]
+    fn refuses_a_negative_commit_interval() {
+        assert_eq!(commit_seconds("0"), Ok(Duration::ZERO));
+        assert_eq!(commit_seconds("2.5"), Ok(Duration::from_millis(2500)));
+        for refused in ["-1", "nan", "inf", "soon"] {
+            assert!(commit_seconds(refused).is_err(), "{refused}");
+        }
+    }
 }

@@ -466,9 +466,13 @@ const STALE_AFTER: f64 = 10.0;
 const STALE_POLLS: f64 = 2.0;
 
 /// How old the daemon's last poll may be, in seconds, before the feed is
-/// stale, for a daemon polling every `poll_interval` seconds.
-fn stale_after(poll_interval: Option<f64>) -> f64 {
-    STALE_AFTER.max(STALE_POLLS * poll_interval.unwrap_or(0.0))
+/// stale, for a daemon polling every `poll_interval` seconds and
+/// committing every `commit_interval`: the polls between commits are
+/// seen only at the next.
+fn stale_after(poll_interval: Option<f64>, commit_interval: Option<f64>) -> f64 {
+    let poll = poll_interval.unwrap_or(0.0);
+    let unseen = commit_interval.map_or(0.0, |commit| (commit - poll).max(0.0));
+    STALE_AFTER.max(STALE_POLLS * poll) + unseen
 }
 
 /// `/api/status`: the daemon's last poll and the newest clock update,
@@ -520,7 +524,7 @@ pub(crate) fn status(path: &Path) -> Result<Value> {
             "now": now,
             "host": host(),
             "status": status,
-            "stale_after": stale_after(reader.poll_interval()?),
+            "stale_after": stale_after(reader.poll_interval()?, reader.commit_interval()?),
             "tracking": tracking,
             "reference_name": reference_name,
             "on_backups": on_backups(&sources, &paired),
@@ -1151,10 +1155,14 @@ mod tests {
     }
 
     #[test]
-    fn stale_after_two_missed_polls_and_ten_seconds_at_least() {
-        assert_eq!(stale_after(None), 10.0);
-        assert_eq!(stale_after(Some(1.0)), 10.0);
-        assert_eq!(stale_after(Some(5.0)), 10.0);
-        assert_eq!(stale_after(Some(20.0)), 40.0);
+    fn stale_after_two_missed_polls_ten_seconds_and_a_batch() {
+        assert_eq!(stale_after(None, None), 10.0);
+        assert_eq!(stale_after(Some(1.0), None), 10.0);
+        assert_eq!(stale_after(Some(5.0), None), 10.0);
+        assert_eq!(stale_after(Some(20.0), None), 40.0);
+        // And the polls a batch holds back.
+        assert_eq!(stale_after(Some(1.0), Some(1.0)), 10.0);
+        assert_eq!(stale_after(Some(1.0), Some(30.0)), 39.0);
+        assert_eq!(stale_after(Some(20.0), Some(40.0)), 60.0);
     }
 }

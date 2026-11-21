@@ -1,6 +1,8 @@
 //! Opening the database to write it, migrating it, and the rows the
 //! daemon writes.
 
+use std::cell::Cell;
+use std::fmt::Display;
 use std::path::Path;
 use std::time::Duration;
 
@@ -25,6 +27,7 @@ use crate::chrony_log::Line;
 use crate::error::Error;
 use crate::error::Result;
 use crate::schema::CHRONY_CONFIG_ERROR;
+use crate::schema::COMMIT_INTERVAL;
 use crate::schema::INODE_KEY;
 use crate::schema::LOG_FILE_ASIDE;
 use crate::schema::LOG_FILE_BACK;
@@ -53,6 +56,13 @@ use crate::timestamp::to_stored;
 /// How long a statement waits for another writer -- an operator's
 /// `sqlite3`, say -- before failing.  WAL readers never block it.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The savepoint a write is.
+const SAVEPOINT: &str = "write";
+
+/// Why a batch SQLite ended itself is lost: the error that ended it was
+/// returned before.
+const ENDED_EARLIER: &str = "ended by an earlier error";
 
 /// `tracking`'s columns, as `tracking` and `tracking_report` both have
 /// them, in [`tracking_values`]' order.
@@ -157,6 +167,10 @@ pub struct LogFile {
 #[derive(Debug)]
 pub struct Log {
     connection: Connection,
+    /// Whether a batch, one transaction across writes, is open.
+    batch: bool,
+    /// Whether an event was written since [`Log::take_event`] last asked.
+    event: Cell<bool>,
 }
 
 impl Log {
@@ -177,13 +191,24 @@ impl Log {
 
     fn configure(connection: Connection) -> Result<Self> {
         // WAL lets readers read while the daemon writes; NORMAL rather
-        // than FULL, since a row lost to a power cut is one second.
+        // than FULL: a power cut may lose the last commits, those the
+        // kernel had not yet written out, seconds of them, but leaves
+        // the database sound.
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
-        let mut log = Self { connection };
+        let mut log = Self {
+            connection,
+            batch: false,
+            event: Cell::new(false),
+        };
         log.migrate()?;
+        // A write's savepoint inside a batch keeps a journal of what it
+        // changes, a file past a few pages but for this: on a Raspberry
+        // Pi, the SD card the batch spares.  After `migrate`, whose
+        // rebuilds would sort in memory.
+        log.connection.pragma_update(None, "temp_store", "MEMORY")?;
         Ok(log)
     }
 
@@ -254,46 +279,103 @@ impl Log {
     /// Write one poll's rows together, so a reader never sees half a
     /// poll: any error, `f`'s or the commit's, rolls them all back.
     ///
-    /// A savepoint, which outside a transaction begins and commits one
-    /// as `BEGIN` and `COMMIT` would.
-    pub fn write_with<T, E: From<Error>>(
+    /// A savepoint: outside a batch it begins and commits a transaction
+    /// as `BEGIN` and `COMMIT` would; inside one it is committed with
+    /// the batch, and an error undoes this write alone.  An error that
+    /// lost the batch, though, all of it, is returned as
+    /// [`Error::BatchLost`].
+    pub fn write_with<T, E: From<Error> + Display>(
         &mut self,
         f: impl FnOnce(&Batch<'_>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        // What `BEGIN` refuses, and a savepoint would nest inside: a
-        // transaction that even `end_failed` could not end.
-        if !self.connection.is_autocommit() {
+        if self.batch {
+            // SQLite ends a transaction itself on some errors, a full disk
+            // or an I/O error: a write now would commit on its own.
+            if self.connection.is_autocommit() {
+                self.batch = false;
+                return Err(Error::BatchLost(ENDED_EARLIER.to_owned()).into());
+            }
+        } else if !self.connection.is_autocommit() {
+            // What `BEGIN` refuses, and a savepoint would nest inside: a
+            // transaction that even `end_failed` could not end.
             return Err(Error::Unfinished.into());
         }
-        let savepoint = self.connection.savepoint().map_err(Error::from)?;
+        self.connection
+            .execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))
+            .map_err(Error::from)?;
         let outcome = f(&Batch {
-            connection: &savepoint,
+            connection: &self.connection,
+            event: &self.event,
         });
-        // An error rolls back as the savepoint drops.
-        let written = match outcome {
-            Ok(result) => savepoint
-                .commit()
+        let written = outcome.and_then(|result| {
+            self.connection
+                .execute_batch(&format!("RELEASE {SAVEPOINT}"))
                 .map(|()| result)
-                .map_err(|e| Error::from(e).into()),
-            Err(e) => {
-                drop(savepoint);
-                Err(e)
-            }
-        };
-        if written.is_err() {
-            self.end_failed();
-        }
-        written
+                .map_err(|e| Error::from(e).into())
+        });
+        written.map_err(|e| self.undo(e))
     }
 
-    /// End a transaction that a failed write's savepoint, as it dropped,
-    /// left open: its `ROLLBACK TO` and `RELEASE` can fail where a plain
-    /// `ROLLBACK`, which rusqlite's transaction ends with, still works.
+    /// Undo a failed write, and say why it failed: `error`, or that the
+    /// batch it was in is lost.
+    fn undo<E: From<Error> + Display>(&mut self, error: E) -> E {
+        let undone = self
+            .connection
+            .execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"));
+        if !self.batch {
+            self.end_failed();
+            return error;
+        }
+        if undone.is_ok() && !self.connection.is_autocommit() {
+            return error;
+        }
+        self.batch = false;
+        self.end_failed();
+        Error::BatchLost(error.to_string()).into()
+    }
+
+    /// End a transaction that a failed write or commit left open: a
+    /// write's `ROLLBACK TO` and `RELEASE` can fail where a plain
+    /// `ROLLBACK` still works.
     fn end_failed(&self) {
         if !self.connection.is_autocommit() {
             // A failure leaves it to the next write to refuse.
             let _ignored = self.connection.execute_batch("ROLLBACK");
         }
+    }
+
+    /// Open a batch: one transaction around the writes that follow, so
+    /// that the disk sees them in one commit, [`Log::commit`]'s.
+    /// Immediate, so that another writer's lock fails it here, not in a
+    /// write.
+    pub fn begin(&mut self) -> Result<()> {
+        if self.batch || !self.connection.is_autocommit() {
+            return Err(Error::Unfinished);
+        }
+        self.connection.execute_batch("BEGIN IMMEDIATE")?;
+        self.batch = true;
+        Ok(())
+    }
+
+    /// Commit the open batch, if one is.  A batch that cannot be
+    /// committed is rolled back and lost, not tried again.
+    pub fn commit(&mut self) -> Result<()> {
+        if !std::mem::take(&mut self.batch) {
+            return Ok(());
+        }
+        if self.connection.is_autocommit() {
+            return Err(Error::BatchLost(ENDED_EARLIER.to_owned()));
+        }
+        self.connection.execute_batch("COMMIT").map_err(|e| {
+            self.end_failed();
+            Error::BatchLost(e.to_string())
+        })
+    }
+
+    /// Whether an event was written since this last asked: a batch with
+    /// one is worth committing soon, for the pages to see it.
+    pub fn take_event(&self) -> bool {
+        self.event.take()
     }
 }
 
@@ -301,6 +383,8 @@ impl Log {
 #[derive(Debug)]
 pub struct Batch<'a> {
     connection: &'a Connection,
+    /// Set when an event is written.
+    event: &'a Cell<bool>,
 }
 
 /// An inode or a file length, as SQLite's signed integers hold them.
@@ -404,6 +488,12 @@ impl Batch<'_> {
             params![to_stored(at)?, seconds],
         )?;
         Ok(())
+    }
+
+    /// Record that the daemon's run commits what it polls every
+    /// `seconds`.
+    pub fn commit_interval(&self, seconds: f64) -> Result<()> {
+        self.set_meta(COMMIT_INTERVAL, &seconds.to_string())
     }
 
     /// Forget chronyd's `tempcomp` line, its configuration not read: not
@@ -819,6 +909,7 @@ impl Batch<'_> {
             "INSERT INTO event (at, kind, source_id, detail) VALUES (?1, ?2, ?3, ?4)",
             params![to_stored(at)?, kind.name(), source_id, detail],
         )?;
+        self.event.set(true);
         Ok(())
     }
 
@@ -885,6 +976,70 @@ mod tests {
             log.write(|batch| batch.poll_interval(Timestamp::UNIX_EPOCH, 1.0)),
             Err(Error::Unfinished)
         ));
+    }
+
+    fn start(batch: &Batch<'_>) -> Result<()> {
+        batch.event(Timestamp::UNIX_EPOCH, EventKind::DaemonStart, None, None)
+    }
+
+    fn events(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM event", [], |row| row.get(0))
+            .expect("a count")
+    }
+
+    #[test]
+    fn a_batch_commits_its_writes_at_once_but_a_failed_one() {
+        let directory =
+            std::env::temp_dir().join(format!("chronymon-log-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let mut log = Log::open(&path).expect("created");
+        let reader = Connection::open(&path).expect("a reader");
+        log.begin().expect("begun");
+        log.write(start).expect("written");
+        let failed = log.write(|batch| {
+            start(batch)?;
+            Err::<(), _>(Error::Timestamp)
+        });
+        assert!(matches!(failed, Err(Error::Timestamp)));
+        log.write(start).expect("written");
+        assert_eq!(events(&reader), 0, "seen before the commit");
+        assert!(matches!(log.begin(), Err(Error::Unfinished)));
+        assert!(log.take_event());
+        assert!(!log.take_event());
+        log.commit().expect("committed");
+        assert_eq!(events(&reader), 2);
+        assert!(log.connection.is_autocommit());
+        log.commit().expect("none to commit");
+    }
+
+    #[test]
+    fn a_batch_sqlite_ended_is_lost() {
+        let mut log = Log::in_memory().expect("opened");
+        // As SQLite ends one after a full disk, between writes and in one.
+        log.begin().expect("begun");
+        log.write(start).expect("written");
+        log.connection.execute_batch("ROLLBACK").expect("ended");
+        assert!(matches!(log.write(start), Err(Error::BatchLost(_))));
+        log.begin().expect("begun");
+        let lost = log.write(|batch| {
+            start(batch)?;
+            batch.connection.execute_batch("ROLLBACK")?;
+            Err::<(), _>(Error::Timestamp)
+        });
+        assert!(
+            matches!(&lost, Err(Error::BatchLost(cause)) if cause == "timestamp out of range"),
+            "{lost:?}"
+        );
+        log.begin().expect("begun");
+        log.connection.execute_batch("ROLLBACK").expect("ended");
+        assert!(matches!(log.commit(), Err(Error::BatchLost(_))));
+        assert_eq!(events(&log.connection), 0);
+        // Outside a batch, writes go on.
+        log.write(start).expect("written");
+        assert_eq!(events(&log.connection), 1);
     }
 
     #[test]

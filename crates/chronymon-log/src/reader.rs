@@ -47,6 +47,7 @@ use rusqlite::types::Value;
 use crate::error::Error;
 use crate::error::Result;
 use crate::schema::CHRONY_CONFIG_ERROR;
+use crate::schema::COMMIT_INTERVAL;
 use crate::schema::REFCLOCK_LOCKS;
 use crate::schema::RefclockLock;
 use crate::schema::TEMPCOMP;
@@ -1224,6 +1225,14 @@ impl Reader {
                 |row| row.get(0),
             )
             .optional()?)
+    }
+
+    /// How often the daemon's latest run commits what it polls, seconds:
+    /// none before a daemon that batches its commits ran.
+    pub fn commit_interval(&self) -> Result<Option<f64>> {
+        Ok(self
+            .meta(COMMIT_INTERVAL)?
+            .and_then(|seconds| seconds.parse().ok()))
     }
 
     /// When the newest event happened, stored, if there is one: a page
@@ -3444,6 +3453,16 @@ mod tests {
             })
             .expect("written");
         assert_eq!(db.reader().poll_interval().expect("read"), Some(20.0));
+    }
+
+    #[test]
+    fn reads_the_commit_interval() {
+        let mut db = Database::new("commit-interval");
+        assert_eq!(db.reader().commit_interval().expect("read"), None);
+        db.log
+            .write(|batch| batch.commit_interval(30.0))
+            .expect("written");
+        assert_eq!(db.reader().commit_interval().expect("read"), Some(30.0));
     }
 
     #[test]
