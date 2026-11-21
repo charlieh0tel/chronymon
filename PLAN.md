@@ -181,7 +181,10 @@ The host's:
   left is per commit: 82 pages each, a leaf or more of every table and
   index written, one per source in a per-source index, against a
   database growing ~30 MB a day.  The writes follow the commits, not
-  the data.
+  the data: every 120 s, 0.45 GB a day, 106 pages a commit.  30 s
+  stays the default, 120 s the advice for an SD card, 0 to 5 s for an
+  NVMe drive or an SSD (per-poll commits, ~1.3 TB a year, are ~0.2% a
+  year of a 1 TB drive's rated 600 TB).
   30 s rather than 60: the strip's lag and a crash's loss stay short.
   An event commits sooner, at most every 5 s, for the journal and the
   pages' event-driven rereads.  A poll's failed write still stops the
