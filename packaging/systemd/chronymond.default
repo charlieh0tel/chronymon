@@ -14,9 +14,9 @@
 #CHRONYMOND_INTERVAL=1
 
 # Seconds between commits of what the polls write, rounded up to whole
-# polls: one write to the disk for many, sparing an SD card.  The view
-# lags by up to as much, and a crash loses up to as much.  0 commits
-# every poll.
+# polls: one write to the disk for many.  120 suits an SD card, 0 to 5
+# an NVMe drive or an SSD.  The view lags by up to as much, and a crash
+# loses up to as much.  0 commits every poll.
 #CHRONYMOND_COMMIT_INTERVAL=30
 
 # chronyd's configuration, read for its makestep, which decides when a
