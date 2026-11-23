@@ -146,6 +146,12 @@ footer { grid-column: 1 / -1; color: var(--dim); font-size: 11px; }
 #range-shown { display: inline-block; min-width: 36ch; text-align: center;
   font-variant-numeric: tabular-nums; }
 #ranges input, #ranges select { padding: 3px 6px; }
+/* While a read runs: the reload button pulses, and the pointer says
+   so. */
+.reading, .reading * { cursor: progress; }
+.reading #range-reload { color: var(--accent); animation: pulse 1s ease-in-out infinite alternate; }
+@keyframes pulse { to { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .reading #range-reload { animation: none; } }
 
 /* Something to hover.  A title attribute announces itself to nobody,
    so anything carrying one is underlined the way a footnote is. */

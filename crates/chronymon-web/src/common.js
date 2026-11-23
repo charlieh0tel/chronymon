@@ -601,6 +601,7 @@ function refresh() {
   }
   const control = new AbortController();
   running = control;
+  reading(true);
   readStarted();
   page
     .load(control.signal)
@@ -613,8 +614,27 @@ function refresh() {
       if (again) {
         again = false;
         refresh();
+      } else {
+        reading(false);
       }
     });
+}
+
+// How long a read runs before the page says it is reading, in
+// milliseconds: most are done before anyone would wonder.
+const READING_AFTER = 300;
+let readingTimer = null;
+
+// Say, once a read has run READING_AFTER, that the page is reading,
+// or stop saying it: the `reading` class on the document, which the
+// style sheet shows.
+function reading(on) {
+  clearTimeout(readingTimer);
+  if (on) {
+    readingTimer = setTimeout(() => document.documentElement.classList.add("reading"), READING_AFTER);
+  } else {
+    document.documentElement.classList.remove("reading");
+  }
 }
 
 // Abandon whatever is in flight and read again.

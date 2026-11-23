@@ -747,6 +747,36 @@ test("Refclocks: refclock names slower than the strip's timeout still draw", asy
   await expect(charts(page).first()).toBeVisible();
 });
 
+test("Refclocks: a slow read says it is reading until it is done", async ({ page }) => {
+  let hold;
+  const held = new Promise((resolve) => { hold = resolve; });
+  await page.route("**/api/keys?*", async (route) => {
+    const response = await route.fetch();
+    await held;
+    return route.fulfill({ response });
+  });
+  await page.goto("/refclocks?last=86400");
+  const html = page.locator("html");
+  await expect(html).toHaveClass(/\breading\b/);
+  hold();
+  await expect(charts(page).first()).toBeVisible();
+  await expect(html).not.toHaveClass(/\breading\b/);
+});
+
+test("Refclocks: a quick read never says it is reading", async ({ page }) => {
+  await page.goto("/refclocks?last=3600");
+  await page.waitForFunction(() => !running);
+  await page.evaluate(() => {
+    window.saidReading = false;
+    new MutationObserver(() => {
+      if (document.documentElement.classList.contains("reading")) window.saidReading = true;
+    }).observe(document.documentElement, { attributes: true });
+  });
+  await page.evaluate(() => renew());
+  await page.waitForFunction(() => !running);
+  expect(await page.evaluate(() => window.saidReading)).toBe(false);
+});
+
 test("Refclocks: a gpsd receiver's satellites and dilutions, its fix lost shaded", async ({ page }) => {
   // The whole range: the receiver's fix is lost early in it, before
   // the kiosk's day.
