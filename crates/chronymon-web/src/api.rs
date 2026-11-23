@@ -560,7 +560,7 @@ fn fill(query: &str) -> Result<Option<(Table, Vec<Column>)>> {
 }
 
 /// `/api/keys?table=`: the sources a log table names, by name, with
-/// their rows and the span of them.
+/// the span of their rows.
 pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
     let table = table(query)?;
     read(path, |reader| {
@@ -568,9 +568,7 @@ pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
             reader
                 .keys(table)?
                 .into_iter()
-                .map(
-                    |n| json!({ "name": n.name, "rows": n.rows, "first": n.first, "last": n.last }),
-                )
+                .map(|n| json!({ "name": n.name, "first": n.first, "last": n.last }))
                 .collect(),
         ))
     })
