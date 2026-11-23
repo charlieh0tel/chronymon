@@ -14,7 +14,9 @@ on:
     branches: [main]
     paths:
       - "crates/**"
+      - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "Makefile"
       - "tools/with-web"
       - ".github/workflows/web.yml"
@@ -38,7 +40,7 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ] ||
             git diff --name-only HEAD^1 HEAD |
-            grep -qE '^(crates/|Cargo\.lock$|Makefile$|tools/with-web$|\.github/workflows/web\.yml$)'
+            grep -qE '^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|Makefile$|tools/with-web$|\.github/workflows/web\.yml$)'
           then
             echo test=true >> "$GITHUB_OUTPUT"
           fi
