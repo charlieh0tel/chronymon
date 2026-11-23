@@ -712,8 +712,6 @@ pub struct Source {
 pub struct Named {
     /// Its address, or a refclock's reference.
     pub name: String,
-    /// Its rows.
-    pub rows: i64,
     /// Its first and last rows' times, unix seconds.
     pub first: f64,
     /// See `first`.
@@ -1317,8 +1315,8 @@ impl Reader {
             .map(|(first, last)| (seconds(first), seconds(last))))
     }
 
-    /// Every source a per-source log table names, by name, with its
-    /// rows: the refclocks of `refclock_sample`, say.
+    /// Every source a per-source log table names, by name, with the
+    /// span of its rows: the refclocks of `refclock_sample`, say.
     pub fn keys(&self, table: Table) -> Result<Vec<Named>> {
         if !self.exists(table)? {
             return Ok(Vec::new());
@@ -1326,19 +1324,13 @@ impl Reader {
         let Some(key) = table.key().filter(|_| !table.by_id()) else {
             return Ok(Vec::new());
         };
-        let time = table.time();
-        let sql = format!(
-            "SELECT {key}, COUNT(*), MIN({time}), MAX({time}) FROM {} GROUP BY {key} ORDER BY {key}",
-            table.name()
-        );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare(&keys_sql(table, key))?;
         Ok(statement
             .query_map([], |row| {
                 Ok(Named {
                     name: row.get(0)?,
-                    rows: row.get(1)?,
-                    first: seconds(row.get(2)?),
-                    last: seconds(row.get(3)?),
+                    first: seconds(row.get(1)?),
+                    last: seconds(row.get(2)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -2170,6 +2162,25 @@ fn extent_sql(table: Table, order: Order) -> String {
     format!(
         "SELECT {time} FROM {} WHERE {time} > 0 ORDER BY {time} {direction} LIMIT 1",
         table.name()
+    )
+}
+
+/// Each name the column `key` of `table` holds, with its first and last
+/// times.  Each a seek in the table's `(key, time)` index: a `GROUP BY`
+/// reads every row, millions of a refclock's.
+fn keys_sql(table: Table, key: &str) -> String {
+    let time = table.time();
+    let table = table.name();
+    format!(
+        "WITH RECURSIVE names(name) AS (
+           SELECT MIN({key}) FROM {table}
+           UNION ALL
+           SELECT (SELECT MIN({key}) FROM {table} WHERE {key} > name)
+           FROM names WHERE name IS NOT NULL)
+         SELECT name,
+                (SELECT {time} FROM {table} WHERE {key} = name ORDER BY {time} ASC LIMIT 1),
+                (SELECT {time} FROM {table} WHERE {key} = name ORDER BY {time} DESC LIMIT 1)
+         FROM names WHERE name IS NOT NULL ORDER BY name"
     )
 }
 
@@ -3112,13 +3123,14 @@ mod tests {
             })
             .expect("written");
         let reader = db.reader();
-        let names: Vec<String> = reader
+        let names: Vec<(String, f64, f64)> = reader
             .keys(Table::RefclockSample)
             .expect("keys")
             .into_iter()
-            .map(|n| n.name)
+            .map(|n| (n.name, n.first, n.last))
             .collect();
-        assert_eq!(names, ["NMEA", "PPS"]);
+        let span = |name: &str| (name.to_owned(), START as f64, (START + 19) as f64);
+        assert_eq!(names, [span("NMEA"), span("PPS")]);
         assert!(reader.keys(Table::SourceSample).expect("keys").is_empty());
         let pps = Key::Name("PPS".to_owned());
         let cooked = column(Table::RefclockSample, "cooked_offset");

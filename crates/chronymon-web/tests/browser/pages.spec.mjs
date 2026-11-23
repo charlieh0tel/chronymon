@@ -735,8 +735,8 @@ test("Refclocks: each refclock's offsets", async ({ page }) => {
   await expect(charts(page).first()).toBeVisible();
 });
 
-test("Refclocks: a refclock count slower than the strip's timeout still draws", async ({ page }) => {
-  // Past QUICK_TIMEOUT, as a count of a large table on a slow host is.
+test("Refclocks: refclock names slower than the strip's timeout still draw", async ({ page }) => {
+  // Past QUICK_TIMEOUT, as any read is from a stalled disk.
   await page.route("**/api/keys?*", async (route) => {
     const response = await route.fetch();
     await new Promise((resolve) => { setTimeout(resolve, 6000); });
