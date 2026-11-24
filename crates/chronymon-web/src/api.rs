@@ -576,7 +576,7 @@ pub(crate) fn keys(path: &Path, query: &str) -> Result<Value> {
 
 /// `/api/history?table=&columns=a,b&from=&to=&points=&source=`: one
 /// table's columns, bucketed on one grid, each with the indexes its
-/// line breaks at; with `fill=&fill_columns=`, a log's where the daemon
+/// line breaks at, and the rows bucketed; with `fill=&fill_columns=`, a log's where the daemon
 /// was not recording.  `unsynchronized` and `local`: `[from, to]`
 /// pairs, for `tracking` when chronyd was unsynchronized and on its
 /// local reference, else none.
@@ -633,6 +633,7 @@ pub(crate) fn history(path: &Path, query: &str) -> Result<Value> {
             json!({
                 "at": series.at,
                 "plots": plots,
+                "rows": series.rows,
                 "unsynchronized": unsynchronized,
                 "local": local,
             }),

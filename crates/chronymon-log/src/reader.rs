@@ -361,6 +361,9 @@ pub struct Series {
     pub at: Vec<f64>,
     /// One per column asked for, in order.
     pub plots: Vec<Plot>,
+    /// The rows read, every bucket's: the count of them in the window,
+    /// for nothing more than the bucketing's own pass over them.
+    pub rows: i64,
 }
 
 /// One column's buckets, against [`Series::at`].  `min` and `max` are
@@ -1799,13 +1802,14 @@ impl Reader {
         while let Some(row) = rows.next()? {
             let values = (0..columns.len())
                 .map(|n| {
-                    let base = 2 + n * 3;
+                    let base = 3 + n * 3;
                     Ok([row.get(base)?, row.get(base + 1)?, row.get(base + 2)?])
                 })
                 .collect::<rusqlite::Result<Vec<[Option<f64>; 3]>>>()?;
             buckets.push(Bucket {
                 index: row.get(0)?,
                 at: row.get(1)?,
+                rows: row.get(2)?,
                 broken: vec![false; values.len()],
                 values,
             });
@@ -1956,11 +1960,12 @@ impl Reader {
 }
 
 /// One bucket of a series: its index on the window's grid, its rows'
-/// mean time in unix nanoseconds, each column's mean, min and max, and
-/// whether each column's line breaks before it.
+/// mean time in unix nanoseconds and their count, each column's mean,
+/// min and max, and whether each column's line breaks before it.
 struct Bucket {
     index: i64,
     at: f64,
+    rows: i64,
     values: Vec<[Option<f64>; 3]>,
     broken: Vec<bool>,
 }
@@ -2095,6 +2100,7 @@ fn assemble(columns: &[Column], buckets: Vec<Bucket>, window: Window) -> Series 
                 gaps: Vec::new(),
             })
             .collect(),
+        rows: buckets.iter().map(|b| b.rows).sum(),
     };
     let mut previous: Option<f64> = None;
     for bucket in buckets {
@@ -2305,7 +2311,7 @@ fn buckets_sql(table: Table, source: Option<&Key>, columns: &[Column]) -> String
         // Divided by the span plus one, so a row exactly at `to` falls
         // in the last bucket rather than one past it.
         "SELECT CAST(({time} - ?1) * ?3 / (?2 - ?1 + 1) AS INTEGER) AS bucket,
-                AVG({time}){aggregates}
+                AVG({time}), COUNT(*){aggregates}
          FROM {}
          WHERE {time} >= ?1 AND {time} <= ?2 {filter}
          GROUP BY bucket ORDER BY bucket",
@@ -3143,6 +3149,17 @@ mod tests {
             )
             .expect("a series");
         assert_eq!(series.at.len(), 20);
+        // Its rows only, not NMEA's beside them; and within the window.
+        assert_eq!(series.rows, 20);
+        let early = reader
+            .series(
+                Table::RefclockSample,
+                Some(&pps),
+                &[cooked],
+                window(0, 9, 5),
+            )
+            .expect("a series");
+        assert_eq!(early.rows, 10);
         // NMEA's raw offsets are NULL, filtered samples; none is a reading.
         let raw = column(Table::RefclockSample, "raw_offset");
         let nmea = Key::Name("NMEA".to_owned());

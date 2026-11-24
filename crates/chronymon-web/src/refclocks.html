@@ -55,6 +55,10 @@ const COLUMNS = ["cooked_offset", "raw_offset", "dispersion"];
 const RECEIVERS = "gnss";
 const RECEIVER_COLUMNS = ["satellites_used", "satellites_seen", "pdop", "tdop"];
 
+// The longest range, in seconds, whose rows each refclock's line
+// counts: past it, a count of millions says little.
+const COUNTED = 86400;
+
 // Why there may be nothing: the control protocol says nothing of a
 // refclock's samples, so they are only in chronyd's log.
 const NOTHING =
@@ -77,12 +81,15 @@ async function load(signal) {
     ask(`/api/keys?table=${TABLE}`, signal, HISTORY_TIMEOUT),
     ask(`/api/keys?table=${RECEIVERS}`, signal, HISTORY_TIMEOUT),
   ]);
-  const extent = (r, what) => `${r.name}: ${what} ` +
-    `${new Date(r.first * 1000).toLocaleString()} to ${new Date(r.last * 1000).toLocaleString()}`;
-  showHtml($("refclocks"), esc([
-    ...refclocks.map((r) => extent(r, "samples")),
-    ...receivers.map((r) => extent(r, "gpsd reports")),
-  ].join("; ")));
+  // Each refclock's and receiver's line, with the rows in range when
+  // `counts` has them, in the same order.
+  const extents = (counts = []) => showHtml($("refclocks"), esc([
+    ...refclocks.map((r) => ({ ...r, what: "samples" })),
+    ...receivers.map((r) => ({ ...r, what: "gpsd reports" })),
+  ].map((r, n) => `${r.name}: ${r.what} ` +
+    `${new Date(r.first * 1000).toLocaleString()} to ${new Date(r.last * 1000).toLocaleString()}` +
+    (counts[n] == null ? "" : `, ${counts[n].toLocaleString()} in range`)).join("; ")));
+  extents();
   if (!refclocks.length && !receivers.length) {
     clearStack(stack, NOTHING);
     return;
@@ -109,6 +116,8 @@ async function load(signal) {
       title: `${s.name}: ${label(d.column)}`,
       lines: d.lines.map((l) => ({ ...l, name: s.name })),
     })));
+  const seconds = rangeBounds().seconds;
+  if (seconds != null && seconds <= COUNTED) extents(reads.map((got) => got.rows));
   const span = spanOf(reads);
   drawStack(stack, { x: [], span, drawn, bands: journalBands(events.events, span.from, span.to, troublesNow()) },
     "no refclock samples or gpsd reports in this range");

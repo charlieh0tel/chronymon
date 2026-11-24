@@ -735,6 +735,17 @@ test("Refclocks: each refclock's offsets", async ({ page }) => {
   await expect(charts(page).first()).toBeVisible();
 });
 
+test("Refclocks: each line counts its rows in a range up to a day, not past it", async ({ page }) => {
+  await page.goto("/refclocks?last=86400");
+  const line = page.locator("#refclocks");
+  await expect(line).toContainText(/PPS: samples .* to .*, [\d,]+ in range/);
+  await expect(line).toContainText(/\/dev\/ttyACM0: gpsd reports .*, [\d,]+ in range/);
+  await page.goto("/refclocks?last=172800");
+  await expect(charts(page).first()).toBeVisible();
+  await expect(line).toContainText("PPS: samples");
+  await expect(line).not.toContainText("in range");
+});
+
 test("Refclocks: refclock names slower than the strip's timeout still draw", async ({ page }) => {
   // Past QUICK_TIMEOUT, as any read is from a stalled disk.
   await page.route("**/api/keys?*", async (route) => {
